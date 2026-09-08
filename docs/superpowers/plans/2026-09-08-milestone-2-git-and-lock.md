@@ -459,6 +459,24 @@ def test_commit_refuses_a_path_outside_the_brain(git_root):
     assert "unrelated.txt" in str(excinfo.value)
 
 
+def test_commit_with_no_paths_commits_nothing(git_root):
+    """An empty pathspec is not "no files" to git. Without a guard this sweeps
+    the user's staged work into a Brain-Source commit, breaking R11.2 and then
+    telling R11.6's check that the user's own file was brain-authored."""
+    (git_root / "unrelated.txt").write_text("staged by the user\n", encoding="utf-8")
+    g.run(["add", "--", "unrelated.txt"], git_root)
+    before = g.head(git_root)
+    assert g.commit(git_root, [], "brain: nothing to do") is None
+    assert g.head(git_root) == before
+    assert "unrelated.txt" in g.run(["diff", "--cached", "--name-only"], git_root)
+
+
+def test_is_brain_path_rejects_a_nested_entity_path(git_root):
+    """§4's layout is flat and load_root globs non-recursively."""
+    assert g.is_brain_path(git_root, "projects/acme-migration.md") is True
+    assert g.is_brain_path(git_root, "projects/sub/deep.md") is False
+
+
 def test_commit_with_no_change_returns_none_and_adds_nothing(git_root):
     before = g.head(git_root)
     assert g.commit(git_root, ["inbox.md"], "brain: nothing to do") is None
@@ -503,7 +521,10 @@ def is_brain_path(root, path) -> bool:
         return False
     if len(parts) == 1:
         return parts[0] in BRAIN_FILES
-    return parts[0] in BRAIN_DIRS and parts[-1].endswith(".md")
+    # Exactly two parts: §4's layout is flat, and entities.load_root globs
+    # `<dir>/*.md` non-recursively. A nested path is one brain could stage but
+    # could never load back.
+    return len(parts) == 2 and parts[0] in BRAIN_DIRS and parts[1].endswith(".md")
 
 
 def _trailers(message: str, source: str, notes=None, undo_of=None) -> str:
@@ -536,6 +557,13 @@ def commit(root, paths, message: str, source: str = "cli",
     """
     require_repo(root)
     paths = [str(p) for p in paths]
+    if not paths:
+        # `git commit -- ` with nothing after the separator is NO RESTRICTION,
+        # not "no files": it would commit the whole index, including work the
+        # user staged, under a Brain-Source trailer. A caller that computed an
+        # empty path set - a no-op batch, a revert touching no brain path - must
+        # get a no-op, not the user's staged work in a brain commit.
+        return None
     bad = [p for p in paths if not is_brain_path(root, p)]
     if bad:
         raise GitError(
@@ -554,12 +582,12 @@ def commit(root, paths, message: str, source: str = "cli",
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_git_commit.py -v`
-Expected: 7 passed.
+Expected: 9 passed.
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 115 passed.
+Expected: 117 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -689,7 +717,7 @@ Expected: 5 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 120 passed.
+Expected: 122 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -920,7 +948,7 @@ Expected: 6 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 126 passed.
+Expected: 128 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1054,7 +1082,7 @@ Expected: 5 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 131 passed.
+Expected: 133 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1274,7 +1302,7 @@ Expected: 8 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 139 passed.
+Expected: 141 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1379,7 +1407,7 @@ In the "Build order" section, mark milestones 1 and 2 done. In the module map, a
 - [ ] **Step 6: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 142 passed.
+Expected: 144 passed.
 
 - [ ] **Step 7: Commit**
 
@@ -1401,7 +1429,7 @@ Per §12, milestone 3 (`commands.py` + `cli.py`) comes next and is much larger.
 Verify before handing back:
 
 ```bash
-.venv/bin/python -m pytest -q          # 142 passed
+.venv/bin/python -m pytest -q          # 144 passed
 git log --oneline milestone-1-doc-entities..HEAD
 ```
 
