@@ -28,13 +28,18 @@ def snapshot(root: Path) -> dict:
     return out
 
 
-def assert_only_changed(before: dict, after: dict, expected: dict) -> None:
+def assert_only_changed(before: dict, after: dict, expected: dict,
+                        max_region: int = 6) -> None:
     """Fail unless the tree differs from `before` exactly as `expected` allows.
 
     `expected` maps a tree-relative path to the set of 0-based line indices
     permitted to differ. A file absent from `expected` must be byte-identical.
-    Added or removed lines are reported as a length change, which is a failure
-    unless the path appears in `expected`.
+
+    When a declared file changes length an index set cannot describe the edit,
+    so the check becomes: everything outside a single contiguous region must be
+    identical, and that region may span at most `max_region` lines. Without
+    that bound an append that also rewrote a distant line would pass unnoticed,
+    which is exactly the failure R5.1 exists to prevent.
     """
     assert set(before) == set(after), (
         "files were added or removed: "
@@ -53,13 +58,29 @@ def assert_only_changed(before: dict, after: dict, expected: dict) -> None:
         if allowed is None:
             problems.append(f"{path}: changed but was not expected to")
             continue
-        if len(old) != len(new):
-            continue  # a declared file may legitimately gain or lose lines
-        differing = {i for i, (a, b) in enumerate(zip(old, new)) if a != b}
-        unexpected = differing - allowed
-        if unexpected:
-            for i in sorted(unexpected):
+        if len(old) == len(new):
+            differing = {i for i, (a, b) in enumerate(zip(old, new)) if a != b}
+            for i in sorted(differing - allowed):
                 problems.append(f"{path}:{i}: changed unexpectedly\n  - {old[i]!r}\n  + {new[i]!r}")
+            continue
+        # The length changed, so bound the edit to one small contiguous region:
+        # everything before `prefix` and after `suffix` is identical already.
+        shorter = min(len(old), len(new))
+        prefix = 0
+        while prefix < shorter and old[prefix] == new[prefix]:
+            prefix += 1
+        suffix = 0
+        while (suffix < shorter - prefix
+               and old[len(old) - 1 - suffix] == new[len(new) - 1 - suffix]):
+            suffix += 1
+        removed = len(old) - prefix - suffix
+        added = len(new) - prefix - suffix
+        if max(removed, added) > max_region:
+            problems.append(
+                f"{path}: edit spans lines {prefix}..{len(new) - suffix} "
+                f"({removed} removed, {added} added, limit {max_region}) "
+                "- not a surgical edit"
+            )
     assert not problems, "surgical edit violated:\n" + "\n".join(problems)
 
 
