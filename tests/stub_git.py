@@ -16,6 +16,26 @@ FORBIDDEN_SUBCOMMANDS = {
 }
 
 
+# Global flags that take a SEPARATE value. `git -C /path push` would otherwise
+# resolve its subcommand to "/path" and smuggle a forbidden verb straight past
+# this stub - which is the one thing the stub exists to prevent.
+VALUE_FLAGS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+
+
+def subcommand(argv):
+    """The git subcommand, skipping global flags and their values."""
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in VALUE_FLAGS:
+            i += 2                      # the flag and the value it consumes
+        elif arg.startswith("-"):
+            i += 1                      # a bare switch, or --flag=value
+        else:
+            return arg
+    return None
+
+
 def main() -> int:
     argv = sys.argv[1:]
     log = os.environ.get("BRAIN_GIT_LOG")
@@ -23,7 +43,7 @@ def main() -> int:
         with open(log, "a", encoding="utf-8") as handle:
             handle.write("\x00".join(argv) + "\n")
 
-    sub = next((a for a in argv if not a.startswith("-")), None)
+    sub = subcommand(argv)
     reason = None
     if sub in FORBIDDEN_SUBCOMMANDS:
         reason = "R11.4 forbids `git {}`".format(sub)

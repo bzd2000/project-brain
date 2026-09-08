@@ -37,14 +37,38 @@ def test_every_invocation_goes_through_the_stub(git_root, stub_git):
     assert ["rev-parse", "--is-inside-work-tree"] in calls
 
 
-def test_the_stub_refuses_a_forbidden_operation(git_root, stub_git):
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["push", "origin", "master"],
+        ["rebase", "master"],
+        ["merge", "other"],
+        ["checkout", "-b", "new"],
+        ["add", "-A"],
+        ["add", "--all"],
+        ["commit", "--amend", "-m", "x"],
+        ["branch", "new"],
+        # A global flag with a value must not hide the verb behind it.
+        ["-C", ".", "push", "origin", "master"],
+        ["--git-dir=.git", "push", "origin", "master"],
+    ],
+)
+def test_the_stub_refuses_a_forbidden_operation(git_root, stub_git, argv):
     """Proves the harness has teeth. If this ever passes silently, A10 is blind."""
     proc = subprocess.run(
-        ["git", "push", "origin", "master"],
-        cwd=str(git_root), capture_output=True, text=True,
+        ["git"] + argv, cwd=str(git_root), capture_output=True, text=True
     )
-    assert proc.returncode == 99
-    assert "R11.4" in proc.stderr
+    assert proc.returncode == 99, proc.stdout + proc.stderr
+    assert "R11." in proc.stderr
+
+
+@pytest.mark.parametrize("argv", [["merge-base", "HEAD", "HEAD"], ["status", "--porcelain"]])
+def test_the_stub_does_not_over_refuse(git_root, stub_git, argv):
+    """`merge-base` is not `merge`. A stub that over-refuses blocks real work."""
+    proc = subprocess.run(
+        ["git"] + argv, cwd=str(git_root), capture_output=True, text=True
+    )
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_git_py_names_no_forbidden_subcommand():
