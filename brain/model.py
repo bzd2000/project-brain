@@ -50,6 +50,7 @@ class Doc:
     # -- indexing ---------------------------------------------------------
     def reindex(self) -> None:
         """Rebuild the front-matter and section index from self.lines."""
+        self.problems = []
         self._index_front_matter()
         self._index_sections()
 
@@ -99,3 +100,46 @@ class Doc:
         if found is None:
             return []
         return self.lines[found.start:found.end]
+
+    # -- writing ----------------------------------------------------------
+    def _tidy(self) -> List[str]:
+        """Collapse runs of blank lines outside fenced blocks (R5.2).
+
+        Content inside a fence is returned untouched — the renderer shows it as
+        source (R10.12) and the user may well mean those blank lines.
+        """
+        out: List[str] = []
+        in_fence = False
+        blanks = 0
+        for line in self.lines:
+            if line.lstrip().startswith(FENCE):
+                in_fence = not in_fence
+                out.append(line)
+                blanks = 0
+                continue
+            if in_fence:
+                out.append(line)
+                continue
+            if line.strip() == "":
+                blanks += 1
+                if blanks > 1:
+                    continue
+            else:
+                blanks = 0
+            out.append(line)
+        while out and out[-1].strip() == "":
+            out.pop()
+        return out
+
+    def render(self) -> bytes:
+        lines = self._tidy()
+        body = self.eol.join(lines)
+        if self.ends_with_newline and lines:
+            body += self.eol
+        return body.encode("utf-8")
+
+    def save(self) -> None:
+        """Write the file back, preserving its original line endings (R5.2)."""
+        self.lines = self._tidy()
+        self.path.write_bytes(self.render())
+        self.reindex()
