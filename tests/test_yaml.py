@@ -100,3 +100,30 @@ def test_fallback_path_normalises_identically(monkeypatch):
     fields, problems = parse_front_matter(["due: 2026-10-15", "count: 3", "active: true"])
     assert problems == []
     assert fields == {"due": "2026-10-15", "count": "3", "active": "true"}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["yes", "no", "true", "null", "007", "3.5", "Acme: phase 2", "# not a comment",
+     "- leading dash", "  padded  ", "~"],
+)
+def test_scalars_survive_their_own_round_trip(raw, monkeypatch):
+    """R3.4: what brain writes, both parsers must read back unchanged."""
+    line = "field: " + render_value(raw)
+    with_pyyaml, problems = parse_front_matter([line])
+    assert problems == []
+    assert with_pyyaml["field"] == raw
+    monkeypatch.setattr(_y, "HAVE_PYYAML", False)
+    fallback, problems = parse_front_matter([line])
+    assert problems == []
+    assert fallback["field"] == raw
+
+
+def test_list_items_containing_commas_survive(monkeypatch):
+    value = ["a, b", "c", "d]e"]
+    line = "tags: " + render_value(value)
+    with_pyyaml, _ = parse_front_matter([line])
+    assert with_pyyaml["tags"] == value
+    monkeypatch.setattr(_y, "HAVE_PYYAML", False)
+    fallback, _ = parse_front_matter([line])
+    assert fallback["tags"] == value

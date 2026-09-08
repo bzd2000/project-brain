@@ -81,6 +81,12 @@ def assert_only_changed(before: dict, after: dict, expected: dict,
                 f"({removed} removed, {added} added, limit {max_region}) "
                 "- not a surgical edit"
             )
+        elif allowed and prefix not in allowed:
+            problems.append(
+                f"{path}: edit begins at line {prefix}, but the test declared "
+                f"{sorted(allowed)}. A surgical insert must happen where the "
+                "mutation said it did, not merely somewhere nearby."
+            )
     assert not problems, "surgical edit violated:\n" + "\n".join(problems)
 
 

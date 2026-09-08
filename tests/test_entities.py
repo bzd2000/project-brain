@@ -168,3 +168,11 @@ def test_empty_inbox_yields_no_notes(tmp_path):
     path = tmp_path / "inbox.md"
     path.write_text("", encoding="utf-8")
     assert load_notes(path) == []
+
+
+def test_notes_carry_their_line_span_and_header(brain_tree):
+    """R4.6.4 deletes a note from inbox.md; that needs its line span."""
+    lines = (brain_tree / "inbox.md").read_text(encoding="utf-8").split("\n")
+    for note in load_notes(brain_tree / "inbox.md"):
+        assert lines[note.start] == note.header
+        assert lines[note.start + 1:note.end] == note.body

@@ -80,7 +80,7 @@ def test_add_bullet_newest_first_inserts_at_the_top(brain_tree):
     assert body[1] == "- 2026-09-03 - Reporting service live in prod, no incidents."
     after = snapshot(brain_tree)
     assert after["projects/acme-migration.md"][lineno] == "- 2026-09-08 - Cutover window agreed."
-    assert_only_changed(before, after, {"projects/acme-migration.md": set()})
+    assert_only_changed(before, after, {"projects/acme-migration.md": {lineno}})
 
 
 def test_add_bullet_appends_after_the_last_bullet_not_after_the_blank(brain_tree):
@@ -153,3 +153,20 @@ def test_set_section_does_not_disturb_neighbouring_sections(brain_tree):
     reloaded = Doc(path)
     assert reloaded.section_lines("Pending")[0].startswith("- 2026-09-04 - Terraform vs ARM")
     assert reloaded.section_lines("Minutes")[0] == "### 2026-08-20"
+
+
+def test_unclosed_fence_is_recorded_and_refuses_writes(tmp_path):
+    """R4.2.4 on read, R6.2/R10.11 on write: the condition is visible to
+    `brain check`, and no mutation guesses at section boundaries."""
+    path = tmp_path / "fenced.md"
+    path.write_text("## Log\n- entry\n\n```\nnever closed\n", encoding="utf-8")
+    doc = Doc(path)
+    assert "fence opened but never closed" in doc.problems
+    for call in (
+        lambda: doc.ensure_section("Summary", PROJECT_SECTIONS),
+        lambda: doc.add_bullet("Log", "- another", newest_first=True),
+        lambda: doc.set_section("Log", "replaced"),
+    ):
+        with pytest.raises(ValueError):
+            call()
+    assert doc.lines == ["## Log", "- entry", "", "```", "never closed"]

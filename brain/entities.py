@@ -82,7 +82,7 @@ class Entity:
 
     @property
     def tags(self):
-        value = self.fm.get("tags", [])
+        value = self.fm.get("tags") or []
         return value if isinstance(value, list) else [value]
 
     def __repr__(self):
@@ -130,13 +130,13 @@ class Party(Entity):
         self.next_meeting = self.fm.get("next_meeting")
 
     def concerns(self):
-        return self.doc.section_lines("Concerns", "Purpose")
+        return [l for l in self.doc.section_lines("Concerns", "Purpose") if l.strip()]
 
     def pending(self):
         return [l for l in self.doc.section_lines("Pending") if l.strip()]
 
     def history(self):
-        return self.doc.section_lines("History", "Minutes")
+        return [l for l in self.doc.section_lines("History", "Minutes") if l.strip()]
 
 
 class Stakeholder(Party):
@@ -199,6 +199,9 @@ class Note(NamedTuple):
     tags: List[str]
     body: List[str]
     problems: List[str]
+    start: int = 0
+    end: int = 0
+    header: str = ""
 
 
 def load_notes(path):
@@ -235,8 +238,11 @@ def load_notes(path):
         body = lines[start + 1:end]
         match = NOTE_HEADER.match(header)
         if match is None:
-            notes.append(Note(None, None, "note", [], body,
-                              ["unrecognised note header: {!r}".format(header)]))
+            notes.append(Note(
+                id=None, captured=None, type="note", tags=[], body=body,
+                problems=["unrecognised note header: {!r}".format(header)],
+                start=start, end=end, header=header,
+            ))
             continue
         raw_type = (match.group("type") or "").strip()
         problems = []
@@ -250,5 +256,8 @@ def load_notes(path):
             tags=tags,
             body=body,
             problems=problems,
+            start=start,
+            end=end,
+            header=header,
         ))
     return notes

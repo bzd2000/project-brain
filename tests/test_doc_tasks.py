@@ -56,7 +56,7 @@ def test_add_action_appends_and_touches_one_line(brain_tree):
     assert after["projects/acme-migration.md"][lineno] == (
         "- [ ] Draft the rollback plan  @me  due:2026-09-11"
     )
-    assert_only_changed(before, after, {"projects/acme-migration.md": set()})
+    assert_only_changed(before, after, {"projects/acme-migration.md": {lineno}})
 
 
 def test_add_log_and_add_decision_are_newest_first(brain_tree):

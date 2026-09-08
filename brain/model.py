@@ -154,6 +154,8 @@ class Doc:
                 continue
             if line.startswith("## "):
                 headers.append((i, line[3:].strip()))
+        if in_fence:
+            self.problems.append("fence opened but never closed")
         for n, (lineno, name) in enumerate(headers):
             end = headers[n + 1][0] if n + 1 < len(headers) else len(self.lines)
             self.sections[name] = Section(name, lineno, lineno + 1, end)
@@ -194,6 +196,19 @@ class Doc:
         self.lines[0:0] = ["---", "---", ""]
         self.reindex()
 
+    def _refuse_if_unclosed_fence(self) -> None:
+        """Section structure is unknowable past an unclosed fence.
+
+        Reading stays tolerant (R4.2.4) and loses nothing, but a write would be
+        guessing where sections begin and end - so it is refused, the same way
+        an unterminated front-matter block is (R6.2, R10.11).
+        """
+        if "fence opened but never closed" in self.problems:
+            raise ValueError(
+                "{}: a code fence is opened but never closed; refusing to "
+                "write. Close the fence first.".format(self.path)
+            )
+
     def set_field(self, key: str, value) -> int:
         """Set one front-matter field, touching exactly one line.
 
@@ -221,6 +236,7 @@ class Doc:
     # -- section mutation --------------------------------------------------
     def ensure_section(self, name: str, order) -> Section:
         """Create `name` if absent, positioned per `order` (R4.2.1)."""
+        self._refuse_if_unclosed_fence()
         if name in self.sections:
             return self.sections[name]
         order = list(order)
@@ -251,6 +267,7 @@ class Doc:
         `## Log` and `## Decisions` are newest-first; `## Next actions` appends
         (R4.2.1). The caller decides which, because Doc has no entity type.
         """
+        self._refuse_if_unclosed_fence()
         found = self.section(section)
         if found is None:
             raise KeyError("no section {!r} in {}".format(section, self.path))
@@ -284,6 +301,7 @@ class Doc:
         added; it is what tells the user not to hand-edit the block, and what
         `brain check` reads to warn when they did.
         """
+        self._refuse_if_unclosed_fence()
         found = self.section(name)
         if found is None:
             raise KeyError("no section {!r} in {}".format(name, self.path))
