@@ -948,11 +948,20 @@ def test_log_appends_newest_first_and_commits(brain_repo):
     assert g.authored(brain_repo, "projects/acme-migration.md")
 
 
-def test_status_set_changes_one_line(brain_repo):
+def test_status_set_touches_only_status_and_updated(brain_repo):
+    """R4.2.3 makes `updated:` authoritative and set by every write, so a status
+    change is exactly two lines - index 2 and index 6 of the q4-budget fixture.
+
+    Naming both is what makes this assertion mean anything. An empty set would
+    be unsatisfiable for an equal-length file, and widening the harness to
+    accept it would disable per-line checking for the file entirely - which is
+    the hole R5.1's harness exists to close.
+    """
     before = snapshot(brain_repo)
     _run(brain_repo, "status set q4-budget active")
     after = snapshot(brain_repo)
-    assert_only_changed(before, after, {"projects/q4-budget.md": set()})
+    assert_only_changed(before, after, {"projects/q4-budget.md": {2, 6}})
+    assert after["projects/q4-budget.md"][2] == "status: active"
     assert Project(brain_repo / "projects" / "q4-budget.md").status == "active"
 
 
