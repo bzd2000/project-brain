@@ -343,20 +343,32 @@ def authored(root, path) -> bool:
         return False
     if _git(["diff", "--quiet", "HEAD", "--", path], root, check=False).returncode != 0:
         return False
-    body = _git(["log", "-1", "--format=%B", "--", path], root).stdout
-    return "Brain-Source:" in body
+    # Read the trailer through git's own parser, not by scanning the message.
+    # A body can quote anything (R8.3), and a substring match here runs the
+    # WRONG way: a hand-made commit that merely mentions the trailer would be
+    # counted as brain-authored, erasing the violation R3.2 exists to surface.
+    source = _git(
+        ["log", "-1", "--format=%(trailers:key=Brain-Source,valueonly)", "--", path],
+        root,
+    ).stdout.strip()
+    return bool(source)
 
 
 def unauthored(root) -> List[str]:
     """Every brain path whose current content did not come through `brain`."""
     root = Path(root)
-    offenders = []
+    candidates = set()
     for name in BRAIN_FILES:
-        if (root / name).exists() and not authored(root, name):
-            offenders.append(name)
+        if (root / name).exists():
+            candidates.add(name)
     for directory in BRAIN_DIRS:
-        for target in sorted((root / directory).glob("*.md")):
-            rel = target.relative_to(root).as_posix()
-            if not authored(root, rel):
-                offenders.append(rel)
-    return offenders
+        for target in (root / directory).glob("*.md"):
+            candidates.add(target.relative_to(root).as_posix())
+    # Everything git still tracks, too. A file deleted by hand is gone from the
+    # disk walk, and a hand-deletion is exactly the unauthored change R3.2 wants
+    # made visible - an offender must not escape the report by ceasing to exist.
+    for tracked in _git(["ls-files"], root).stdout.splitlines():
+        tracked = tracked.strip()
+        if tracked and is_brain_path(root, tracked):
+            candidates.add(tracked)
+    return [rel for rel in sorted(candidates) if not authored(root, rel)]

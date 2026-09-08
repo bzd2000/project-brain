@@ -32,6 +32,30 @@ def test_an_untracked_file_is_not_authored(git_root):
     assert g.authored(git_root, "projects/stray.md") is False
 
 
+def test_a_prose_mention_of_the_trailer_does_not_confer_authorship(git_root):
+    """R3.2 exists so a violation is visible. A body that merely MENTIONS the
+    trailer must not make a hand-made commit look brain-authored - that failure
+    runs the wrong way, hiding the offender instead of over-reporting it."""
+    (git_root / "inbox.md").write_text("## n50 - by hand\nbody\n", encoding="utf-8")
+    g.run(["add", "--", "inbox.md"], git_root)
+    g.run(
+        ["commit", "-q", "-m",
+         "hand edit\n\nreminder: Brain-Source: is the trailer brain writes"],
+        git_root,
+    )
+    assert g.authored(git_root, "inbox.md") is False
+    assert "inbox.md" in g.unauthored(git_root)
+
+
+def test_a_hand_deleted_file_is_still_reported(git_root):
+    """An offender must not escape the report by ceasing to exist on disk."""
+    (git_root / "inbox.md").write_text("## n51 - note\nbody\n", encoding="utf-8")
+    g.commit(git_root, ["inbox.md"], "brain: capture n51", source="tui")
+    (git_root / "inbox.md").unlink()
+    assert g.authored(git_root, "inbox.md") is False
+    assert "inbox.md" in g.unauthored(git_root)
+
+
 def test_unauthored_lists_every_offender(git_root):
     _touch(git_root, "inbox.md", "## n23 - note\nbody\n")
     g.commit(git_root, ["inbox.md"], "brain: capture n23", source="tui")
