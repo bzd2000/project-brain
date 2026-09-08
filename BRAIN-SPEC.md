@@ -126,6 +126,9 @@ under `projects/`, `stakeholders/`, `boards/`, `programs/` by hand.
 |---|---|---|
 | `brain/model.py` | `Doc` — line-aware markdown; entity loading | stdlib |
 | `brain/entities.py` | Program, Project, Stakeholder, Board, Note | stdlib |
+| `brain/root.py` | Root discovery (R4.0) and `brain init` | stdlib |
+| `brain/grammar.py` | The line grammar of R6.4 | stdlib |
+| `brain/resolve.py` | Reference resolution (R6.2) | stdlib |
 | `brain/commands.py` | The command verbs and their execution | stdlib |
 | `brain/index.py` | `_index.json`, digests, search index | stdlib |
 | `brain/git.py` | commit, checkpoint, diff, revert | stdlib |
@@ -486,6 +489,7 @@ brain agenda set <stakeholder|board> -f -      # write ## Next agenda from stdin
 brain minutes add <board> --date <d> -f -      # append a sitting
 brain met <stakeholder|board> [--date d]       # roll agenda into history, clear pending
 
+brain init [path]              # create a brain root here (see R6.9)
 brain new project|program|stakeholder|board -- <name>
 brain link <project> --program <program>
 
@@ -592,6 +596,15 @@ N changes across N files, one revertible commit — and unlike a multi-edit it n
 only slugs, not the prior contents of every file it touches.
 
 ### 6.3 Search
+
+**R6.9 `brain init [path]`** creates a brain root: the four entity directories,
+an empty `inbox.md` and `_request.md`, a `_seq` containing `0`, the
+`.gitattributes` of R5.4, and a `.gitignore` naming `_index.json` and
+`.brain.lock`. It runs `git init` when the target is not already a repository,
+because R11.1a makes git a precondition of every write and nothing else would
+satisfy it for a fresh directory. **Its first commit carries the `Brain-Source:`
+trailer** — otherwise the user's very first `brain check --authored` reports
+their entire brain as a violation (R11.6).
 
 **R6.7** `brain search -- <query>` matches tokens case-insensitively against slug,
 title, tags and section text, printing hits grouped by entity kind — one line
