@@ -460,6 +460,22 @@ def test_a_line_with_no_verb_is_an_error():
         gr.parse_line(" -- orphaned text")
 
 
+@pytest.mark.parametrize("line", ["log acme --", "-- orphan", "log acme -- "])
+def test_every_spelling_of_a_broken_separator_fails_the_same_way(line):
+    """One user error, one explanation. These differ only by a space, and
+    without the bare-`--` check they would fail at three different layers."""
+    with pytest.raises(GrammarError):
+        gr.parse_line(line)
+
+
+def test_a_flag_whose_value_looks_like_a_flag_is_an_error():
+    """`--owner --due 2026-09-11` would otherwise store "--due" as the owner
+    and drop the due date - a silent misparse where R6.2 wants an error."""
+    with pytest.raises(GrammarError) as excinfo:
+        gr.split_flags(["action", "add", "a", "--owner", "--due", "2026-09-11"])
+    assert "owner" in str(excinfo.value)
+
+
 def test_a_repeated_flag_accumulates():
     """§6.1 writes `[--tag @ref]...`; overwriting would silently drop tags."""
     _, flags = gr.split_flags(["note", "add", "--tag", "@acme", "--tag", "@q4"])
@@ -539,6 +555,15 @@ def parse_line(line: str) -> Optional[ParsedLine]:
     tokens = head.split()
     if not tokens:
         raise GrammarError("{!r}: no verb before the ` -- ` separator".format(raw))
+    if "--" in tokens:
+        # `log a --` and `-- orphan` are the same mistake as `log a -- ` and
+        # ` -- orphan`, differing only by a space. Without this they would slip
+        # past as ordinary tokens and fail later, elsewhere, with a different
+        # message - one user error should have one explanation.
+        raise GrammarError(
+            "{!r}: a bare `--` means nothing here. The separator is ` -- ` - a "
+            "space on each side - with free text after it.".format(raw)
+        )
     return ParsedLine(tokens=tokens, text=text, raw=raw)
 
 
@@ -561,6 +586,15 @@ def split_flags(tokens) -> Tuple[List[str], Dict[str, str]]:
             if index + 1 >= len(tokens):
                 raise GrammarError("--{} needs a value".format(name))
             value = tokens[index + 1]
+            if value.startswith("--"):
+                # `--owner --due 2026-09-11` would otherwise store "--due" as
+                # the owner and drop the due date entirely: a silent misparse
+                # where R6.2 wants an error.
+                raise GrammarError(
+                    "--{} needs a value, but the next token is {!r}".format(
+                        name, value
+                    )
+                )
             # §6.1 writes `[--tag @ref]...` - a repeatable flag. Joining rather
             # than overwriting keeps the last one from silently winning.
             flags[name] = (flags[name] + " " + value) if name in flags else value
@@ -574,12 +608,12 @@ def split_flags(tokens) -> Tuple[List[str], Dict[str, str]]:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_grammar.py -v`
-Expected: 12 passed.
+Expected: 15 passed.
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 178 passed.
+Expected: 181 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -822,7 +856,7 @@ Expected: 12 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 190 passed.
+Expected: 193 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1156,7 +1190,7 @@ Expected: 9 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 199 passed.
+Expected: 202 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1435,7 +1469,7 @@ Leave the invariants list alone.
 - [ ] **Step 8: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 206 passed.
+Expected: 209 passed.
 
 - [ ] **Step 9: Commit**
 
@@ -1457,7 +1491,7 @@ locked-down machine will not put a console shim on PATH."
 ## Milestone 3a done — stop here
 
 ```bash
-.venv/bin/python -m pytest -q          # 206 passed
+.venv/bin/python -m pytest -q          # 209 passed
 .venv/bin/python -m brain init /tmp/demo-brain
 ```
 
