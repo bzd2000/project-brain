@@ -93,6 +93,9 @@ include = ["brain*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Put the repo root on sys.path so `import brain` works before the package is
+# installed. pytest only inserts tests/ on its own, which is not enough.
+pythonpath = ["."]
 ```
 
 `.gitignore`:
