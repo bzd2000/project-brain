@@ -693,6 +693,16 @@ def test_an_exact_slug_beats_an_ambiguous_prefix(brain_tree):
     assert rv.resolve(brain_tree, "acme").slug == "acme"
 
 
+@pytest.mark.parametrize("ref", ["", "-", "---", "   ", "!!!"])
+def test_a_reference_with_nothing_in_it_is_unknown_not_ambiguous(brain_tree, ref):
+    """`startswith("")` is True for every slug, so without a guard the prefix
+    pass matches the whole brain and reports it as an ambiguity. Being told
+    your reference is ambiguous among everything is a worse answer than being
+    told it is empty."""
+    with pytest.raises(UnknownReference):
+        rv.resolve(brain_tree, ref)
+
+
 def test_unknown_reference_says_so(brain_tree):
     with pytest.raises(UnknownReference) as excinfo:
         rv.resolve(brain_tree, "nothing-like-this")
@@ -794,8 +804,17 @@ def _one(matches, ref, pass_name):
 
 def resolve(root, ref: str, kinds=None):
     """Resolve `ref` to one entity, or raise (R6.2)."""
-    entities = _candidates(root, kinds)
     wanted = normalise(ref)
+    if not wanted:
+        # Every pass would otherwise match everything - `startswith("")` is True
+        # for every slug - and the user would be told their reference is
+        # ambiguous among the entire brain. An empty reference is a different
+        # mistake from an ambiguous one, and deserves to be told apart.
+        raise UnknownReference(
+            "{!r} is not a reference to anything: it has no letters or digits "
+            "in it. Name a slug or a title.".format(ref)
+        )
+    entities = _candidates(root, kinds)
 
     found = _one([e for e in entities if e.slug == ref], ref, "slug")
     if found is not None:
@@ -851,12 +870,12 @@ def resolve_action(project, ref: str):
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_resolve.py -v`
-Expected: 12 passed.
+Expected: 17 passed (the parametrised empty-reference test contributes five).
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 194 passed.
+Expected: 199 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1190,7 +1209,7 @@ Expected: 9 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 203 passed.
+Expected: 208 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1469,7 +1488,7 @@ Leave the invariants list alone.
 - [ ] **Step 8: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 210 passed.
+Expected: 215 passed.
 
 - [ ] **Step 9: Commit**
 
@@ -1491,7 +1510,7 @@ locked-down machine will not put a console shim on PATH."
 ## Milestone 3a done — stop here
 
 ```bash
-.venv/bin/python -m pytest -q          # 210 passed
+.venv/bin/python -m pytest -q          # 215 passed
 .venv/bin/python -m brain init /tmp/demo-brain
 ```
 
