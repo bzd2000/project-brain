@@ -85,6 +85,35 @@ def test_note_ids_never_reuse(brain_repo):
     assert (brain_repo / "_seq").read_text(encoding="utf-8").strip() == "4"
 
 
+def test_note_add_preserves_the_inbox_line_endings(brain_repo):
+    """R5.2 on C5's primary platform: adding to a CRLF inbox must not rewrite
+    the file's endings, and R4.6.1 says the existing bodies survive untouched."""
+    inbox = brain_repo / "inbox.md"
+    inbox.write_bytes(b"## n1 \xc2\xb7 2026-09-07 09:00 \xc2\xb7 note \xc2\xb7\r\nfirst body\r\n")
+    before = inbox.read_bytes()
+    _run(brain_repo, "note add note -- second body")
+    after = inbox.read_bytes()
+    assert after.startswith(before)
+    assert b"\r\n" in after
+    assert b"\n" not in after.replace(b"\r\n", b"")
+
+
+def test_a_failed_commit_leaves_no_uncommitted_edit(brain_repo, monkeypatch):
+    """Otherwise the edit sits in the tree and the NEXT verb's commit sweeps it
+    up as though the user had asked for it."""
+    path = brain_repo / "projects" / "acme-migration.md"
+    before = path.read_bytes()
+
+    def boom(*args, **kwargs):
+        raise g.GitError("commit refused")
+
+    monkeypatch.setattr(c.git, "commit", boom)
+    with pytest.raises(g.GitError):
+        _run(brain_repo, "log acme-migration -- should roll back")
+    assert path.read_bytes() == before
+    assert g.run(["status", "--porcelain"], brain_repo) == ""
+
+
 def test_a_free_text_verb_without_the_separator_is_an_error(brain_repo):
     """R6.4a: an error naming the line, never a guess."""
     with pytest.raises(GrammarError) as excinfo:

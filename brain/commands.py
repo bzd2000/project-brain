@@ -121,13 +121,26 @@ def _note_add(root, positional, flags, text):
     if tags:
         header += " · " + " ".join(tags)
 
+    # Bytes, not text. `read_text`/`write_text` would translate an existing
+    # CRLF inbox to LF, and C5 makes Windows the primary platform - so the one
+    # file holding the user's captured words would be rewritten by the act of
+    # adding to it. R5.2 keeps a file's own endings; R4.6.1 keeps the body.
+    #
+    # This is also the one verb that does NOT go through `Doc`, deliberately:
+    # `Doc.save()` collapses runs of blank lines (R5.2), and a note body may
+    # contain them. Tidying the user's words is exactly what R4.6.1 forbids.
     inbox = Path(root) / "inbox.md"
-    existing = inbox.read_text(encoding="utf-8") if inbox.exists() else ""
-    if existing and not existing.endswith("\n"):
-        existing += "\n"
+    existing = inbox.read_bytes() if inbox.exists() else b""
+    crlf = existing.count(b"\r\n")
+    eol = b"\r\n" if crlf > existing.count(b"\n") - crlf else b"\n"
+    if existing and not existing.endswith(eol):
+        existing += eol
     if existing:
-        existing += "\n"
-    inbox.write_text(existing + header + "\n" + text + "\n", encoding="utf-8")
+        existing += eol
+    block = header.encode("utf-8") + eol + text.encode("utf-8")
+    if not block.endswith(eol):
+        block += eol
+    inbox.write_bytes(existing + block)
     (Path(root) / "_seq").write_text("{}\n".format(number), encoding="utf-8")
     return "captured {}".format(note_id), ["inbox.md", "_seq"]
 
@@ -154,6 +167,16 @@ def execute(root, parsed, source: str = "cli") -> str:
 
     git.require_repo(root)
     with lock.held(root):
-        message, paths = found.run(root, rest, flags, parsed.text)
-        git.commit(root, paths, "brain: " + message, source=source)
+        # Checkpoint before the verb runs, not after: if `commit` fails once
+        # `Doc.save()` has already written, the edit would sit uncommitted and
+        # the NEXT verb's commit would sweep it up as though the user had asked
+        # for it. R6.5 builds this machinery for batches; a single verb has the
+        # same failure and deserves the same answer.
+        checkpoint = git.checkpoint(root, git.brain_paths(root))
+        try:
+            message, paths = found.run(root, rest, flags, parsed.text)
+            git.commit(root, paths, "brain: " + message, source=source)
+        except Exception:
+            git.restore(root, checkpoint)
+            raise
     return message

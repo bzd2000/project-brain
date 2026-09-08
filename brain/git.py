@@ -77,6 +77,19 @@ BRAIN_FILES = (
 )
 
 
+def brain_paths(root) -> List[str]:
+    """Every brain path present in the tree, relative and POSIX."""
+    root = Path(root)
+    found = []
+    for name in BRAIN_FILES:
+        if (root / name).exists():
+            found.append(name)
+    for directory in BRAIN_DIRS:
+        for target in sorted((root / directory).glob("*.md")):
+            found.append(target.relative_to(root).as_posix())
+    return found
+
+
 def is_brain_path(root, path) -> bool:
     """True when `path` is one this tool may stage (R11.2)."""
     rel = Path(path)
@@ -383,13 +396,7 @@ def authored(root, path) -> bool:
 def unauthored(root) -> List[str]:
     """Every brain path whose current content did not come through `brain`."""
     root = Path(root)
-    candidates = set()
-    for name in BRAIN_FILES:
-        if (root / name).exists():
-            candidates.add(name)
-    for directory in BRAIN_DIRS:
-        for target in (root / directory).glob("*.md"):
-            candidates.add(target.relative_to(root).as_posix())
+    candidates = set(brain_paths(root))
     # Everything git still tracks, too. A file deleted by hand is gone from the
     # disk walk, and a hand-deletion is exactly the unauthored change R3.2 wants
     # made visible - an offender must not escape the report by ceasing to exist.
