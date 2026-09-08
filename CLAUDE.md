@@ -11,7 +11,11 @@ screens to build against:
   is written as a requirement (`R<n>`), not an option. Read it end to end before
   writing anything.
 - `START-HERE.md` — the handover note: build order and the two failure modes the
-  author is most worried about.
+  author is most worried about. It predates the amendments, so its milestone
+  numbering is a step behind §12 on git; the spec wins.
+- `docs/superpowers/specs/2026-09-08-brain-spec-amendments-design.md` — why the
+  spec says what it says wherever it was changed. Read it before re-litigating a
+  requirement that looks arbitrary.
 - `design/*.png` — a rendered screen per view. Look at these before building UI;
   they settle spacing, colour and density that the prose does not. Where §10 and
   the screens disagree, **screens win on appearance, spec wins on behaviour**.
@@ -73,7 +77,16 @@ Violating any of these silently breaks the design's economics or its trust model
 11. **Git is narrow.** Stage only entity paths and `inbox.md`, always by explicit
     path — never `git add -A`. Never push, fetch, pull, merge, rebase, branch,
     amend or clean (R11.2, R11.4, A10).
-12. **No servers, no listening sockets, not even loopback** (C2).
+12. **No servers, no listening sockets, not even loopback** (C2). A `.brain.lock`
+    file is not a socket and is how concurrent writes are serialised (R11.7).
+13. **Free text is always last and always follows ` -- `** (R6.4). Left of the
+    separator tokenises without quoting; right of it is literal to end of line. A
+    free-text verb missing the separator is an error naming the line, never a
+    guess (R6.4a). Note bodies never travel by argv — capture uses
+    `note add -f -` — because argv is pre-tokenised and R4.6.1 demands bytes.
+14. **Git is required** (R11.1a); there is no non-git fallback. `Brain-Source:`
+    commit trailers are what `undo` and `check --authored` both read (R11.5,
+    R11.6).
 
 ## Module map (§3.3)
 
@@ -93,9 +106,11 @@ Rejected dependencies, so nobody re-proposes them: `rich` (ships with textual),
 ## Data model shape
 
 Four entity types plus notes, all markdown under `programs/`, `projects/`,
-`stakeholders/`, `boards/`, plus `inbox.md`, `_request.md`, and the derived,
-gitignored `_index.json`. Markdown is the single source of truth; everything
-derived is disposable (C3).
+`stakeholders/`, `boards/`, plus `inbox.md`, `_request.md`, the committed `_seq`
+note-id counter, and the derived, gitignored `_index.json`. Markdown is the single
+source of truth; everything derived is disposable (C3). **The data root is not
+this repo** — it is a separate git repository, found via `--root`, `$BRAIN_ROOT`,
+or the nearest ancestor holding an `inbox.md` (R4.0).
 
 - **Membership is declared on the child** (a project names its `program:`);
   **interest is declared by the interested party** (a stakeholder or board names
@@ -115,8 +130,10 @@ derived is disposable (C3).
 Each step is usable and testable before the next exists.
 
 1. `model.py` + `entities.py` — `Doc`, four entity types, tolerant loading (A4, A13)
-2. `commands.py` + `cli.py` — every verb, resolution, `apply`, `--dry-run`; no UI
-3. `git.py` — before anything writes on the user's behalf; `undo` depends on it
+2. `git.py` — commit, checkpoint, undo, the `.brain.lock` of R11.7. It comes
+   second because R11.1a makes git a precondition of every write
+3. `commands.py` + `cli.py` — every verb, the R6.4 grammar, resolution, `apply`,
+   `--dry-run`; no UI
 4. `index.py` — `_index.json`, roll-ups, `brain context`, `brain search`
 5. `tui.py` — **then stop and use it for a week with no agent at all**
 6. `AGENTS.md` + `process inbox`, tuned against real captured notes

@@ -146,6 +146,11 @@ is withdrawn from the vetted list.
 Rejected, so nobody re-proposes them: `rich` (comes with textual), `watchdog`
 (poll mtime), `tiktoken` (estimate `len/4`), anything Node.
 
+**R3.5 Installation.** `brain` is a console entry point (`brain = brain.cli:main`)
+installed with `pip install -e .`, and `python -m brain` is always equivalent —
+the fallback for a locked-down machine that will not put a shim on `PATH`. The TUI
+invokes whichever form it was started with, so it never depends on `PATH`.
+
 ---
 
 ## 4. Data model
@@ -153,17 +158,24 @@ Rejected, so nobody re-proposes them: `rich` (comes with textual), `watchdog`
 Four entity types plus notes. All markdown, all hand-editable, all diffable.
 
 ```
-brain/
+<root>/
   programs/<slug>.md
   projects/<slug>.md
   stakeholders/<slug>.md
   boards/<slug>.md
   inbox.md                 raw capture, unprocessed
   _request.md              queued jobs for the agent
-  _index.json              derived
+  _seq                     note id high-water mark, committed
+  _index.json              derived, gitignored
   AGENTS.md                how the agent must behave
   _templates/*.md
 ```
+
+**R4.0 The data root is not the source tree.** `brain/` in §3.3 is the Python
+package; the brain itself is a separate git repository. The root resolves as
+`--root`, then `$BRAIN_ROOT`, then the nearest ancestor of the working directory
+holding an `inbox.md`. This is what makes C3 literal: delete the tool and the
+notes remain a self-contained, backed-up repository.
 
 ### 4.1 Membership vs interest
 
@@ -378,6 +390,12 @@ why, so a bad run loses nothing and can be re-run.
 **R4.6.5** Anything the parser doesn't understand is preserved verbatim and
 treated as an untagged `note`. `inbox.md` must survive being scribbled in by hand.
 
+**R4.6.6 Ids are never reused.** Processing empties `inbox.md`, so the highest id
+in the file is not a high-water mark. The next id is `max(_seq, highest id in
+inbox.md) + 1`, and `_seq` is written and committed with the note. Reuse would
+break the traceability chain of R8.3 and R11.3 silently, because a commit citing
+`n7` would no longer name one note.
+
 ### 4.7 `_request.md`
 
 The TUI's queue of jobs for the agent.
@@ -431,6 +449,10 @@ preserves the file's original line endings.
 **R5.3** Loading a project returns tasks with **absolute line numbers**, so any
 single checkbox can be toggled without re-searching.
 
+**R5.4** The brain repository ships a `.gitattributes` marking `*.md` as `-text`.
+Without it `core.autocrlf` rewrites line endings on Windows — the platform C5
+names primary — and silently defeats R5.2.
+
 ---
 
 ## 6. `brain` — the CLI
@@ -441,39 +463,48 @@ both; there is no privileged path.
 ### 6.1 Verbs
 
 ```
-brain note add <type> <text> [--tag @ref]... [--due when]
+brain note add <type> [-f -] [--tag @ref]... [--due when] [-- <text>]
 brain note list [--type t] [--unprocessed]
 brain note show <id>
+brain note flag <id> -- <reason>
 brain note drop <id>
 
-brain log <project> <text>
-brain action add <project> <text> [--owner who] [--due when]
-brain action done <project> <n|words>
-brain action due <project> <n|words> <when>
-brain decision add <project> <text>
-brain question add <project> <text>
+brain log <project> -- <text>
+brain action add <project> [--owner who] [--due when] -- <text>
+brain action done <project> <n> | <project> -- <words>
+brain action due <project> --to <when> <n> | <project> --to <when> -- <words>
+brain decision add <project> -- <text>
+brain question add <project> -- <text>
 brain status set <project> <status>
 brain health set <project> <health>
-brain field set <entity> <key> <value>
+brain field set <entity> <key> -- <value>
 
-brain raise <stakeholder|board> <text> [--ref project]
+brain raise <stakeholder|board> [--ref project] -- <text>
 brain agenda material <stakeholder|board>      # deterministic gather, to stdout
 brain agenda set <stakeholder|board> -f -      # write ## Next agenda from stdin
 brain minutes add <board> --date <d> -f -      # append a sitting
 brain met <stakeholder|board> [--date d]       # roll agenda into history, clear pending
 
-brain new project|program|stakeholder|board <name>
+brain new project|program|stakeholder|board -- <name>
 brain link <project> --program <program>
 
 brain apply [-f file|-]        # batch: many of the above, one commit, atomic
 brain context [--for <target>] # the compact digest for a model
-brain search <query>
+brain search -- <query>
 brain build                    # _index.json + program roll-ups
-brain check [--authored]
-brain request add|list|done <text|n>
+brain check [--authored] [--fix]
+brain request add -- <text> | list | done <n>
 brain undo
-brain rewrite <entity>         # escape hatch, §8.4
+brain rewrite <entity> [--finish|--abort]   # escape hatch, §8.4
 ```
+
+**R6.0** Free text is always last on the line and always follows a ` -- `
+separator (R6.4) — in every verb, not only the ones in the worked example. Any
+other argument is enumerated (`status`, `health`), a bare integer selector, or a
+flag; `action due` takes `--to` for exactly this reason, so a date can never be
+mistaken for the tail of a substring match. One grammar serves the shell, `brain apply` and the TUI's
+COMMAND mode, so there is one parser and one thing to learn. `note flag` and
+`check --fix` are verbs because R7.1.5 and R9.3 already depend on them.
 
 **R6.1** Every verb prints one short line of result to stdout and exits non-zero
 on failure with the reason on stderr. Machine-readable `--json` on every read verb.
@@ -504,18 +535,46 @@ file for consumption by a model** — that is what makes the design cheap.
 
 ### 6.2 Batch apply
 
-**R6.4** `brain apply` reads commands from a file or stdin, one per line, blank
-lines and `#` comments ignored:
+**R6.4 Grammar.** `brain apply` reads commands from a file or stdin, one per
+line. A line is:
+
+```
+<verb> [<target>] [--flag value]... [ -- <free text to end of line> ]
+```
+
+It is split at the **first ` -- `** (space, two dashes, space). Left of the
+separator: verb, target and flags — no free text, so it tokenises without
+quoting. Right of it: taken **literally, byte for byte, to end of line**.
+Apostrophes, em-dashes, colons, `#` and any further ` -- ` are ordinary text.
+This is not a cosmetic choice — the n7 example below contains `she's`, which a
+shell-style lexer treats as an unbalanced quote, so A7 would fail on its own
+input.
+
+**R6.4a A free-text verb requires the separator.** `log acme-migration Steering
+call` is an error naming the line, never a guess: R6.2 governs grammar as much as
+references. There is exactly one way to write each command, and getting it wrong
+is loud rather than lossy.
+
+**R6.4b Comments and blanks.** A line whose first non-whitespace character is `#`
+is ignored, as are blank lines. A `#` anywhere else is ordinary text. Comments
+exist to absorb a model's stray annotation without aborting a whole batch — not
+for authoring, which is what the individual verbs are for.
+
+**R6.4c** Invoked directly from a shell rather than through `apply`, free text
+arrives already tokenised as argv and is rejoined with single spaces. Note bodies,
+which R4.6.1 requires byte for byte, therefore never travel by argv: capture uses
+`brain note add -f -`.
 
 ```bash
 brain apply <<'EOF'
-log acme-migration Steering call: finance published the cost-centre codes
+# n7 — steering call
+log acme-migration -- Steering call: finance published the cost-centre codes
 status set q4-budget active
-action add acme-migration Draft the rollback plan --owner me --due 2026-09-11
-action add acme-migration Confirm cutover window --owner sara --due 2026-09-11
-decision add acme-migration Terraform over ARM, pending board sign-off
-raise arch-board Terraform vs ARM needs formal sign-off --ref acme-migration
-raise ann Budget impact of the cost-centre delay — asked on the 18th
+action add acme-migration --owner me --due 2026-09-11 -- Draft the rollback plan
+action add acme-migration --owner sara --due 2026-09-11 -- Confirm cutover window
+decision add acme-migration -- Terraform over ARM, pending board sign-off
+raise arch-board --ref acme-migration -- Terraform vs ARM needs formal sign-off
+raise ann -- Budget impact of the cost-centre delay — she's asked on the 18th
 note drop n7
 EOF
 ```
@@ -523,11 +582,21 @@ EOF
 **R6.5** A batch is **atomic**: validated in full, then applied, then committed as
 one git commit. Any invalid line aborts the whole batch with nothing written and
 the offending line reported. `--dry-run` prints the intended effect and writes
-nothing.
+nothing. Validation completes before any write, and a checkpoint is taken before
+the first one, so a failure part-way through the writes restores the tree instead
+of leaving it half-applied.
 
 **R6.6** This is what replaces a multi-file edit. One invocation, one round trip,
 N changes across N files, one revertible commit — and unlike a multi-edit it needs
 only slugs, not the prior contents of every file it touches.
+
+### 6.3 Search
+
+**R6.7** `brain search -- <query>` matches tokens case-insensitively against slug,
+title, tags and section text, printing hits grouped by entity kind — one line
+each: kind, slug, the matching line. `--json` for the TUI. It reads entity files,
+which `brain context` never does, because it serves a human at a terminal and the
+TUI's `/`. It is not part of any agent job (§9) and so does not bear on A3.
 
 ---
 
@@ -548,7 +617,7 @@ Lives at the repo root; the Copilot CLI reads it automatically. Mirrored to
 4. Note bodies are the user's words. Quote them; never paraphrase into the log as
    if it were their phrasing.
 5. If a note cannot be placed, leave it and record why with
-   `brain note flag <id> "<reason>"`. Never guess a target.
+   `brain note flag <id> -- <reason>`. Never guess a target.
 6. Answers are read in a terminal pane: short, no preamble, no restating.
 
 **R7.2 Named jobs**, so a two-word instruction in the bottom pane is enough:
@@ -635,6 +704,14 @@ actions completed and now overdue, and for a board the unfinished actions from t
 last sitting. The agent turns that plus their `## Concerns` / `## Purpose` into at
 most six one-line items, ordered by what needs a decision from them first, each
 noting what you want out of it. Written with `brain agenda set`.
+
+**R9.2.1 `brain met` is date-based.** It moves the generated `## Next agenda` into
+`## History` (stakeholder) or a new `###` sitting under `## Minutes` (board),
+clears every `## Pending` item dated on or before the meeting date, and sets
+`last_met`. Items added after that date survive, because they were never on the
+agenda. Nothing tries to match the agent's prose back to the bullets it was built
+from; that linkage would be guesswork, and R4.4.2 already defines pending as what
+accumulates *between* meetings.
 
 **R9.3 `tidy`.** Deterministic first — `brain check --fix` handles missing fields,
 absent sections, section order, action syntax, roll-up regeneration with no model
@@ -766,6 +843,10 @@ must be present and in order, action syntax must be intact. A save that would
 break the format is rejected with the reason, and nothing is written. This is
 the escape hatch for structural fixes, not the daily path.
 
+**R10.11a** A leading `#` H1 is optional on every entity type — §4.2 shows one,
+§4.3 to §4.5 do not — and validation neither requires it nor strips it. `Doc`
+preserves whatever the file has, per R4.2.4.
+
 **R10.12 The renderer never hides anything.** Content it has no opinion about —
 a table, an image, a code fence, an unrecognised section — is displayed as its
 own source text, dimmed, rather than dropped or silently reformatted. A rendered
@@ -834,7 +915,12 @@ nothing more — never a crash. Textual restores the terminal on exit.
 
 **R11.1** `brain/git.py` wraps git narrowly: `commit(paths, message)`,
 `checkpoint`, `diff`, `log`, `revert_last`. Every write verb commits; `brain apply`
-commits once for the batch.
+commits once for the batch. One commit per user action is deliberate — it is what
+makes `u` in the TUI undo exactly what the user just did (R10.7).
+
+**R11.1a Git is required.** Outside a git repository `brain` refuses to write and
+says to run `git init`. C1 lists git as available and C3 makes its history
+load-bearing; a second, half-tested history mechanism would be worse than none.
 
 **R11.2 Commits are narrow.** Only entity paths and `inbox.md` are staged, always
 by explicit path. **Never `git add -A`.** Anything else in the repo is untouched.
@@ -853,7 +939,26 @@ clean. It commits and it restores. If the tree is dirty outside brain paths,
 `rewrite` refuses rather than sweeping it in.
 
 **R11.5** `brain undo` reverts the last brain-authored commit; repeated calls walk
-back. Without git, it degrades to an in-memory buffer and says so once.
+back. A commit is brain-authored when it carries the `Brain-Source:` trailer of
+R11.3. There is no non-git fallback: every `brain` invocation is a fresh process,
+so there is no memory to degrade to.
+
+**R11.6 `check --authored`** uses the same trailer. A file is brain-authored when
+the last commit touching it carries `Brain-Source:` *and* the working copy matches
+`HEAD`. An uncommitted modification is by definition not authored through `brain`,
+which is exactly what R3.2 asks the check to surface.
+
+**R11.7 One writer at a time.** Both panes shell out to `brain` against one tree,
+so every write takes an exclusive lock on `<root>/.brain.lock` — created
+`O_CREAT|O_EXCL`, carrying pid and start time, considered stale after ten minutes
+— released on exit. A verb that cannot take the lock names the holder and writes
+nothing. A lock file is not a listening socket; C2 is unaffected.
+
+**R11.8 `brain rewrite` is two-phase**, because a CLI that exits cannot "permit
+edits and then show a diff". `brain rewrite <entity>` refuses if the tree is dirty
+outside brain paths (R11.4), takes a checkpoint and prints what is now editable;
+`--finish` validates, shows the diff and commits; `--abort` restores the
+checkpoint. Nothing is implicit — R8.5 still requires the user to type it.
 
 ---
 
@@ -863,10 +968,11 @@ Each step independently usable before the next.
 
 1. **`model.py` + `entities.py`** — `Doc`, the four entity types, tolerant loading.
    Test: round-trip edits on fixtures; assert only intended lines change.
-2. **`commands.py` + `cli.py`** — every verb, resolution, `apply`, `--dry-run`.
-   Test: table-driven through the CLI. No UI.
-3. **`git.py`** — commit, checkpoint, undo. Before anything else can write on your
-   behalf.
+2. **`git.py`** — commit, checkpoint, undo, the lock of R11.7. It precedes
+   `commands.py` because R11.1a makes git a precondition of every write rather
+   than a later addition.
+3. **`commands.py` + `cli.py`** — every verb, the R6.4 grammar, resolution,
+   `apply`, `--dry-run`. Test: table-driven through the CLI. No UI.
 4. **`index.py`** — `_index.json`, roll-ups, `brain context`, `brain search`.
 5. **`tui.py`** — tree, detail, capture, search, `_request.md` queueing. At this
    point the whole thing is useful with no model at all. **Pause here and use it
@@ -880,7 +986,7 @@ Each step independently usable before the next.
 ## 13. Acceptance tests
 
 Test tooling first: a **stub `copilot`** on `PATH` recording argv and stdin, and
-Textual's `Pilot` for the UI. Tests A1–A8 need no UI and no model.
+Textual's `Pilot` for the UI. Tests A1–A8 and A14–A17 need no UI and no model.
 
 **A1** Capture writes the body to `inbox.md` **byte for byte**, including odd
 spacing, unicode and text that looks like markdown headings. Nothing under
@@ -941,6 +1047,22 @@ picked up within two seconds and the detail pane refreshes (R10.7).
 
 **A13** No path anywhere rewrites a note body. Capture 20 awkward notes, run the
 full pipeline against the stub, diff every surviving note.
+
+**A14** The R6.4 grammar survives the awkward cases: free text containing `'`,
+`—`, `:`, `#` and a further ` -- ` round-trips byte for byte. A free-text verb
+written without the separator is rejected by name and writes nothing (R6.4a). A
+line whose first non-whitespace character is `#` is skipped, while a `#` inside
+free text survives (R6.4b).
+
+**A15** Two concurrent `brain apply` invocations against one root: one succeeds,
+the other exits non-zero naming the lock holder, and the tree holds exactly one
+batch's changes (R11.7).
+
+**A16** Ids are never reused. Add three notes, process all three so `inbox.md` is
+empty, add a fourth: it is `n4` (R4.6.6).
+
+**A17** Outside a git repository every write verb refuses and exits non-zero, and
+no file is created or modified (R11.1a).
 
 ---
 
