@@ -126,3 +126,21 @@ def test_undo_that_would_conflict_changes_nothing(git_root):
     assert path.read_bytes() == before
     assert g.head(git_root) == head_before
     assert g.run(["status", "--porcelain"], git_root) == ""
+
+
+def test_undo_refuses_a_commit_that_reaches_outside_the_brain(git_root):
+    """R6.2 and R11.2 together: `git revert` reverts a whole commit, so a
+    commit that mixes brain and non-brain paths cannot be partly undone. The
+    trailer is not proof the tool wrote it - a user can type one."""
+    (git_root / "inbox.md").write_text("## n60 - note\nbody\n", encoding="utf-8")
+    (git_root / "unrelated.txt").write_text("the user's own work\n", encoding="utf-8")
+    g.run(["add", "--", "inbox.md", "unrelated.txt"], git_root)
+    g.run(["commit", "-q", "-m", "mixed\n\nBrain-Source: cli"], git_root)
+    before = (git_root / "unrelated.txt").read_bytes()
+    head_before = g.head(git_root)
+    with pytest.raises(g.GitError) as excinfo:
+        g.undo(git_root)
+    assert "unrelated.txt" in str(excinfo.value)
+    assert (git_root / "unrelated.txt").read_bytes() == before
+    assert g.head(git_root) == head_before
+    assert g.run(["status", "--porcelain"], git_root) == ""

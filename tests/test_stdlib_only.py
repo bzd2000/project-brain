@@ -5,7 +5,7 @@ import sys
 
 def test_model_and_entities_do_not_import_textual():
     code = (
-        "import sys; import brain.model, brain.entities; "
+        "import sys; import brain.model, brain.entities, brain.git, brain.lock; "
         "assert 'textual' not in sys.modules, sorted(sys.modules); "
         "assert 'rich' not in sys.modules"
     )

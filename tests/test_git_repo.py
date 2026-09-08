@@ -24,6 +24,14 @@ def test_require_repo_refuses_outside_a_repository(tmp_path):
     assert "git init" in str(excinfo.value)
 
 
+def test_a_root_that_does_not_exist_refuses_rather_than_crashing(tmp_path):
+    """R11.1a promises a refusal that says what to do, not a traceback."""
+    missing = tmp_path / "no-such-dir"
+    assert g.is_repo(missing) is False
+    with pytest.raises(g.GitError):
+        g.require_repo(missing)
+
+
 def test_run_returns_stdout_and_raises_on_failure(git_root):
     assert g.run(["rev-parse", "--abbrev-ref", "HEAD"], git_root)
     with pytest.raises(g.GitError):
@@ -75,7 +83,7 @@ def test_git_py_names_no_forbidden_subcommand():
     """R11.4 by construction: the source must not contain a forbidden verb as a
     git argument. A source-level check catches a call path no test exercises."""
     source = (Path(g.__file__)).read_text(encoding="utf-8")
-    for word in ("\"push\"", "\"fetch\"", "\"pull\"", "\"rebase\"",
+    for word in ("\"push\"", "\"fetch\"", "\"pull\"", "\"rebase\"", "\"merge\"",
                  "\"cherry-pick\"", "\"clean\"", "\"branch\"", "--amend", "add -A"):
         assert word not in source, "git.py names a forbidden operation: " + word
 

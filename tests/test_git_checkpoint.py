@@ -48,7 +48,10 @@ def test_restore_reports_a_partial_failure_rather_than_hiding_it(git_root, monke
     """A rollback that gives up half way and returns normally is the failure
     R6.5 exists to prevent, one level down."""
     cp = g.checkpoint(git_root, ["inbox.md", "projects/acme-migration.md"])
+    good = git_root / "projects" / "acme-migration.md"
+    original = good.read_bytes()
     (git_root / "inbox.md").write_bytes(b"clobbered\n")
+    good.write_bytes(b"also clobbered\n")
     real_write = g.Path.write_bytes
 
     def explode(self, data):
@@ -61,6 +64,8 @@ def test_restore_reports_a_partial_failure_rather_than_hiding_it(git_root, monke
         g.restore(git_root, cp)
     assert "part-restored" in str(excinfo.value)
     assert "inbox.md" in str(excinfo.value)
+    # The point of the fix: the loop kept going after the first failure.
+    assert good.read_bytes() == original
 
 
 def test_checkpoint_on_a_directory_does_not_crash(git_root):

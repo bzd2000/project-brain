@@ -10,6 +10,7 @@ catch `brain` reaching for an operation the spec forbids.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Sequence
@@ -21,12 +22,19 @@ class GitError(Exception):
 
 def _git(args: Sequence[str], root, check: bool = True):
     """Run one git command in `root`. The only place this module calls git."""
-    proc = subprocess.run(
-        ["git"] + list(args),
-        cwd=str(root),
-        capture_output=True,
-        text=True,
-    )
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    try:
+        proc = subprocess.run(
+            ["git"] + list(args),
+            cwd=str(root),
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise GitError("could not run git in {}: {}".format(root, exc))
     if check and proc.returncode != 0:
         raise GitError(
             "git {} failed ({}): {}".format(
@@ -41,7 +49,10 @@ def run(args: Sequence[str], root) -> str:
 
 
 def is_repo(root) -> bool:
-    proc = _git(["rev-parse", "--is-inside-work-tree"], root, check=False)
+    try:
+        proc = _git(["rev-parse", "--is-inside-work-tree"], root, check=False)
+    except GitError:
+        return False
     return proc.returncode == 0 and proc.stdout.strip() == "true"
 
 
@@ -286,14 +297,22 @@ def undo(root) -> Optional[str]:
     if target is None:
         return None
 
-    # Filter before checkpointing: `checkpoint` now refuses non-brain paths, and
-    # a hand-made commit carrying the trailer could name one.
-    touched = [
-        p for p in _git(
-            ["show", "--name-only", "--format=", target.sha], root
-        ).stdout.split()
-        if is_brain_path(root, p)
-    ]
+    # Every path the commit touched, NOT just the brain ones. `git revert`
+    # reverts the whole commit, so filtering here would silently destroy work
+    # this tool does not own and leave it staged in the user's index.
+    shown = _git(
+        ["show", "--name-only", "--format=", "-z", target.sha], root
+    ).stdout
+    touched = [p for p in shown.split("\0") if p]
+    outside = [p for p in touched if not is_brain_path(root, p)]
+    if outside:
+        raise GitError(
+            "refusing to undo {} ({}): it also touches {}. Reverting part of a "
+            "commit would destroy work this tool does not own, and reverting all "
+            "of it would reach outside the brain.".format(
+                target.sha[:7], target.subject, ", ".join(sorted(outside))
+            )
+        )
     cp = checkpoint(root, touched)
 
     proc = _git(["revert", "--no-edit", "--no-commit", target.sha], root, check=False)
@@ -367,7 +386,7 @@ def unauthored(root) -> List[str]:
     # Everything git still tracks, too. A file deleted by hand is gone from the
     # disk walk, and a hand-deletion is exactly the unauthored change R3.2 wants
     # made visible - an offender must not escape the report by ceasing to exist.
-    for tracked in _git(["ls-files"], root).stdout.splitlines():
+    for tracked in _git(["ls-files", "-z"], root).stdout.split("\0"):
         tracked = tracked.strip()
         if tracked and is_brain_path(root, tracked):
             candidates.add(tracked)

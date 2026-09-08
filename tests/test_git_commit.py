@@ -89,3 +89,11 @@ def test_commit_handles_a_new_file_and_a_deletion(git_root):
     sha = g.commit(git_root, ["projects/new-thing.md"], "brain: drop project")
     assert sha is not None
     assert not (git_root / "projects/new-thing.md").exists()
+
+
+def test_a_commit_subject_round_trips_non_ascii(git_root):
+    """C5 makes Windows primary, where the locale codepage is not UTF-8."""
+    (git_root / "inbox.md").write_text("## n61 - note\nbody\n", encoding="utf-8")
+    subject = "brain: log — café → acme"
+    sha = g.commit(git_root, ["inbox.md"], subject)
+    assert g.commit_body(git_root, sha).splitlines()[0] == subject

@@ -65,3 +65,14 @@ def test_unauthored_lists_every_offender(git_root):
     assert "projects/q4-budget.md" in offenders
     assert "inbox.md" not in offenders
     assert "unrelated.txt" not in offenders
+
+
+def test_a_non_ascii_entity_path_is_not_dropped(git_root):
+    """Git quotes non-ASCII paths in its default output; whitespace splitting
+    would drop them and let a hand-edit escape the R11.6 report."""
+    target = git_root / "projects" / "café-migration.md"
+    target.write_text("---\nproject: Cafe\n---\n\n## Log\n", encoding="utf-8")
+    rel = "projects/café-migration.md"
+    g.commit(git_root, [rel], "brain: new project", source="cli")
+    target.unlink()
+    assert rel in g.unauthored(git_root)
