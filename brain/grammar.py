@@ -34,6 +34,18 @@ def parse_line(line: str) -> Optional[ParsedLine]:
     and appears in the spec's own board examples.
     """
     raw = line.rstrip("\n").rstrip("\r")
+    if "\n" in raw or "\r" in raw:
+        # A command is ONE line. Free text carrying an embedded newline would
+        # reach Doc as a single line, letting it forge headings inside another
+        # section and leaving Doc's index disagreeing with the file - after
+        # which every surgical edit is computed against a wrong index (R5.1).
+        # Multi-line note bodies have their own door: `note add -f -` (R6.4c).
+        raise GrammarError(
+            "a command is one line, but this one contains a line break: "
+            "{!r}. A multi-line note body goes through `note add -f -`.".format(
+                raw[:60]
+            )
+        )
     if not raw.strip():
         return None
     if raw.lstrip().startswith("#"):

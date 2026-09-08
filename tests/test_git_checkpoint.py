@@ -84,3 +84,19 @@ def test_restore_is_idempotent(git_root):
     g.restore(git_root, cp)
     g.restore(git_root, cp)
     assert path.read_bytes() == original
+
+
+def test_prune_removes_a_file_created_after_the_checkpoint(git_root):
+    """A2: one bad line writes nothing - and a created file is a write."""
+    cp = g.checkpoint(git_root, g.brain_paths(git_root), prune=True)
+    (git_root / "projects" / "invented.md").write_text("new\n", encoding="utf-8")
+    g.restore(git_root, cp)
+    assert not (git_root / "projects" / "invented.md").exists()
+
+
+def test_a_partial_checkpoint_never_prunes(git_root):
+    """`undo` checkpoints one commit's paths. Pruning there would delete the
+    rest of the brain."""
+    cp = g.checkpoint(git_root, ["inbox.md"])
+    g.restore(git_root, cp)
+    assert (git_root / "projects" / "acme-migration.md").exists()

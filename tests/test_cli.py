@@ -77,3 +77,14 @@ def test_init_on_an_uncreatable_path_refuses(tmp_path, capsys):
     blocker.write_text("I am a file, not a directory\n", encoding="utf-8")
     assert _cli("init", blocker / "brain") != 0
     assert "brain:" in capsys.readouterr().err
+
+
+def test_init_honours_root(tmp_path, capsys):
+    assert _cli("--root", tmp_path / "b", "init") == 0
+    assert (tmp_path / "b" / "inbox.md").exists()
+
+
+def test_init_refuses_a_path_and_root_together(tmp_path, capsys):
+    """R6.2's spirit: two answers to "where" is a question, not a guess."""
+    assert _cli("--root", tmp_path / "a", "init", tmp_path / "b") != 0
+    assert "not both" in capsys.readouterr().err

@@ -169,14 +169,20 @@ def commit(root, paths, message: str, source: str = "cli",
 class Checkpoint(NamedTuple):
     head: Optional[str]
     files: Dict[str, Optional[bytes]]
+    prune: bool = False
 
 
-def checkpoint(root, paths) -> Checkpoint:
+def checkpoint(root, paths, prune: bool = False) -> Checkpoint:
     """Capture the exact bytes of `paths` before a batch writes to them.
 
     R6.5 needs a rollback for a failure BETWEEN two file writes, where nothing
     was committed and a HEAD sha therefore describes nothing useful. A file that
     does not exist yet is recorded as None so `restore` can delete it again.
+
+    `prune` is opt-in (see `restore`): only a whole-brain checkpoint may delete
+    a file created since it was taken. A partial checkpoint - `undo`'s, over
+    one commit's touched paths - must never prune, or it would delete the rest
+    of the brain.
     """
     root = Path(root)
     _require_brain_paths(root, paths)
@@ -188,7 +194,7 @@ def checkpoint(root, paths) -> Checkpoint:
         # so malformed input surfaces through restore's error report rather than
         # as a bare traceback out of the capture step.
         files[Path(path).as_posix()] = target.read_bytes() if target.is_file() else None
-    return Checkpoint(head=head(root), files=files)
+    return Checkpoint(head=head(root), files=files, prune=prune)
 
 
 def restore(root, cp: Checkpoint) -> None:
@@ -213,6 +219,16 @@ def restore(root, cp: Checkpoint) -> None:
             target.write_bytes(data)
         except OSError as exc:
             problems.append("{}: {}".format(rel, exc))
+    if cp.prune:
+        # A file created since the checkpoint is part of the change being rolled
+        # back. Only whole-brain checkpoints may do this: `undo` checkpoints one
+        # commit's paths, and pruning there would delete everything else.
+        for rel in brain_paths(root):
+            if rel not in cp.files:
+                try:
+                    (root / rel).unlink()
+                except OSError as exc:
+                    problems.append("{}: {}".format(rel, exc))
     if problems:
         raise GitError(
             "rollback incomplete, the tree is part-restored: {}".format(

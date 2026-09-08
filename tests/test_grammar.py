@@ -97,3 +97,12 @@ def test_trailing_whitespace_does_not_become_text():
     parsed = gr.parse_line("status set q4-budget active   ")
     assert parsed.tokens == ["status", "set", "q4-budget", "active"]
     assert parsed.text is None
+
+
+@pytest.mark.parametrize("bad", ["log a -- one\ntwo", "log a -- x\r\ny", "log\na -- x"])
+def test_a_command_is_one_line(bad):
+    """An embedded newline would let free text forge a heading inside another
+    section, and leave Doc's index disagreeing with the file."""
+    with pytest.raises(GrammarError) as excinfo:
+        gr.parse_line(bad)
+    assert "one line" in str(excinfo.value)

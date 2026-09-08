@@ -25,15 +25,26 @@ class Verb(NamedTuple):
     run: Callable
     needs_text: bool
     writes: bool
+    arity: Tuple[int, int]
+    allowed_flags: Tuple[str, ...]
 
 
 VERBS: Dict[Tuple[str, ...], Verb] = {}
 
 
-def verb(*name, needs_text: bool = False, writes: bool = True):
+def verb(*name, needs_text: bool = False, writes: bool = True,
+         arity: Tuple[int, int] = (0, 0), allowed_flags: Tuple[str, ...] = ()):
+    """Register a verb.
+
+    `arity` is (min, max) positionals AFTER the verb's own words, and
+    `allowed_flags` names every flag it understands. Both are declared rather
+    than inferred because the alternative - reading what you want and ignoring
+    the rest - turns a typo into a silent no-op (R6.4a).
+    """
     def register(func):
         VERBS[tuple(name)] = Verb(
-            name=tuple(name), run=func, needs_text=needs_text, writes=writes
+            name=tuple(name), run=func, needs_text=needs_text, writes=writes,
+            arity=arity, allowed_flags=tuple(allowed_flags),
         )
         return func
     return register
@@ -71,7 +82,7 @@ def next_note_id(root) -> Tuple[str, int]:
     return "n{}".format(nxt), nxt
 
 
-@verb("log", needs_text=True)
+@verb("log", needs_text=True, arity=(1, 1))
 def _log(root, positional, flags, text):
     project = resolve(root, positional[0], kinds=("project",))
     doc = project.doc
@@ -82,10 +93,8 @@ def _log(root, positional, flags, text):
     return "logged to {}".format(project.slug), [rel]
 
 
-@verb("status", "set")
+@verb("status", "set", arity=(2, 2))
 def _status_set(root, positional, flags, text):
-    if len(positional) < 2:
-        raise VerbError("status set needs a project and a status")
     ref, value = positional[0], positional[1]
     if value not in STATUSES:
         raise VerbError(
@@ -100,7 +109,7 @@ def _status_set(root, positional, flags, text):
     return "{} is now {}".format(project.slug, value), [rel]
 
 
-@verb("note", "add", needs_text=True)
+@verb("note", "add", needs_text=True, arity=(0, 1), allowed_flags=("tag",))
 def _note_add(root, positional, flags, text):
     """R4.6.1: the header is machine-written; the body is the user's words.
 
@@ -152,6 +161,27 @@ def execute(root, parsed, source: str = "cli") -> str:
     positional, flags = split_flags(parsed.tokens)
     found, rest = find_verb(positional)
 
+    low, high = found.arity
+    if not low <= len(rest) <= high:
+        raise VerbError(
+            "`{}` takes {} argument(s), got {}: {}. Free text must follow "
+            "` -- `.".format(
+                " ".join(found.name),
+                low if low == high else "{}-{}".format(low, high),
+                len(rest),
+                " ".join(rest) or "none",
+            )
+        )
+    unknown = sorted(f for f in flags if f not in found.allowed_flags)
+    if unknown:
+        raise VerbError(
+            "`{}` does not take {}. It accepts: {}".format(
+                " ".join(found.name),
+                ", ".join("--" + f for f in unknown),
+                ", ".join("--" + f for f in found.allowed_flags) or "no flags",
+            )
+        )
+
     if found.needs_text and parsed.text is None:
         raise GrammarError(
             "{!r}: `{}` takes free text, which must follow a ` -- ` separator "
@@ -172,7 +202,7 @@ def execute(root, parsed, source: str = "cli") -> str:
         # the NEXT verb's commit would sweep it up as though the user had asked
         # for it. R6.5 builds this machinery for batches; a single verb has the
         # same failure and deserves the same answer.
-        checkpoint = git.checkpoint(root, git.brain_paths(root))
+        checkpoint = git.checkpoint(root, git.brain_paths(root), prune=True)
         try:
             message, paths = found.run(root, rest, flags, parsed.text)
             git.commit(root, paths, "brain: " + message, source=source)

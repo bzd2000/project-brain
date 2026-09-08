@@ -10,7 +10,7 @@ import argparse
 import sys
 
 from . import commands, grammar, root
-from .errors import BrainError
+from .errors import BrainError, VerbError
 from .grammar import SEPARATOR
 
 
@@ -44,8 +44,14 @@ def main(argv=None) -> int:
 
     try:
         if args.rest[0] == "init":
-            target = args.rest[1] if len(args.rest) > 1 else "."
-            made = root.init(target)
+            explicit = args.rest[1] if len(args.rest) > 1 else None
+            if explicit and args.root:
+                raise VerbError(
+                    "give `init` a path or --root, not both: {} and {}".format(
+                        explicit, args.root
+                    )
+                )
+            made = root.init(explicit or args.root or ".")
             sys.stdout.write("initialised brain at {}\n".format(made))
             return 0
 

@@ -7,6 +7,7 @@ from brain import root as r
 from brain import git as g
 from brain.entities import Project, load_notes
 from brain.errors import GrammarError, VerbError
+from brain.model import Doc
 
 
 @pytest.fixture
@@ -115,9 +116,14 @@ def test_a_failed_commit_leaves_no_uncommitted_edit(brain_repo, monkeypatch):
 
 
 def test_a_free_text_verb_without_the_separator_is_an_error(brain_repo):
-    """R6.4a: an error naming the line, never a guess."""
+    """R6.4a: an error naming the line, never a guess.
+
+    A single positional satisfies `log`'s arity, so this exercises the missing
+    `--` separator specifically, distinct from the extra-positionals case
+    below.
+    """
     with pytest.raises(GrammarError) as excinfo:
-        _run(brain_repo, "log acme-migration Codes published")
+        _run(brain_repo, "log acme-migration")
     assert "--" in str(excinfo.value)
 
 
@@ -156,3 +162,35 @@ def test_a_write_outside_a_repository_refuses(tmp_path):
     with pytest.raises(g.GitError):
         _run(root, "log p -- should not happen")
     assert (root / "projects" / "p.md").read_bytes() == before
+
+
+def test_free_text_cannot_forge_a_section(brain_repo):
+    """R5.1: Doc's index must keep agreeing with the file."""
+    with pytest.raises(GrammarError):
+        _run(brain_repo, "log acme-migration -- first\n## Decisions\n- forged")
+    doc = Doc(brain_repo / "projects" / "acme-migration.md")
+    assert list(doc.sections) == [
+        "Summary", "Next actions", "Open questions", "Decisions", "Log",
+    ]
+
+
+def test_an_unknown_flag_is_an_error_not_a_silent_drop(brain_repo):
+    """`--tags` is one character from `--tag`. Capturing an untagged note and
+    exiting 0 is the lossy failure R6.4a forbids."""
+    with pytest.raises(VerbError) as excinfo:
+        _run(brain_repo, "note add note --tags @acme -- body")
+    assert "--tags" in str(excinfo.value)
+    assert load_notes(brain_repo / "inbox.md") == []
+
+
+def test_extra_positionals_are_an_error(brain_repo):
+    """`log acme Steering call -- text` would otherwise discard two words."""
+    with pytest.raises(VerbError) as excinfo:
+        _run(brain_repo, "log acme-migration Steering call -- text")
+    assert "argument" in str(excinfo.value)
+
+
+def test_a_verb_still_accepts_what_it_declares(brain_repo):
+    _run(brain_repo, "note add meeting --tag @acme -- body")
+    note = load_notes(brain_repo / "inbox.md")[0]
+    assert note.type == "meeting" and note.tags == ["@acme"]
