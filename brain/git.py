@@ -372,3 +372,19 @@ def unauthored(root) -> List[str]:
         if tracked and is_brain_path(root, tracked):
             candidates.add(tracked)
     return [rel for rel in sorted(candidates) if not authored(root, rel)]
+
+
+def log(root, n: int = 10) -> List[BrainCommit]:
+    """The most recent brain-authored commits, newest first."""
+    return brain_commits(root, limit=max(n * 5, n))[:n]
+
+
+def diff(root, paths=None, staged: bool = False) -> str:
+    """Unified diff of the working tree, restricted to `paths` when given."""
+    args = ["diff"]
+    if staged:
+        args.append("--cached")
+    if paths:
+        args.append("--")
+        args.extend(str(p) for p in paths)
+    return _git(args, root).stdout

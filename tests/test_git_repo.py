@@ -78,3 +78,35 @@ def test_git_py_names_no_forbidden_subcommand():
     for word in ("\"push\"", "\"fetch\"", "\"pull\"", "\"rebase\"",
                  "\"cherry-pick\"", "\"clean\"", "\"branch\"", "--amend", "add -A"):
         assert word not in source, "git.py names a forbidden operation: " + word
+
+
+def test_log_returns_brain_commits_newest_first(git_root):
+    for n in ("one", "two"):
+        path = git_root / "inbox.md"
+        path.write_text("## {}\nbody\n".format(n), encoding="utf-8")
+        g.commit(git_root, ["inbox.md"], "brain: capture " + n)
+    entries = g.log(git_root, n=5)
+    assert [e.subject for e in entries][:2] == ["brain: capture two", "brain: capture one"]
+
+
+def test_diff_shows_uncommitted_brain_changes(git_root):
+    path = git_root / "inbox.md"
+    path.write_text("## n30\nbody\n", encoding="utf-8")
+    out = g.diff(git_root, ["inbox.md"])
+    assert "n30" in out
+    assert "diff --git" in out
+
+
+def test_a_full_write_cycle_issues_no_forbidden_git_call(git_root, stub_git):
+    """A10 end to end: commit, undo and the authorship check together must
+    never reach for anything R11.4 forbids."""
+    path = git_root / "inbox.md"
+    path.write_text("## n31\nbody\n", encoding="utf-8")
+    g.commit(git_root, ["inbox.md"], "brain: capture n31")
+    g.authored(git_root, "inbox.md")
+    g.undo(git_root)
+    for call in git_calls(stub_git):
+        sub = next((a for a in call if not a.startswith("-")), None)
+        assert sub not in FORBIDDEN_SUBCOMMANDS, call
+        assert "-A" not in call and "--all" not in call, call
+        assert "--amend" not in call, call
