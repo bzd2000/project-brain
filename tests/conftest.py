@@ -170,3 +170,17 @@ def git_calls(log: Path):
     if not log.exists():
         return []
     return [line.split("\x00") for line in log.read_text(encoding="utf-8").splitlines()]
+
+
+@pytest.fixture(autouse=True)
+def _git_identity(monkeypatch):
+    """`brain init` makes repos that have no user configured, and committing
+    without one fails. Set it for every test rather than depending on whatever
+    the machine running the suite happens to have."""
+    for name, value in (
+        ("GIT_AUTHOR_NAME", "Test"),
+        ("GIT_AUTHOR_EMAIL", "test@example.com"),
+        ("GIT_COMMITTER_NAME", "Test"),
+        ("GIT_COMMITTER_EMAIL", "test@example.com"),
+    ):
+        monkeypatch.setenv(name, value)

@@ -15,8 +15,10 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Sequence
 
+from .errors import BrainError
 
-class GitError(Exception):
+
+class GitError(BrainError):
     """A git invocation failed, or the tree is not in a state we may write to."""
 
 
@@ -67,7 +69,12 @@ def require_repo(root) -> None:
 
 # R11.2: the only paths this tool will ever stage.
 BRAIN_DIRS = ("programs", "projects", "stakeholders", "boards")
-BRAIN_FILES = ("inbox.md", "_request.md", "_seq")
+# R11.2's allowlist. `.gitattributes` and `.gitignore` are here because
+# `brain init` creates them (R6.9) and R5.4 requires the first to exist; they
+# are the tool's own files, not the user's.
+BRAIN_FILES = (
+    "inbox.md", "_request.md", "_seq", ".gitattributes", ".gitignore",
+)
 
 
 def is_brain_path(root, path) -> bool:
