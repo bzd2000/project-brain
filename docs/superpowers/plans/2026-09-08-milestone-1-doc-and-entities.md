@@ -1980,6 +1980,47 @@ def test_scribbled_inbox_survives(tmp_path):
     assert notes[1].id == "n3"
 
 
+def test_note_body_containing_a_fenced_heading_is_not_split(tmp_path):
+    """R4.6.1: nothing may drop a body line. Splitting on `## ` without fence
+    awareness promotes a heading inside a code fence to a note header, so that
+    line disappears from every body."""
+    path = tmp_path / "inbox.md"
+    path.write_text(
+        "## n1 \u00b7 2026-09-07 09:00 \u00b7 note \u00b7\n"
+        "here is some markdown\n"
+        "```\n"
+        "## this is inside a fence\n"
+        "```\n"
+        "trailing line\n",
+        encoding="utf-8",
+    )
+    notes = load_notes(path)
+    assert len(notes) == 1
+    assert notes[0].body == [
+        "here is some markdown",
+        "```",
+        "## this is inside a fence",
+        "```",
+        "trailing line",
+    ]
+
+
+def test_missing_status_is_flagged_for_check(tmp_path):
+    """R4.2.4: a file that reports `unknown` must also be flagged, or
+    `brain check` has nothing to surface."""
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    path = projects / "sparse.md"
+    path.write_text(
+        "---\nproject: Sparse\n---\n\n## Summary\n\n## Next actions\n\n"
+        "## Open questions\n\n## Decisions\n\n## Log\n",
+        encoding="utf-8",
+    )
+    project = Project(path)
+    assert project.status == "unknown"
+    assert any("status" in p for p in project.problems)
+
+
 def test_empty_inbox_yields_no_notes(tmp_path):
     path = tmp_path / "inbox.md"
     path.write_text("", encoding="utf-8")
@@ -2042,6 +2083,7 @@ from typing import List, NamedTuple, Optional
 
 from .model import (
     BOARD_SECTIONS,
+    FENCE,
     PROGRAM_SECTIONS,
     PROJECT_SECTIONS,
     STAKEHOLDER_SECTIONS,
@@ -2082,6 +2124,17 @@ class Entity:
     def _read(self) -> None:
         pass
 
+    def _flag_unknown(self, field: str, raw) -> None:
+        """R4.2.4: a value that reports `unknown` must also be flagged.
+
+        Reporting `unknown` and recording nothing would leave `brain check` with
+        nothing to surface, which is the half of R4.2.4 that makes tolerance
+        safe rather than merely quiet.
+        """
+        self.problems.append("{}: {}".format(
+            field, "missing" if raw in (None, "") else "unrecognised {!r}".format(raw)
+        ))
+
     @property
     def fm(self):
         return self.doc.fm
@@ -2114,6 +2167,11 @@ class Project(Entity):
 
     def _read(self):
         self.status = _one_of(self.fm.get("status"), STATUSES)
+        if self.status == UNKNOWN:
+            self._flag_unknown("status", self.fm.get("status"))
+        # `health` is deliberately NOT flagged when absent: a project at `idea`
+        # has nothing to rate yet, so flagging it would make `brain check` noisy
+        # about files that are fine. `status` is always meaningful.
         self.health = _one_of(self.fm.get("health"), HEALTHS)
         self.program = self.fm.get("program")
         self.due = self.fm.get("due")
@@ -2129,6 +2187,8 @@ class Program(Entity):
 
     def _read(self):
         self.status = _one_of(self.fm.get("status"), STATUSES)
+        if self.status == UNKNOWN:
+            self._flag_unknown("status", self.fm.get("status"))
 
 
 class Party(Entity):
@@ -2228,7 +2288,17 @@ def load_notes(path):
         text = text[:-1]
     lines = text.split("\n") if text else []
 
-    starts = [i for i, line in enumerate(lines) if line.startswith("## ")]
+    # Fence-aware: a `## ` inside a code fence is body text, not a new note.
+    # Splitting there would promote that line to a header and drop it from every
+    # body, which R4.6.1 forbids absolutely.
+    starts = []
+    in_fence = False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(FENCE):
+            in_fence = not in_fence
+            continue
+        if not in_fence and line.startswith("## "):
+            starts.append(i)
     notes = []
     for n, start in enumerate(starts):
         end = starts[n + 1] if n + 1 < len(starts) else len(lines)
