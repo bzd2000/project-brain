@@ -1,0 +1,69 @@
+import pytest
+
+from conftest import git_calls
+from brain import git as g
+
+
+def _write(root, rel, text):
+    (root / rel).write_text(text, encoding="utf-8")
+
+
+def test_commit_returns_a_sha_and_records_the_message(git_root):
+    _write(git_root, "projects/acme-migration.md",
+           (git_root / "projects/acme-migration.md").read_text(encoding="utf-8") + "\n- extra\n")
+    sha = g.commit(git_root, ["projects/acme-migration.md"], "brain: log acme-migration")
+    assert sha and len(sha) == 40
+    body = g.commit_body(git_root, sha)
+    assert body.splitlines()[0] == "brain: log acme-migration"
+
+
+def test_commit_carries_the_brain_source_trailer(git_root):
+    """R11.3: the trailer is the only thing marking a commit brain-authored,
+    and both `undo` (R11.5) and `check --authored` (R11.6) read it."""
+    _write(git_root, "inbox.md", "## n10 - note\nbody\n")
+    sha = g.commit(git_root, ["inbox.md"], "brain: capture n10",
+                   source="tui", notes=["n10"])
+    body = g.commit_body(git_root, sha)
+    assert "Brain-Source: tui" in body
+    assert "Brain-Notes: n10" in body
+
+
+def test_commit_stages_only_the_named_paths(git_root):
+    """A10: an unrelated dirty file stays unstaged and uncommitted."""
+    _write(git_root, "unrelated.txt", "edited by someone else\n")
+    _write(git_root, "inbox.md", "## n11 - note\nbody\n")
+    sha = g.commit(git_root, ["inbox.md"], "brain: capture n11")
+    touched = g.run(["show", "--name-only", "--format=", sha], git_root).split()
+    assert touched == ["inbox.md"]
+    assert "unrelated.txt" in g.run(["status", "--porcelain"], git_root)
+
+
+def test_commit_never_uses_add_dash_A(git_root, stub_git):
+    _write(git_root, "inbox.md", "## n12 - note\nbody\n")
+    g.commit(git_root, ["inbox.md"], "brain: capture n12")
+    for call in git_calls(stub_git):
+        assert "-A" not in call and "--all" not in call, call
+
+
+def test_commit_refuses_a_path_outside_the_brain(git_root):
+    """R11.2: only entity paths, inbox.md, _request.md and _seq are staged."""
+    _write(git_root, "unrelated.txt", "nope\n")
+    with pytest.raises(g.GitError) as excinfo:
+        g.commit(git_root, ["unrelated.txt"], "brain: should not happen")
+    assert "unrelated.txt" in str(excinfo.value)
+
+
+def test_commit_with_no_change_returns_none_and_adds_nothing(git_root):
+    before = g.head(git_root)
+    assert g.commit(git_root, ["inbox.md"], "brain: nothing to do") is None
+    assert g.head(git_root) == before
+
+
+def test_commit_handles_a_new_file_and_a_deletion(git_root):
+    _write(git_root, "projects/new-thing.md", "---\nproject: New\n---\n\n## Log\n")
+    sha = g.commit(git_root, ["projects/new-thing.md"], "brain: new project")
+    assert "projects/new-thing.md" in g.run(["show", "--name-only", "--format=", sha], git_root)
+    (git_root / "projects/new-thing.md").unlink()
+    sha = g.commit(git_root, ["projects/new-thing.md"], "brain: drop project")
+    assert sha is not None
+    assert not (git_root / "projects/new-thing.md").exists()
