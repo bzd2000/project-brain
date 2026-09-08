@@ -188,3 +188,100 @@ def restore(root, cp: Checkpoint) -> None:
                 "; ".join(problems)
             )
         )
+
+
+class BrainCommit(NamedTuple):
+    sha: str
+    subject: str
+    body: str
+
+
+def _unstage(root, paths) -> None:
+    """Unstage exactly `paths`, never the whole index.
+
+    `git revert --no-commit` stages what it reverted, and this module then
+    re-stages through `commit()`. A bare `git reset` would also unstage work the
+    USER had staged in the same tree - R11.2's narrowness is about not touching
+    what is not ours, and that applies to the index too.
+    """
+    if paths:
+        _git(["reset", "-q", "--"] + list(paths), root, check=False)
+
+
+def brain_commits(root, limit: int = 200) -> List[BrainCommit]:
+    """Brain-authored commits, newest first (R11.3's trailer is the marker)."""
+    out = _git(
+        ["log", "-n", str(limit), "--format=%H%x1f%s%x1f%B%x1e"], root
+    ).stdout
+    found = []
+    for entry in out.split("\x1e"):
+        entry = entry.strip("\n")
+        if not entry:
+            continue
+        sha, subject, body = entry.split("\x1f", 2)
+        if "Brain-Source:" in body:
+            found.append(BrainCommit(sha=sha, subject=subject, body=body))
+    return found
+
+
+def _already_undone(commits) -> set:
+    """Shas named by a `Brain-Undo:` trailer on some later commit."""
+    undone = set()
+    for entry in commits:
+        for line in entry.body.splitlines():
+            if line.startswith("Brain-Undo:"):
+                undone.add(line.split(":", 1)[1].strip())
+    return undone
+
+
+def undoable(root) -> Optional[BrainCommit]:
+    """The newest brain-authored commit that has not already been undone."""
+    commits = brain_commits(root)
+    undone = _already_undone(commits)
+    for entry in commits:
+        if entry.sha not in undone and not entry.subject.startswith("brain: undo "):
+            return entry
+    return None
+
+
+def undo(root) -> Optional[str]:
+    """Revert the newest un-undone brain commit. Returns the new commit's sha.
+
+    R11.5 says revert, and R11.4 bans amend: history is added to, never
+    rewritten, so a mistaken undo is itself undoable. A revert that cannot apply
+    cleanly restores the tree and raises - R6.2's refusal to guess, applied to
+    history.
+    """
+    require_repo(root)
+    target = undoable(root)
+    if target is None:
+        return None
+
+    # Filter before checkpointing: `checkpoint` now refuses non-brain paths, and
+    # a hand-made commit carrying the trailer could name one.
+    touched = [
+        p for p in _git(
+            ["show", "--name-only", "--format=", target.sha], root
+        ).stdout.split()
+        if is_brain_path(root, p)
+    ]
+    cp = checkpoint(root, touched)
+
+    proc = _git(["revert", "--no-edit", "--no-commit", target.sha], root, check=False)
+    if proc.returncode != 0:
+        _git(["revert", "--quit"], root, check=False)
+        _unstage(root, touched)
+        restore(root, cp)
+        raise GitError(
+            "undo would conflict: {} ({}) no longer reverts cleanly. Nothing was "
+            "changed.".format(target.sha[:7], target.subject)
+        )
+
+    _unstage(root, touched)
+    return commit(
+        root,
+        touched,
+        "brain: undo {} - {}".format(target.sha[:7], target.subject),
+        source="undo",
+        undo_of=target.sha,
+    )
