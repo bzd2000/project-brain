@@ -672,7 +672,7 @@ rollback -- a CRLF file comes back CRLF."
 
 **Interfaces:**
 - Consumes: Tasks 2 and 3.
-- Produces: `BrainCommit` (a `NamedTuple` with `sha: str`, `subject: str`, `body: str`); `brain_commits(root, limit=200) -> List[BrainCommit]` (newest first, only those carrying `Brain-Source:`); `undoable(root) -> Optional[BrainCommit]`; `undo(root) -> Optional[str]` returning the sha of the new revert commit.
+- Produces: `_unstage(root, paths) -> None`; `BrainCommit` (a `NamedTuple` with `sha: str`, `subject: str`, `body: str`); `brain_commits(root, limit=200) -> List[BrainCommit]` (newest first, only those carrying `Brain-Source:`); `undoable(root) -> Optional[BrainCommit]`; `undo(root) -> Optional[str]` returning the sha of the new revert commit.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -780,6 +780,18 @@ class BrainCommit(NamedTuple):
     body: str
 
 
+def _unstage(root, paths) -> None:
+    """Unstage exactly `paths`, never the whole index.
+
+    `git revert --no-commit` stages what it reverted, and this module then
+    re-stages through `commit()`. A bare `git reset` would also unstage work the
+    USER had staged in the same tree - R11.2's narrowness is about not touching
+    what is not ours, and that applies to the index too.
+    """
+    if paths:
+        _git(["reset", "-q", "--"] + list(paths), root, check=False)
+
+
 def brain_commits(root, limit: int = 200) -> List[BrainCommit]:
     """Brain-authored commits, newest first (R11.3's trailer is the marker)."""
     out = _git(
@@ -839,14 +851,14 @@ def undo(root) -> Optional[str]:
     proc = _git(["revert", "--no-edit", "--no-commit", target.sha], root, check=False)
     if proc.returncode != 0:
         _git(["revert", "--quit"], root, check=False)
-        _git(["reset", "-q"], root, check=False)
+        _unstage(root, touched)
         restore(root, cp)
         raise GitError(
             "undo would conflict: {} ({}) no longer reverts cleanly. Nothing was "
             "changed.".format(target.sha[:7], target.subject)
         )
 
-    _git(["reset", "-q"], root, check=False)
+    _unstage(root, touched)
     return commit(
         root,
         [p for p in touched if is_brain_path(root, p)],
