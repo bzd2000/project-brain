@@ -1550,7 +1550,7 @@ untouched."
 
 ```python
 from conftest import snapshot, assert_only_changed
-from brain.model import Doc, render_action
+from brain.model import Doc, parse_action, render_action
 
 
 def test_render_action_matches_the_spec_form(brain_tree):
@@ -1640,6 +1640,47 @@ def test_add_question_appends(brain_tree):
     ]
 
 
+def test_metadata_stripping_does_not_eat_repeated_text(brain_tree):
+    """A description may legitimately repeat the exact `  @owner` substring.
+    Removing every copy rather than the matched span deletes the user's words,
+    and edit_task/toggle_task would then write that truncation back to disk."""
+    doc = Doc(brain_tree / "projects" / "acme-migration.md")
+    line = "- [ ] Email  @sara about  @sara  due:2026-09-11"
+    task = parse_action(0, line)
+    assert task.text == "Email  @sara about"
+    assert task.owner == "sara"
+    assert task.due == "2026-09-11"
+    # and the line survives a round trip unchanged
+    assert render_action(task.text, task.owner, task.due, done=task.done) == line
+
+
+def test_toggle_preserves_an_indented_checkbox(tmp_path):
+    """render_action must re-emit the indent the TASK regex captured, or a
+    toggle silently flattens a nested item - a structural change disguised as
+    the one-line edit R10.10 promises."""
+    path = tmp_path / "p.md"
+    path.write_text(
+        "## Next actions\n- [ ] top level\n  - [ ] nested sub task\n", encoding="utf-8"
+    )
+    doc = Doc(path)
+    nested = doc.tasks()[1]
+    assert nested.indent == "  "
+    doc.toggle_task(nested.lineno)
+    assert doc.lines[nested.lineno] == "  - [x] nested sub task"
+
+
+def test_edit_task_preserves_the_users_checkbox_character(tmp_path):
+    """`- [X]` is the user's own text. Editing the description must not
+    normalise the mark; only toggling deliberately changes it."""
+    path = tmp_path / "p.md"
+    path.write_text("## Next actions\n- [X] shouty done marker\n", encoding="utf-8")
+    doc = Doc(path)
+    task = doc.tasks()[0]
+    assert task.done is True and task.mark == "X"
+    doc.edit_task(task.lineno, "sharpened text")
+    assert doc.lines[task.lineno] == "- [X] sharpened text"
+
+
 def test_stray_checkbox_outside_next_actions_is_not_a_task(brain_tree):
     """R4.2.4: stray checkboxes are tolerated, not adopted."""
     path = brain_tree / "projects" / "q4-budget.md"
@@ -1672,11 +1713,22 @@ class Task(NamedTuple):
     text: str
     owner: Optional[str]
     due: Optional[str]
+    indent: str = ""
+    mark: str = " "
 
 
-def render_action(text: str, owner=None, due=None, done: bool = False) -> str:
-    """R4.2.2. No inline metadata other than @owner and due: is emitted."""
-    line = "- [{}] {}".format("x" if done else " ", text)
+def render_action(text: str, owner=None, due=None, done: bool = False,
+                  indent: str = "", mark=None) -> str:
+    """R4.2.2. No inline metadata other than @owner and due: is emitted.
+
+    `indent` round-trips a nested checkbox instead of flattening it, and `mark`
+    lets a caller keep the user's own checkbox character. Both exist so that
+    editing a line's description does not quietly restructure it (R10.10): a
+    one-line edit must change the description and nothing else.
+    """
+    if mark is None:
+        mark = "x" if done else " "
+    line = "{}- [{}] {}".format(indent, mark, text)
     if owner:
         line += "  @{}".format(owner)
     if due:
@@ -1692,16 +1744,21 @@ def parse_action(lineno: int, line: str):
     rest = match.group("rest")
     owner = OWNER.search(rest)
     due = DUE.search(rest)
+    # Remove the matched SPANS, not every copy of their text. A description may
+    # legitimately repeat "  @sara" or contain "  due:2026-01-01" as prose, and
+    # str.replace would delete the user's words along with the metadata.
     text = rest
-    for found in (owner, due):
-        if found:
-            text = text.replace(found.group(0), "")
+    found = [m for m in (owner, due) if m]
+    for m in sorted(found, key=lambda m: m.start(), reverse=True):
+        text = text[:m.start()] + text[m.end():]
     return Task(
         lineno=lineno,
         done=match.group("mark").lower() == "x",
         text=text.strip(),
         owner=owner.group("owner") if owner else None,
         due=due.group("due") if due else None,
+        indent=match.group("indent"),
+        mark=match.group("mark"),
     )
 ```
 
@@ -1744,7 +1801,7 @@ Add to `class Doc`:
         if task is None:
             raise ValueError("line {} of {} is not a task".format(lineno, self.path))
         self.lines[lineno] = render_action(
-            task.text, task.owner, task.due, done=not task.done
+            task.text, task.owner, task.due, done=not task.done, indent=task.indent
         )
         return lineno
 
@@ -1757,7 +1814,9 @@ Add to `class Doc`:
         task = parse_action(lineno, self.lines[lineno])
         if task is None:
             raise ValueError("line {} of {} is not a task".format(lineno, self.path))
-        self.lines[lineno] = render_action(text, task.owner, task.due, done=task.done)
+        self.lines[lineno] = render_action(
+            text, task.owner, task.due, indent=task.indent, mark=task.mark
+        )
         return lineno
 ```
 
