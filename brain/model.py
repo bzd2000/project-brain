@@ -208,6 +208,8 @@ class Doc:
                     at += 1
         else:
             at = found.end
+            while at > found.start and self.lines[at - 1].strip() == "":
+                at -= 1
         self.lines.insert(at, line)
         self.reindex()
         return at
