@@ -36,9 +36,18 @@ def holder(root) -> Optional[dict]:
         return None
 
 
-def _is_stale(info: Optional[dict], stale_after: float) -> bool:
+def _is_stale(info: Optional[dict], stale_after: float, path=None) -> bool:
     if info is None:
-        return True  # absent, truncated or half-written: not a live claim
+        # Empty or unparseable. This is ALSO what a lock looks like in the
+        # window between O_EXCL creating it and the payload landing, so it
+        # cannot be assumed dead: judge it by the file's own age instead. A
+        # truncated lock still gets broken, just not instantly.
+        if path is not None:
+            try:
+                return (time.time() - path.stat().st_mtime) > stale_after
+            except OSError:
+                return True
+        return True
     started = info.get("started")
     if not isinstance(started, (int, float)):
         return True
@@ -68,7 +77,7 @@ def held(root, stale_after: float = STALE_AFTER):
             fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             info = holder(root)
-            if attempt == 0 and _is_stale(info, stale_after):
+            if attempt == 0 and _is_stale(info, stale_after, path):
                 try:
                     path.unlink()
                 except OSError:
@@ -90,9 +99,13 @@ def held(root, stale_after: float = STALE_AFTER):
                     handle.write(payload)
                 yield path
             finally:
+                # Only remove the lock if it is still OURS. If ours was broken
+                # as stale and re-taken, unlinking here would delete the new
+                # holder's claim and leave two processes each believing they
+                # hold it - worse than never having locked at all.
                 try:
-                    path.unlink()
+                    if path.read_text(encoding="utf-8") == payload:
+                        path.unlink()
                 except OSError:
                     pass
             return
-    raise LockBusy("could not take the write lock on {}".format(root))
