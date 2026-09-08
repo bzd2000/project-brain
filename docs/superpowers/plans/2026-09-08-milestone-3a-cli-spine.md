@@ -901,7 +901,8 @@ words into the wrong project, and nothing afterwards can tell it happened."
 
 **Interfaces:**
 - Consumes: everything above, plus `brain.model.Doc`, `brain.entities`, `brain.git`, `brain.lock`.
-- Produces: `Verb` (a `NamedTuple` with `name: Tuple[str, ...]`, `run`, `needs_text: bool`, `writes: bool`, `paths`); `VERBS: Dict[Tuple[str, ...], Verb]`; `find_verb(positional) -> Tuple[Verb, List[str]]`; `execute(root, parsed, source="cli") -> str`; `next_note_id(root) -> str`.
+- Produces: `Verb` (a `NamedTuple` with `name: Tuple[str, ...]`, `run`, `needs_text: bool`, `writes: bool`); `VERBS: Dict[Tuple[str, ...], Verb]`; `find_verb(positional) -> Tuple[Verb, List[str]]`; `execute(root, parsed, source="cli") -> str`; `next_note_id(root) -> Tuple[str, int]`.
+- Also adds `brain_paths(root) -> List[str]` to `brain/git.py` — every brain path present in the tree — and refactors `unauthored` to use it, since it was already walking the same set.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -995,6 +996,35 @@ def test_note_ids_never_reuse(brain_repo):
     assert (brain_repo / "_seq").read_text(encoding="utf-8").strip() == "4"
 
 
+def test_note_add_preserves_the_inbox_line_endings(brain_repo):
+    """R5.2 on C5's primary platform: adding to a CRLF inbox must not rewrite
+    the file's endings, and R4.6.1 says the existing bodies survive untouched."""
+    inbox = brain_repo / "inbox.md"
+    inbox.write_bytes(b"## n1 \xc2\xb7 2026-09-07 09:00 \xc2\xb7 note \xc2\xb7\r\nfirst body\r\n")
+    before = inbox.read_bytes()
+    _run(brain_repo, "note add note -- second body")
+    after = inbox.read_bytes()
+    assert after.startswith(before)
+    assert b"\r\n" in after
+    assert b"\n" not in after.replace(b"\r\n", b"")
+
+
+def test_a_failed_commit_leaves_no_uncommitted_edit(brain_repo, monkeypatch):
+    """Otherwise the edit sits in the tree and the NEXT verb's commit sweeps it
+    up as though the user had asked for it."""
+    path = brain_repo / "projects" / "acme-migration.md"
+    before = path.read_bytes()
+
+    def boom(*args, **kwargs):
+        raise g.GitError("commit refused")
+
+    monkeypatch.setattr(c.git, "commit", boom)
+    with pytest.raises(g.GitError):
+        _run(brain_repo, "log acme-migration -- should roll back")
+    assert path.read_bytes() == before
+    assert g.run(["status", "--porcelain"], brain_repo) == ""
+
+
 def test_a_free_text_verb_without_the_separator_is_an_error(brain_repo):
     """R6.4a: an error naming the line, never a guess."""
     with pytest.raises(GrammarError) as excinfo:
@@ -1044,7 +1074,30 @@ def test_a_write_outside_a_repository_refuses(tmp_path):
 Run: `.venv/bin/python -m pytest tests/test_commands.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'brain.commands'`.
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 3: Add `brain_paths` to `brain/git.py`**
+
+`execute` needs to know what to checkpoint before a verb runs, and `unauthored`
+already walks the same set. Extract it once:
+
+```python
+def brain_paths(root) -> List[str]:
+    """Every brain path present in the tree, relative and POSIX."""
+    root = Path(root)
+    found = []
+    for name in BRAIN_FILES:
+        if (root / name).exists():
+            found.append(name)
+    for directory in BRAIN_DIRS:
+        for target in sorted((root / directory).glob("*.md")):
+            found.append(target.relative_to(root).as_posix())
+    return found
+```
+
+Then in `unauthored`, replace the two loops that build `candidates` from disk
+with `candidates = set(brain_paths(root))`, keeping the `ls-files` union that
+follows — that half exists so a hand-deleted file is still reported.
+
+- [ ] **Step 4: Implement**
 
 `brain/commands.py`:
 
@@ -1172,13 +1225,26 @@ def _note_add(root, positional, flags, text):
     if tags:
         header += " · " + " ".join(tags)
 
+    # Bytes, not text. `read_text`/`write_text` would translate an existing
+    # CRLF inbox to LF, and C5 makes Windows the primary platform - so the one
+    # file holding the user's captured words would be rewritten by the act of
+    # adding to it. R5.2 keeps a file's own endings; R4.6.1 keeps the body.
+    #
+    # This is also the one verb that does NOT go through `Doc`, deliberately:
+    # `Doc.save()` collapses runs of blank lines (R5.2), and a note body may
+    # contain them. Tidying the user's words is exactly what R4.6.1 forbids.
     inbox = Path(root) / "inbox.md"
-    existing = inbox.read_text(encoding="utf-8") if inbox.exists() else ""
-    if existing and not existing.endswith("\n"):
-        existing += "\n"
+    existing = inbox.read_bytes() if inbox.exists() else b""
+    crlf = existing.count(b"\r\n")
+    eol = b"\r\n" if crlf > existing.count(b"\n") - crlf else b"\n"
+    if existing and not existing.endswith(eol):
+        existing += eol
     if existing:
-        existing += "\n"
-    inbox.write_text(existing + header + "\n" + text + "\n", encoding="utf-8")
+        existing += eol
+    block = header.encode("utf-8") + eol + text.encode("utf-8")
+    if not block.endswith(eol):
+        block += eol
+    inbox.write_bytes(existing + block)
     (Path(root) / "_seq").write_text("{}\n".format(number), encoding="utf-8")
     return "captured {}".format(note_id), ["inbox.md", "_seq"]
 
@@ -1205,25 +1271,35 @@ def execute(root, parsed, source: str = "cli") -> str:
 
     git.require_repo(root)
     with lock.held(root):
-        message, paths = found.run(root, rest, flags, parsed.text)
-        git.commit(root, paths, "brain: " + message, source=source)
+        # Checkpoint before the verb runs, not after: if `commit` fails once
+        # `Doc.save()` has already written, the edit would sit uncommitted and
+        # the NEXT verb's commit would sweep it up as though the user had asked
+        # for it. R6.5 builds this machinery for batches; a single verb has the
+        # same failure and deserves the same answer.
+        checkpoint = git.checkpoint(root, git.brain_paths(root))
+        try:
+            message, paths = found.run(root, rest, flags, parsed.text)
+            git.commit(root, paths, "brain: " + message, source=source)
+        except Exception:
+            git.restore(root, checkpoint)
+            raise
     return message
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_commands.py -v`
-Expected: 9 passed.
+Expected: 11 passed.
 
-- [ ] **Step 5: Run the whole suite**
+- [ ] **Step 6: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 208 passed.
+Expected: 210 passed.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add brain/commands.py tests/test_commands.py
+git add brain/commands.py brain/git.py tests/test_commands.py
 git commit -m "Add the verb registry and three verbs (R3.1, R6.1, R11.7)
 
 Every write follows one shape: take the lock, require a repository, edit
@@ -1497,7 +1573,7 @@ Leave the invariants list alone.
 - [ ] **Step 8: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 215 passed.
+Expected: 217 passed.
 
 - [ ] **Step 9: Commit**
 
@@ -1519,7 +1595,7 @@ locked-down machine will not put a console shim on PATH."
 ## Milestone 3a done — stop here
 
 ```bash
-.venv/bin/python -m pytest -q          # 215 passed
+.venv/bin/python -m pytest -q          # 217 passed
 .venv/bin/python -m brain init /tmp/demo-brain
 ```
 
