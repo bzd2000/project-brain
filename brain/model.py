@@ -35,6 +35,8 @@ class Task(NamedTuple):
     text: str
     owner: Optional[str]
     due: Optional[str]
+    indent: str = ""
+    mark: str = " "
 
 
 class Section(NamedTuple):
@@ -58,9 +60,18 @@ def _split(raw: bytes):
     return text.split("\n"), eol, ends_with_newline
 
 
-def render_action(text: str, owner=None, due=None, done: bool = False) -> str:
-    """R4.2.2. No inline metadata other than @owner and due: is emitted."""
-    line = "- [{}] {}".format("x" if done else " ", text)
+def render_action(text: str, owner=None, due=None, done: bool = False,
+                  indent: str = "", mark=None) -> str:
+    """R4.2.2. No inline metadata other than @owner and due: is emitted.
+
+    `indent` round-trips a nested checkbox instead of flattening it, and `mark`
+    lets a caller keep the user's own checkbox character. Both exist so that
+    editing a line's description does not quietly restructure it (R10.10): a
+    one-line edit must change the description and nothing else.
+    """
+    if mark is None:
+        mark = "x" if done else " "
+    line = "{}- [{}] {}".format(indent, mark, text)
     if owner:
         line += "  @{}".format(owner)
     if due:
@@ -74,18 +85,26 @@ def parse_action(lineno: int, line: str):
     if match is None:
         return None
     rest = match.group("rest")
-    owner = OWNER.search(rest)
-    due = DUE.search(rest)
+    # Find the LAST occurrence of each metadata pattern, since a description
+    # may legitimately contain "  @sara" or "  due:2026-01-01" as prose.
+    owner_matches = list(OWNER.finditer(rest))
+    due_matches = list(DUE.finditer(rest))
+    owner = owner_matches[-1] if owner_matches else None
+    due = due_matches[-1] if due_matches else None
+    # Remove the matched SPANS, not every copy of their text (right-to-left
+    # to preserve indices as we remove).
     text = rest
-    for found in (owner, due):
-        if found:
-            text = text.replace(found.group(0), "")
+    found = [m for m in (owner, due) if m]
+    for m in sorted(found, key=lambda m: m.start(), reverse=True):
+        text = text[:m.start()] + text[m.end():]
     return Task(
         lineno=lineno,
         done=match.group("mark").lower() == "x",
         text=text.strip(),
         owner=owner.group("owner") if owner else None,
         due=due.group("due") if due else None,
+        indent=match.group("indent"),
+        mark=match.group("mark"),
     )
 
 
@@ -358,7 +377,7 @@ class Doc:
         if task is None:
             raise ValueError("line {} of {} is not a task".format(lineno, self.path))
         self.lines[lineno] = render_action(
-            task.text, task.owner, task.due, done=not task.done
+            task.text, task.owner, task.due, done=not task.done, indent=task.indent
         )
         return lineno
 
@@ -371,5 +390,7 @@ class Doc:
         task = parse_action(lineno, self.lines[lineno])
         if task is None:
             raise ValueError("line {} of {} is not a task".format(lineno, self.path))
-        self.lines[lineno] = render_action(text, task.owner, task.due, done=task.done)
+        self.lines[lineno] = render_action(
+            text, task.owner, task.due, indent=task.indent, mark=task.mark
+        )
         return lineno

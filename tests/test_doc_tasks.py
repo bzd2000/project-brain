@@ -1,5 +1,5 @@
 from conftest import snapshot, assert_only_changed
-from brain.model import Doc, render_action
+from brain.model import Doc, parse_action, render_action
 
 
 def test_render_action_matches_the_spec_form(brain_tree):
@@ -87,6 +87,47 @@ def test_add_question_appends(brain_tree):
         "- Who signs off the rollback plan?",
         "",
     ]
+
+
+def test_metadata_stripping_does_not_eat_repeated_text(brain_tree):
+    """A description may legitimately repeat the exact `  @owner` substring.
+    Removing every copy rather than the matched span deletes the user's words,
+    and edit_task/toggle_task would then write that truncation back to disk."""
+    doc = Doc(brain_tree / "projects" / "acme-migration.md")
+    line = "- [ ] Email  @sara about  @sara  due:2026-09-11"
+    task = parse_action(0, line)
+    assert task.text == "Email  @sara about"
+    assert task.owner == "sara"
+    assert task.due == "2026-09-11"
+    # and the line survives a round trip unchanged
+    assert render_action(task.text, task.owner, task.due, done=task.done) == line
+
+
+def test_toggle_preserves_an_indented_checkbox(tmp_path):
+    """render_action must re-emit the indent the TASK regex captured, or a
+    toggle silently flattens a nested item - a structural change disguised as
+    the one-line edit R10.10 promises."""
+    path = tmp_path / "p.md"
+    path.write_text(
+        "## Next actions\n- [ ] top level\n  - [ ] nested sub task\n", encoding="utf-8"
+    )
+    doc = Doc(path)
+    nested = doc.tasks()[1]
+    assert nested.indent == "  "
+    doc.toggle_task(nested.lineno)
+    assert doc.lines[nested.lineno] == "  - [x] nested sub task"
+
+
+def test_edit_task_preserves_the_users_checkbox_character(tmp_path):
+    """`- [X]` is the user's own text. Editing the description must not
+    normalise the mark; only toggling deliberately changes it."""
+    path = tmp_path / "p.md"
+    path.write_text("## Next actions\n- [X] shouty done marker\n", encoding="utf-8")
+    doc = Doc(path)
+    task = doc.tasks()[0]
+    assert task.done is True and task.mark == "X"
+    doc.edit_task(task.lineno, "sharpened text")
+    assert doc.lines[task.lineno] == "- [X] sharpened text"
 
 
 def test_stray_checkbox_outside_next_actions_is_not_a_task(brain_tree):
