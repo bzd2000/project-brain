@@ -1,0 +1,173 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+:root{
+  --bg:#100f0e; --panel:#161512; --panel2:#1c1a17; --line:#2b2823; --line2:#3a352e;
+  --fg:#ded7cb; --mut:#8d8479; --dim:#5a544c;
+  --teal:oklch(0.74 0.09 195); --green:oklch(0.74 0.09 145);
+  --amber:oklch(0.78 0.10 78); --red:oklch(0.70 0.12 28);
+  --violet:oklch(0.72 0.09 300);
+  --sel:#20302f; --mono:'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:#0a0908;color:var(--fg);
+  font-family:var(--mono);font-size:12.5px;line-height:1.58;
+  -webkit-font-smoothing:antialiased}
+a{color:var(--teal)} a:hover{color:var(--green)}
+
+.win{background:var(--bg);border:1px solid var(--line2);border-radius:7px;
+  overflow:hidden;display:flex;flex-direction:column;height:100%;
+  box-shadow:0 18px 50px rgba(0,0,0,.55)}
+.bar{display:flex;align-items:center;gap:8px;padding:7px 12px;
+  background:#1a1815;border-bottom:1px solid var(--line);flex:none}
+.dot{width:9px;height:9px;border-radius:50%;flex:none}
+.bar .t{color:var(--dim);font-size:11px;margin-left:8px;letter-spacing:.04em}
+
+.pane{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.hdr{display:flex;align-items:baseline;gap:14px;padding:7px 13px;
+  background:var(--panel2);border-bottom:1px solid var(--line);flex:none}
+.hdr .nm{font-weight:700;letter-spacing:.11em;font-size:11px;color:var(--fg)}
+.hdr .st{color:var(--mut);font-size:11.5px}
+.hdr .sp{flex-grow:1}
+
+.body{display:flex;flex-grow:1;min-height:0}
+.tree{width:238px;flex:none;border-right:1px solid var(--line);
+  padding:8px 0;overflow:hidden;background:var(--panel)}
+.detail{flex-grow:1;padding:10px 16px;overflow:hidden;
+  display:flex;flex-direction:column;gap:9px}
+
+.grp{color:var(--dim);font-size:10px;letter-spacing:.14em;
+  padding:7px 12px 2px;font-weight:500}
+.row{display:flex;align-items:center;gap:7px;padding:1px 12px;position:relative}
+.kid{padding-left:26px}
+.bdg{position:absolute;width:19px;height:19px;border-radius:50%;
+  background:var(--teal);color:#0a0908;font-weight:700;font-size:11px;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 0 0 3px #0a0908;z-index:5;top:50%;transform:translateY(-50%)}
+.bl{left:-10px} .br{right:-13px}
+.row.on{background:var(--sel);box-shadow:inset 2px 0 0 var(--teal)}
+.row .ind{width:12px;flex:none}
+.row .nm{flex-grow:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.row .rt{color:var(--dim);font-size:11px;flex:none}
+.dim{color:var(--dim)} .mut{color:var(--mut)}
+.teal{color:var(--teal)} .green{color:var(--green)} .amber{color:var(--amber)}
+.red{color:var(--red)} .violet{color:var(--violet)}
+.b{font-weight:700}
+
+.h1{font-size:14px;font-weight:700;letter-spacing:-.01em;position:relative}
+.meta{display:flex;flex-wrap:wrap;gap:12px;align-items:center;color:var(--mut);font-size:11.5px}
+.pill{border:1px solid currentColor;border-radius:2px;padding:0 5px;
+  font-size:10px;letter-spacing:.1em;font-weight:700}
+.sec{color:var(--dim);font-size:10px;letter-spacing:.14em;font-weight:500;
+  padding-bottom:2px;margin-top:2px}
+.li{display:flex;gap:8px;align-items:baseline;position:relative}
+.li .g{flex:none;width:10px}
+.li .tx{flex-grow:1}
+.li .rt{color:var(--dim);flex:none}
+.stack{display:flex;flex-direction:column;gap:1px}
+.blk{display:flex;flex-direction:column;gap:1px}
+
+.cap{display:flex;align-items:center;gap:11px;padding:7px 13px;flex:none;
+  border-top:1px solid var(--line);background:var(--panel2)}
+.mode{font-weight:700;letter-spacing:.09em;font-size:11px;flex:none}
+.mode.n{color:var(--dim)}
+.mode.i{color:var(--green)}
+.mode.c{color:var(--violet)}
+.cap .sp{flex-grow:1}
+.cap .rt{color:var(--dim);font-size:11.5px}
+.chip{border-radius:2px;padding:1px 7px;font-size:10px;font-weight:700;
+  letter-spacing:.11em;flex:none;color:#100f0e}
+.cur{display:inline-block;width:7px;height:14px;background:var(--teal);
+  vertical-align:-3px;margin-left:1px}
+.split{height:1px;background:var(--line2);flex:none}
+
+.cli{background:#0d0c0b;padding:10px 14px;display:flex;flex-direction:column;
+  gap:0;overflow:hidden;min-height:0}
+.cli .p{color:var(--green)}
+.cmd{color:var(--dim);font-size:11px}
+.ok{color:var(--green)}
+
+
+.wrap{padding:24px 28px;height:100%;display:flex;flex-direction:column;gap:12px;background:#0a0908}
+.t{font-size:15px;font-weight:700;letter-spacing:-.01em}
+.s{color:var(--mut);font-size:11.5px;margin-top:2px}
+.win{flex-grow:1;min-height:0}
+.pad{padding:11px 16px;display:flex;flex-direction:column;gap:10px;overflow:hidden}
+.hit{color:var(--teal);font-weight:700}
+.gen{border:1px solid var(--line2);border-radius:2px;padding:0 5px;font-size:9.5px;
+  letter-spacing:.11em;color:var(--dim);margin-left:8px;font-weight:500}
+.sbar{display:flex;align-items:center;gap:10px;padding:7px 14px;
+  border-bottom:1px solid var(--line);background:var(--panel2);flex:none}
+.sbar .sp{flex-grow:1}
+.res{padding:8px 0;overflow:hidden;flex-grow:1}
+.r{display:flex;gap:10px;padding:1px 16px;align-items:baseline}
+.r .src{width:132px;flex:none;color:var(--dim)}
+.r .tx{flex-grow:1}
+.r .rt{color:var(--dim);flex:none}
+.r.on{background:var(--sel);box-shadow:inset 2px 0 0 var(--teal)}
+.num{color:var(--dim);width:14px;flex:none}
+.tbl{width:100%;border-collapse:collapse}
+.tbl th{text-align:left;color:var(--dim);font-size:10px;letter-spacing:.13em;
+  font-weight:500;padding:0 12px 5px 0;border-bottom:1px solid var(--line)}
+.tbl td{padding:4px 12px 4px 0;border-bottom:1px solid #201e1a;vertical-align:top}
+.kcol{display:flex;flex-direction:column;gap:2px}
+.k{display:flex;gap:12px;align-items:baseline}
+.k .key{width:104px;flex:none;color:var(--teal)}
+.k .dsc{color:var(--mut)}
+.kh{color:var(--dim);font-size:10px;letter-spacing:.13em;margin:9px 0 3px;font-weight:500}
+.sw{display:flex;align-items:center;gap:11px}
+.sw .box{width:13px;height:13px;border-radius:2px;flex:none}
+.sw .lbl{width:78px;flex:none}
+.sw .dsc{color:var(--mut);font-size:11.5px}
+.two{display:flex;gap:34px}
+.two > div{flex-grow:1;flex-basis:0}
+</style>
+</helmet>
+<div class="wrap"><div><div class="t">Stakeholder</div><div class="s">Same shape as a board, minus the members. Their concerns are what make their agenda different from everyone else's.</div></div><div class="win" style="display:flex;flex-direction:column"><div class="hdr"><span class="nm">PROJECT BRAIN</span><span class="st">6 projects <span class="dim">·</span> 9 open <span class="dim">·</span> <span class="red">1 blocked</span> <span class="dim">·</span> <span class="red">1 overdue</span> <span class="dim">·</span> <span class="teal">3 unprocessed</span></span><span class="sp"></span></div><div class="body"><div class="tree"><div class="grp" style="position:relative">PROGRAMS</div><div class="row"><span class="ind"><span class="dim">▾</span></span><span class="nm">cloud-migration</span><span class="rt">2</span></div><div class="row kid"><span class="ind"><span class="teal">●</span></span><span class="nm">acme-migration</span><span class="rt">3</span></div><div class="row kid"><span class="ind"><span class="teal">●</span></span><span class="nm">dns-cutover</span><span class="rt">2</span></div><div class="grp">PROJECTS</div><div class="row"><span class="ind"><span class="red">●</span></span><span class="nm">q4-budget</span><span class="rt">2 <span class="red">!</span></span></div><div class="row"><span class="ind"><span class="teal">●</span></span><span class="nm">onboarding-docs</span><span class="rt">2 <span class="amber">~</span></span></div><div class="row"><span class="ind"><span class="dim">●</span></span><span class="nm">vendor-review</span><span class="rt"></span></div><div class="grp">STAKEHOLDERS</div><div class="row on"><span class="ind"><span class="violet">◆</span></span><span class="nm">ann</span><span class="rt">8 Sep</span></div><div class="row"><span class="ind"><span class="violet">◆</span></span><span class="nm">bram</span><span class="rt"></span></div><div class="grp">BOARDS</div><div class="row"><span class="ind"><span class="violet">▣</span></span><span class="nm">arch-board</span><span class="rt">18 Sep</span></div><div class="row"><span class="ind"><span class="violet">▣</span></span><span class="nm">steering</span><span class="rt">2 Oct</span></div></div><div class="pad">
+  <div>
+    <div class="h1">Ann Peeters</div>
+    <div class="meta" style="margin-top:3px">
+      <span class="pill violet">STAKEHOLDER</span>
+      <span>my manager</span><span>weekly</span>
+      <span class="dim">last met 1 Sep</span>
+      <span class="amber">next 8 Sep · tomorrow</span>
+    </div>
+    <div class="meta" style="margin-top:2px">
+      <span class="dim">watching</span><span class="mut">acme-migration · q4-budget · #client</span>
+    </div>
+  </div>
+  <div class="blk">
+    <div class="sec">CONCERNS <span class="dim" style="letter-spacing:0">— your words, the only steer the agent gets</span></div>
+    <div class="mut">Budget risk, client escalations, and anything where she has to unblock
+    something. Not interested in technical detail. Keep it to decisions and things
+    she'll be asked about upstairs.</div>
+  </div>
+  <div class="blk">
+    <div class="sec">PENDING <span class="dim" style="letter-spacing:0">— accumulated since 1 Sep</span></div>
+    <div class="li"><span class="g teal">·</span><span class="tx">Budget impact of the cost-centre delay — she's asked on the 18th</span><span class="rt">q4-budget &nbsp;<span class="dim">n7</span></span></div>
+  </div>
+  <div class="blk">
+    <div class="sec">NEXT AGENDA<span class="gen">GENERATED</span></div>
+    <div class="li"><span class="g violet">1</span><span class="tx">Q4 budget is unblocked — finance published the cost-centre codes on the 7th <span class="dim">— she chased this, she'll want to know</span></span></div>
+    <div class="li"><span class="g violet">2</span><span class="tx">Board asks about the budget impact on the 18th <span class="dim">— agree the line before she's in the room</span></span></div>
+    <div class="li"><span class="g violet">3</span><span class="tx">Acme cutover is Thu 11 Sep, rollback plan still unwritten <span class="dim">— risk, no ask</span></span></div>
+    <div class="li"><span class="g violet">4</span><span class="tx">Vendor review deferred to November <span class="dim">— she offered to chase finance; no longer needed</span></span></div>
+  </div>
+  <div class="blk">
+    <div class="sec">HISTORY</div>
+    <div class="li"><span class="g dim">·</span><span class="tx mut"><span class="dim">1 Sep</span> &nbsp;Agreed to defer the vendor review. She'll chase finance.</span></div>
+    <div class="li"><span class="g dim">·</span><span class="tx mut"><span class="dim">25 Aug</span> &nbsp;Walked through the migration plan. No objections.</span></div>
+  </div>
+</div></div><div class="cap" style="position:relative"><span class="mode n">-- NORMAL --</span><span class="dim">▸</span><span>ann</span><span class="sp"></span><span class="chip" style="background:var(--teal)">NOTE</span><span class="rt">3 unprocessed <span class="dim">·</span> ? help</span></div></div></div>
+</x-dc>
+</body>
+</html>

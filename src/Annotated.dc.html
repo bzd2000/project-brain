@@ -1,0 +1,159 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+:root{
+  --bg:#100f0e; --panel:#161512; --panel2:#1c1a17; --line:#2b2823; --line2:#3a352e;
+  --fg:#ded7cb; --mut:#8d8479; --dim:#5a544c;
+  --teal:oklch(0.74 0.09 195); --green:oklch(0.74 0.09 145);
+  --amber:oklch(0.78 0.10 78); --red:oklch(0.70 0.12 28);
+  --violet:oklch(0.72 0.09 300);
+  --sel:#20302f; --mono:'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:#0a0908;color:var(--fg);
+  font-family:var(--mono);font-size:12.5px;line-height:1.58;
+  -webkit-font-smoothing:antialiased}
+a{color:var(--teal)} a:hover{color:var(--green)}
+
+.win{background:var(--bg);border:1px solid var(--line2);border-radius:7px;
+  overflow:hidden;display:flex;flex-direction:column;height:100%;
+  box-shadow:0 18px 50px rgba(0,0,0,.55)}
+.bar{display:flex;align-items:center;gap:8px;padding:7px 12px;
+  background:#1a1815;border-bottom:1px solid var(--line);flex:none}
+.dot{width:9px;height:9px;border-radius:50%;flex:none}
+.bar .t{color:var(--dim);font-size:11px;margin-left:8px;letter-spacing:.04em}
+
+.pane{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.hdr{display:flex;align-items:baseline;gap:14px;padding:7px 13px;
+  background:var(--panel2);border-bottom:1px solid var(--line);flex:none}
+.hdr .nm{font-weight:700;letter-spacing:.11em;font-size:11px;color:var(--fg)}
+.hdr .st{color:var(--mut);font-size:11.5px}
+.hdr .sp{flex-grow:1}
+
+.body{display:flex;flex-grow:1;min-height:0}
+.tree{width:238px;flex:none;border-right:1px solid var(--line);
+  padding:8px 0;overflow:hidden;background:var(--panel)}
+.detail{flex-grow:1;padding:10px 16px;overflow:hidden;
+  display:flex;flex-direction:column;gap:9px}
+
+.grp{color:var(--dim);font-size:10px;letter-spacing:.14em;
+  padding:7px 12px 2px;font-weight:500}
+.row{display:flex;align-items:center;gap:7px;padding:1px 12px;position:relative}
+.kid{padding-left:26px}
+.bdg{position:absolute;width:19px;height:19px;border-radius:50%;
+  background:var(--teal);color:#0a0908;font-weight:700;font-size:11px;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 0 0 3px #0a0908;z-index:5;top:50%;transform:translateY(-50%)}
+.bl{left:-10px} .br{right:-13px}
+.row.on{background:var(--sel);box-shadow:inset 2px 0 0 var(--teal)}
+.row .ind{width:12px;flex:none}
+.row .nm{flex-grow:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.row .rt{color:var(--dim);font-size:11px;flex:none}
+.dim{color:var(--dim)} .mut{color:var(--mut)}
+.teal{color:var(--teal)} .green{color:var(--green)} .amber{color:var(--amber)}
+.red{color:var(--red)} .violet{color:var(--violet)}
+.b{font-weight:700}
+
+.h1{font-size:14px;font-weight:700;letter-spacing:-.01em;position:relative}
+.meta{display:flex;flex-wrap:wrap;gap:12px;align-items:center;color:var(--mut);font-size:11.5px}
+.pill{border:1px solid currentColor;border-radius:2px;padding:0 5px;
+  font-size:10px;letter-spacing:.1em;font-weight:700}
+.sec{color:var(--dim);font-size:10px;letter-spacing:.14em;font-weight:500;
+  padding-bottom:2px;margin-top:2px}
+.li{display:flex;gap:8px;align-items:baseline;position:relative}
+.li .g{flex:none;width:10px}
+.li .tx{flex-grow:1}
+.li .rt{color:var(--dim);flex:none}
+.stack{display:flex;flex-direction:column;gap:1px}
+.blk{display:flex;flex-direction:column;gap:1px}
+
+.cap{display:flex;align-items:center;gap:11px;padding:7px 13px;flex:none;
+  border-top:1px solid var(--line);background:var(--panel2)}
+.mode{font-weight:700;letter-spacing:.09em;font-size:11px;flex:none}
+.mode.n{color:var(--dim)}
+.mode.i{color:var(--green)}
+.mode.c{color:var(--violet)}
+.cap .sp{flex-grow:1}
+.cap .rt{color:var(--dim);font-size:11.5px}
+.chip{border-radius:2px;padding:1px 7px;font-size:10px;font-weight:700;
+  letter-spacing:.11em;flex:none;color:#100f0e}
+.cur{display:inline-block;width:7px;height:14px;background:var(--teal);
+  vertical-align:-3px;margin-left:1px}
+.split{height:1px;background:var(--line2);flex:none}
+
+.cli{background:#0d0c0b;padding:10px 14px;display:flex;flex-direction:column;
+  gap:0;overflow:hidden;min-height:0}
+.cli .p{color:var(--green)}
+.cmd{color:var(--dim);font-size:11px}
+.ok{color:var(--green)}
+
+
+.split2{display:flex;gap:40px;height:100%;padding:26px 34px;background:#0a0908}
+.left .win, .left .body, .left .tree, .left .detail{overflow:visible}
+.left .hdr{border-radius:6px 6px 0 0}
+.left .cap{border-radius:0 0 6px 6px}
+.left{flex:none;width:648px;display:flex}
+.right{flex-grow:1;display:flex;flex-direction:column;gap:13px;padding-top:2px}
+.note{display:flex;gap:11px;align-items:flex-start}
+.note .n{width:19px;height:19px;border-radius:50%;border:1px solid var(--teal);
+  color:var(--teal);font-size:11px;font-weight:700;flex:none;
+  display:flex;align-items:center;justify-content:center;margin-top:2px}
+.note .h{font-weight:700;color:var(--fg)}
+.note .d{color:var(--mut);font-size:11.5px;line-height:1.5}
+.title{font-size:15px;font-weight:700;letter-spacing:-.01em;margin-bottom:2px}
+.sub{color:var(--dim);font-size:11.5px;margin-bottom:6px}
+</style>
+</helmet>
+<div class="split2"><div class="left"><div class="win" style="width:100%"><div class="hdr"><span class="nm">PROJECT BRAIN</span><span class="st">6 projects <span class="dim">·</span> 9 open <span class="dim">·</span> <span class="red">1 blocked</span> <span class="dim">·</span> <span class="red">1 overdue</span> <span class="dim">·</span> <span class="teal">3 unprocessed</span></span><span class="sp"></span></div><div class="body"><div class="tree"><div class="grp" style="position:relative"><span class="bdg bl">1</span>PROGRAMS</div><div class="row"><span class="ind"><span class="dim">▾</span></span><span class="nm">cloud-migration</span><span class="rt">2</span></div><div class="row on kid"><span class="ind"><span class="teal">●</span></span><span class="nm">acme-migration</span><span class="rt">3</span></div><div class="row kid"><span class="ind"><span class="teal">●</span></span><span class="nm">dns-cutover</span><span class="rt">2</span></div><div class="grp">PROJECTS</div><div class="row"><span class="bdg bl">2</span><span class="ind"><span class="red">●</span></span><span class="nm">q4-budget</span><span class="rt">2 <span class="red">!</span></span></div><div class="row"><span class="ind"><span class="teal">●</span></span><span class="nm">onboarding-docs</span><span class="rt">2 <span class="amber">~</span></span></div><div class="row"><span class="ind"><span class="dim">●</span></span><span class="nm">vendor-review</span><span class="rt"></span></div><div class="grp">STAKEHOLDERS</div><div class="row"><span class="ind"><span class="violet">◆</span></span><span class="nm">ann</span><span class="rt">8 Sep</span></div><div class="row"><span class="ind"><span class="violet">◆</span></span><span class="nm">bram</span><span class="rt"></span></div><div class="grp">BOARDS</div><div class="row"><span class="bdg br">3</span><span class="ind"><span class="violet">▣</span></span><span class="nm">arch-board</span><span class="rt">18 Sep</span></div><div class="row"><span class="ind"><span class="violet">▣</span></span><span class="nm">steering</span><span class="rt">2 Oct</span></div></div><div class="detail">
+  <div>
+    <div class="h1"><span class="bdg br">4</span>Acme — Azure migration</div>
+    <div class="meta" style="margin-top:3px">
+      <span class="pill teal">ACTIVE</span>
+      <span class="amber">▲ amber</span>
+      <span>Filip</span>
+      <span>updated 2d ago</span>
+      <span class="mut">due in 38d</span>
+    </div>
+    <div class="meta" style="margin-top:2px">
+      <span class="dim">program</span><span class="mut">cloud-migration</span>
+      <span class="dim">tags</span><span class="mut">client infra</span>
+    </div>
+  </div>
+  <div class="blk">
+    <div class="sec">SUMMARY</div>
+    <div class="mut">Lift the on-prem billing stack to Azure before the datacentre
+    contract lapses in October. Two of four services are cut over.</div>
+  </div>
+  <div class="blk">
+    <div class="sec">NEXT ACTIONS</div>
+    <div class="li"><span class="g teal">○</span><span class="tx">Confirm the DNS cutover window</span><span class="bdg br" style="right:-30px">5</span><span class="rt">sara &nbsp;<span class="amber">in 4d</span></span></div>
+    <div class="li"><span class="g teal">○</span><span class="tx">Draft the rollback plan</span><span class="rt">me &nbsp;<span class="amber">in 4d</span></span></div>
+    <div class="li"><span class="g teal">○</span><span class="tx">Get sign-off on the new firewall rules</span><span class="rt"></span></div>
+    <div class="li"><span class="g green">✓</span><span class="tx dim">Migrate the reporting service</span><span class="rt"></span></div>
+  </div>
+  <div class="blk">
+    <div class="sec">OPEN QUESTIONS</div>
+    <div class="li"><span class="g dim">·</span><span class="tx mut">Who owns the legacy VPN after cutover?</span></div>
+  </div>
+  <div class="blk">
+    <div class="sec">DECISIONS</div>
+    <div class="li"><span class="g dim">·</span><span class="tx mut"><span class="dim">30 Aug</span> &nbsp;Terraform over ARM. Team already knows it.</span></div>
+  </div>
+  <div class="blk">
+    <div class="sec">LOG</div>
+    <div class="li"><span class="g dim">·</span><span class="tx mut"><span class="dim">07 Sep</span> &nbsp;Steering: finance published the cost-centre codes.</span></div>
+    <div class="li"><span class="g dim">·</span><span class="tx mut"><span class="dim">03 Sep</span> &nbsp;Reporting service live in prod, no incidents.</span></div>
+  </div>
+</div></div><div class="cap" style="position:relative"><span class="bdg bl">6</span><span class="bdg br">7</span><span class="mode n">-- NORMAL --</span><span class="dim">▸</span><span>acme-migration</span><span class="sp"></span><span class="chip" style="background:var(--teal)">NOTE</span><span class="rt">3 unprocessed <span class="dim">·</span> ? help</span></div></div></div><div class="right"><div><div class="title">The top pane</div><div class="sub">Navigate, search, read, capture. No model runs here.</div></div><div class="note"><div class="n">1</div><div><div class="h">Entity tree</div><div class="d">Programs expand to their projects. Stakeholders and boards sit in the same tree — one keystroke away, not a different screen.</div></div></div><div class="note"><div class="n">2</div><div><div class="h">Status glyph</div><div class="d">● coloured by status, ! overdue, ~ stale, ▲ health. The whole portfolio's state readable without opening anything.</div></div></div><div class="note"><div class="n">3</div><div><div class="h">Next meeting</div><div class="d">Stakeholders and boards show their next sitting. This is the column that makes you press Ctrl+G.</div></div></div><div class="note"><div class="n">4</div><div><div class="h">Detail pane</div><div class="d">Read-only rendering of the markdown file. Sections in fixed order, so your eye learns where things are.</div></div></div><div class="note"><div class="n">5</div><div><div class="h">Action owners</div><div class="d">Owner and due date on every open action, coloured by urgency. Sara's item and yours are visibly different.</div></div></div><div class="note"><div class="n">6</div><div><div class="h">Mode</div><div class="d">Modal, like vim. NORMAL reads and navigates with single letters. i starts a note, : runs a command, Esc always comes back.</div></div></div><div class="note"><div class="n">7</div><div><div class="h">Modeline</div><div class="d">What is selected, which note type i would capture as, and what is waiting to be processed — all on one line.</div></div></div></div></div>
+</x-dc>
+</body>
+</html>

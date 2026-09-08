@@ -1,0 +1,31 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html",           "x": 0,    "y": 0,    "w": 1000, "h": 800 },
+    { "file": "Annotated.dc.html",      "x": 1120, "y": 0,    "w": 1180, "h": 800 },
+
+    { "file": "Modes.dc.html",          "x": 0,    "y": 920,  "w": 1240, "h": 540 },
+    { "file": "Capture.dc.html",        "x": 1360, "y": 920,  "w": 1000, "h": 420 },
+    { "file": "MeetingCapture.dc.html", "x": 2480, "y": 920,  "w": 1000, "h": 560 },
+
+    { "file": "Editing.dc.html",        "x": 0,    "y": 1600, "w": 1080, "h": 940 },
+    { "file": "Search.dc.html",         "x": 1200, "y": 1600, "w": 1000, "h": 600 },
+    { "file": "Board.dc.html",          "x": 2320, "y": 1600, "w": 1000, "h": 720 },
+
+    { "file": "Stakeholder.dc.html",    "x": 0,    "y": 2660, "w": 1000, "h": 700 },
+    { "file": "Program.dc.html",        "x": 1120, "y": 2660, "w": 1000, "h": 580 },
+    { "file": "Help.dc.html",           "x": 2240, "y": 2660, "w": 1080, "h": 650 },
+
+    { "file": "Legend.dc.html",         "x": 0,    "y": 3480, "w": 940,  "h": 470 }
+  ],
+  "annotations": [
+    { "id": "n-top", "x": 0, "y": -136, "w": 640,
+      "text": "PROJECT BRAIN — terminal UI\n\nTop pane navigates and captures. Bottom pane is the copilot CLI. They share a folder and never talk to each other." },
+    { "id": "n-modes", "x": 0, "y": 810, "w": 320,
+      "text": "MODES AND CAPTURE\nModal, like vim. Raw in, structured later — nothing is parsed at capture time." },
+    { "id": "n-edit", "x": 0, "y": 1490, "w": 320,
+      "text": "READING AND EDITING\nThe pane renders the file. E shows the source it was rendered from." },
+    { "id": "n-entities", "x": 0, "y": 2550, "w": 320,
+      "text": "ENTITIES AND REFERENCE\nBoards and stakeholders share one shape, so they share one agenda code path." }
+  ],
+  "launch": { "view": "canvas" }
+}

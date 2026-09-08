@@ -1,0 +1,142 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+:root{
+  --bg:#100f0e; --panel:#161512; --panel2:#1c1a17; --line:#2b2823; --line2:#3a352e;
+  --fg:#ded7cb; --mut:#8d8479; --dim:#5a544c;
+  --teal:oklch(0.74 0.09 195); --green:oklch(0.74 0.09 145);
+  --amber:oklch(0.78 0.10 78); --red:oklch(0.70 0.12 28);
+  --violet:oklch(0.72 0.09 300);
+  --sel:#20302f; --mono:'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:#0a0908;color:var(--fg);
+  font-family:var(--mono);font-size:12.5px;line-height:1.58;
+  -webkit-font-smoothing:antialiased}
+a{color:var(--teal)} a:hover{color:var(--green)}
+
+.win{background:var(--bg);border:1px solid var(--line2);border-radius:7px;
+  overflow:hidden;display:flex;flex-direction:column;height:100%;
+  box-shadow:0 18px 50px rgba(0,0,0,.55)}
+.bar{display:flex;align-items:center;gap:8px;padding:7px 12px;
+  background:#1a1815;border-bottom:1px solid var(--line);flex:none}
+.dot{width:9px;height:9px;border-radius:50%;flex:none}
+.bar .t{color:var(--dim);font-size:11px;margin-left:8px;letter-spacing:.04em}
+
+.pane{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.hdr{display:flex;align-items:baseline;gap:14px;padding:7px 13px;
+  background:var(--panel2);border-bottom:1px solid var(--line);flex:none}
+.hdr .nm{font-weight:700;letter-spacing:.11em;font-size:11px;color:var(--fg)}
+.hdr .st{color:var(--mut);font-size:11.5px}
+.hdr .sp{flex-grow:1}
+
+.body{display:flex;flex-grow:1;min-height:0}
+.tree{width:238px;flex:none;border-right:1px solid var(--line);
+  padding:8px 0;overflow:hidden;background:var(--panel)}
+.detail{flex-grow:1;padding:10px 16px;overflow:hidden;
+  display:flex;flex-direction:column;gap:9px}
+
+.grp{color:var(--dim);font-size:10px;letter-spacing:.14em;
+  padding:7px 12px 2px;font-weight:500}
+.row{display:flex;align-items:center;gap:7px;padding:1px 12px;position:relative}
+.kid{padding-left:26px}
+.bdg{position:absolute;width:19px;height:19px;border-radius:50%;
+  background:var(--teal);color:#0a0908;font-weight:700;font-size:11px;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 0 0 3px #0a0908;z-index:5;top:50%;transform:translateY(-50%)}
+.bl{left:-10px} .br{right:-13px}
+.row.on{background:var(--sel);box-shadow:inset 2px 0 0 var(--teal)}
+.row .ind{width:12px;flex:none}
+.row .nm{flex-grow:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.row .rt{color:var(--dim);font-size:11px;flex:none}
+.dim{color:var(--dim)} .mut{color:var(--mut)}
+.teal{color:var(--teal)} .green{color:var(--green)} .amber{color:var(--amber)}
+.red{color:var(--red)} .violet{color:var(--violet)}
+.b{font-weight:700}
+
+.h1{font-size:14px;font-weight:700;letter-spacing:-.01em;position:relative}
+.meta{display:flex;flex-wrap:wrap;gap:12px;align-items:center;color:var(--mut);font-size:11.5px}
+.pill{border:1px solid currentColor;border-radius:2px;padding:0 5px;
+  font-size:10px;letter-spacing:.1em;font-weight:700}
+.sec{color:var(--dim);font-size:10px;letter-spacing:.14em;font-weight:500;
+  padding-bottom:2px;margin-top:2px}
+.li{display:flex;gap:8px;align-items:baseline;position:relative}
+.li .g{flex:none;width:10px}
+.li .tx{flex-grow:1}
+.li .rt{color:var(--dim);flex:none}
+.stack{display:flex;flex-direction:column;gap:1px}
+.blk{display:flex;flex-direction:column;gap:1px}
+
+.cap{display:flex;align-items:center;gap:11px;padding:7px 13px;flex:none;
+  border-top:1px solid var(--line);background:var(--panel2)}
+.mode{font-weight:700;letter-spacing:.09em;font-size:11px;flex:none}
+.mode.n{color:var(--dim)}
+.mode.i{color:var(--green)}
+.mode.c{color:var(--violet)}
+.cap .sp{flex-grow:1}
+.cap .rt{color:var(--dim);font-size:11.5px}
+.chip{border-radius:2px;padding:1px 7px;font-size:10px;font-weight:700;
+  letter-spacing:.11em;flex:none;color:#100f0e}
+.cur{display:inline-block;width:7px;height:14px;background:var(--teal);
+  vertical-align:-3px;margin-left:1px}
+.split{height:1px;background:var(--line2);flex:none}
+
+.cli{background:#0d0c0b;padding:10px 14px;display:flex;flex-direction:column;
+  gap:0;overflow:hidden;min-height:0}
+.cli .p{color:var(--green)}
+.cmd{color:var(--dim);font-size:11px}
+.ok{color:var(--green)}
+
+
+.wrap{padding:24px 28px;height:100%;display:flex;flex-direction:column;gap:12px;background:#0a0908}
+.t{font-size:15px;font-weight:700;letter-spacing:-.01em}
+.s{color:var(--mut);font-size:11.5px;margin-top:2px}
+.win{flex-grow:1;min-height:0}
+.pad{padding:11px 16px;display:flex;flex-direction:column;gap:10px;overflow:hidden}
+.hit{color:var(--teal);font-weight:700}
+.gen{border:1px solid var(--line2);border-radius:2px;padding:0 5px;font-size:9.5px;
+  letter-spacing:.11em;color:var(--dim);margin-left:8px;font-weight:500}
+.sbar{display:flex;align-items:center;gap:10px;padding:7px 14px;
+  border-bottom:1px solid var(--line);background:var(--panel2);flex:none}
+.sbar .sp{flex-grow:1}
+.res{padding:8px 0;overflow:hidden;flex-grow:1}
+.r{display:flex;gap:10px;padding:1px 16px;align-items:baseline}
+.r .src{width:132px;flex:none;color:var(--dim)}
+.r .tx{flex-grow:1}
+.r .rt{color:var(--dim);flex:none}
+.r.on{background:var(--sel);box-shadow:inset 2px 0 0 var(--teal)}
+.num{color:var(--dim);width:14px;flex:none}
+.tbl{width:100%;border-collapse:collapse}
+.tbl th{text-align:left;color:var(--dim);font-size:10px;letter-spacing:.13em;
+  font-weight:500;padding:0 12px 5px 0;border-bottom:1px solid var(--line)}
+.tbl td{padding:4px 12px 4px 0;border-bottom:1px solid #201e1a;vertical-align:top}
+.kcol{display:flex;flex-direction:column;gap:2px}
+.k{display:flex;gap:12px;align-items:baseline}
+.k .key{width:104px;flex:none;color:var(--teal)}
+.k .dsc{color:var(--mut)}
+.kh{color:var(--dim);font-size:10px;letter-spacing:.13em;margin:9px 0 3px;font-weight:500}
+.sw{display:flex;align-items:center;gap:11px}
+.sw .box{width:13px;height:13px;border-radius:2px;flex:none}
+.sw .lbl{width:78px;flex:none}
+.sw .dsc{color:var(--mut);font-size:11.5px}
+.two{display:flex;gap:34px}
+.two > div{flex-grow:1;flex-basis:0}
+
+.hpad{padding:16px 20px}
+.foot{border-top:1px solid var(--line);margin-top:14px;padding-top:11px;
+  color:var(--dim);font-size:11.5px;line-height:1.6}
+</style>
+</helmet>
+<div class="wrap"><div><div class="t">Keys <span class="dim">F1</span></div><div class="s">Modal, like vim. Single letters in NORMAL; <span class="teal">i</span> types; <span class="teal">Esc</span> always comes back. No chords to learn.</div></div><div class="win"><div class="hpad"><div class="two"><div><div class="kh">NORMAL — MOVING</div><div class="kcol"><div class="k"><span class="key">j k</span><span class="dsc">move the selection</span></div><div class="k"><span class="key">h l</span><span class="dsc">collapse / expand a program</span></div><div class="k"><span class="key">g G</span><span class="dsc">top / bottom</span></div><div class="k"><span class="key">Tab</span><span class="dsc">focus the detail pane, then j k within it</span></div><div class="k"><span class="key">/  n N</span><span class="dsc">search · next · previous match</span></div></div><div class="kh">NORMAL — CAPTURE</div><div class="kcol"><div class="k"><span class="key">i</span><span class="dsc">start a note in the modeline</span></div><div class="k"><span class="key">o</span><span class="dsc">open the full-screen pane, for meeting notes</span></div><div class="k"><span class="key">t</span><span class="dsc">cycle type: note → meeting → action → decision</span></div></div></div><div><div class="kh">NORMAL — ACTING</div><div class="kcol"><div class="k"><span class="key">e</span><span class="dsc">edit the focused line, in place</span></div><div class="k"><span class="key">E</span><span class="dsc">show the file as raw source</span></div><div class="k"><span class="key">x</span><span class="dsc">tick the focused action</span></div><div class="k"><span class="key">d  s  H</span><span class="dsc">due date · status · health</span></div><div class="k"><span class="key">u  Ctrl+R</span><span class="dsc">undo · redo — these are git commits</span></div><div class="k"><span class="key">Q</span><span class="dsc">queue a job for the agent in _request.md</span></div><div class="k"><span class="key">:</span><span class="dsc">run a brain command</span></div><div class="k"><span class="key">?</span><span class="dsc">this screen</span></div><div class="k"><span class="key">ZZ</span><span class="dsc">quit</span></div></div><div class="kh">INSERT</div><div class="kcol"><div class="k"><span class="key">Esc</span><span class="dsc">back to NORMAL, keeping what you typed</span></div><div class="k"><span class="key">⏎</span><span class="dsc">capture the note, or commit the line edit</span></div></div><div class="kh">COMMAND  :</div><div class="kcol"><div class="k"><span class="key">:log <text></span><span class="dsc">log against the selection</span></div><div class="k"><span class="key">:status blocked</span><span class="dsc">set a field</span></div><div class="k"><span class="key">:agenda ann</span><span class="dsc">build a stakeholder or board agenda</span></div><div class="k"><span class="key">:met ann</span><span class="dsc">record that the meeting happened</span></div><div class="k"><span class="key">:inbox</span><span class="dsc">list what is waiting to be processed</span></div></div></div></div><div class="foot">Nothing here calls a model. The agent lives in the bottom pane and is driven by what you type there, or by the jobs <span class="teal">Q</span> queues in <span class="mut">_request.md</span>.</div></div></div></div>
+</x-dc>
+</body>
+</html>
