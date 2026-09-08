@@ -44,6 +44,16 @@ def test_an_exact_slug_beats_an_ambiguous_prefix(brain_tree):
     assert rv.resolve(brain_tree, "acme").slug == "acme"
 
 
+@pytest.mark.parametrize("ref", ["", "-", "---", "   ", "!!!"])
+def test_a_reference_with_nothing_in_it_is_unknown_not_ambiguous(brain_tree, ref):
+    """`startswith("")` is True for every slug, so without a guard the prefix
+    pass matches the whole brain and reports it as an ambiguity. Being told
+    your reference is ambiguous among everything is a worse answer than being
+    told it is empty."""
+    with pytest.raises(UnknownReference):
+        rv.resolve(brain_tree, ref)
+
+
 def test_unknown_reference_says_so(brain_tree):
     with pytest.raises(UnknownReference) as excinfo:
         rv.resolve(brain_tree, "nothing-like-this")

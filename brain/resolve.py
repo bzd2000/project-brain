@@ -47,8 +47,17 @@ def _one(matches, ref, pass_name):
 
 def resolve(root, ref: str, kinds=None):
     """Resolve `ref` to one entity, or raise (R6.2)."""
-    entities = _candidates(root, kinds)
     wanted = normalise(ref)
+    if not wanted:
+        # Every pass would otherwise match everything - `startswith("")` is True
+        # for every slug - and the user would be told their reference is
+        # ambiguous among the entire brain. An empty reference is a different
+        # mistake from an ambiguous one, and deserves to be told apart.
+        raise UnknownReference(
+            "{!r} is not a reference to anything: it has no letters or digits "
+            "in it. Name a slug or a title.".format(ref)
+        )
+    entities = _candidates(root, kinds)
 
     found = _one([e for e in entities if e.slug == ref], ref, "slug")
     if found is not None:
