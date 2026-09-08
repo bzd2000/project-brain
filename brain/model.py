@@ -7,6 +7,7 @@ comments, ordering and formatting intact.
 """
 from __future__ import annotations
 
+import re
 from datetime import date
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional
@@ -22,6 +23,18 @@ PROJECT_SECTIONS = ("Summary", "Next actions", "Open questions", "Decisions", "L
 PROGRAM_SECTIONS = ("Summary", "Roll-up", "Log")
 STAKEHOLDER_SECTIONS = ("Concerns", "Pending", "Next agenda", "History")
 BOARD_SECTIONS = ("Purpose", "Standing agenda", "Pending", "Next agenda", "Minutes")
+
+TASK = re.compile(r"^(?P<indent>\s*)- \[(?P<mark>[ xX])\] (?P<rest>.*)$")
+OWNER = re.compile(r"\s\s@(?P<owner>\S+)")
+DUE = re.compile(r"\s\sdue:(?P<due>\d{4}-\d{2}-\d{2})")
+
+
+class Task(NamedTuple):
+    lineno: int
+    done: bool
+    text: str
+    owner: Optional[str]
+    due: Optional[str]
 
 
 class Section(NamedTuple):
@@ -43,6 +56,37 @@ def _split(raw: bytes):
     if ends_with_newline:
         text = text[:-1]
     return text.split("\n"), eol, ends_with_newline
+
+
+def render_action(text: str, owner=None, due=None, done: bool = False) -> str:
+    """R4.2.2. No inline metadata other than @owner and due: is emitted."""
+    line = "- [{}] {}".format("x" if done else " ", text)
+    if owner:
+        line += "  @{}".format(owner)
+    if due:
+        line += "  due:{}".format(due)
+    return line
+
+
+def parse_action(lineno: int, line: str):
+    """Parse one checkbox line, or return None. Never raises."""
+    match = TASK.match(line)
+    if match is None:
+        return None
+    rest = match.group("rest")
+    owner = OWNER.search(rest)
+    due = DUE.search(rest)
+    text = rest
+    for found in (owner, due):
+        if found:
+            text = text.replace(found.group(0), "")
+    return Task(
+        lineno=lineno,
+        done=match.group("mark").lower() == "x",
+        text=text.strip(),
+        owner=owner.group("owner") if owner else None,
+        due=due.group("due") if due else None,
+    )
 
 
 class Doc:
@@ -277,3 +321,55 @@ class Doc:
         self.lines = self._tidy()
         self.path.write_bytes(self.render())
         self.reindex()
+
+    # -- actions -----------------------------------------------------------
+    def tasks(self, section: str = "Next actions"):
+        """Every checkbox in `section`, with absolute line numbers (R5.3).
+
+        Checkboxes elsewhere in the file are tolerated but are not tasks
+        (R4.2.4) — adopting them would let a stray line become an action.
+        """
+        found = self.section(section)
+        if found is None:
+            return []
+        out = []
+        for i in range(found.start, found.end):
+            task = parse_action(i, self.lines[i])
+            if task is not None:
+                out.append(task)
+        return out
+
+    def add_action(self, text: str, owner=None, due=None) -> int:
+        return self.add_bullet(
+            "Next actions", render_action(text, owner, due), newest_first=False
+        )
+
+    def add_log(self, text: str) -> int:
+        return self.add_bullet("Log", "- " + text, newest_first=True)
+
+    def add_decision(self, text: str) -> int:
+        return self.add_bullet("Decisions", "- " + text, newest_first=True)
+
+    def add_question(self, text: str) -> int:
+        return self.add_bullet("Open questions", "- " + text, newest_first=False)
+
+    def toggle_task(self, lineno: int) -> int:
+        task = parse_action(lineno, self.lines[lineno])
+        if task is None:
+            raise ValueError("line {} of {} is not a task".format(lineno, self.path))
+        self.lines[lineno] = render_action(
+            task.text, task.owner, task.due, done=not task.done
+        )
+        return lineno
+
+    def edit_task(self, lineno: int, text: str) -> int:
+        """Replace a task's description, keeping its state and metadata.
+
+        Exactly one line changes (R10.10). Re-rendering a single line is not
+        the file regeneration R5.1 forbids.
+        """
+        task = parse_action(lineno, self.lines[lineno])
+        if task is None:
+            raise ValueError("line {} of {} is not a task".format(lineno, self.path))
+        self.lines[lineno] = render_action(text, task.owner, task.due, done=task.done)
+        return lineno
