@@ -881,6 +881,51 @@ def test_undo_with_nothing_to_undo_returns_none(git_root):
     assert g.undo(git_root) is None
 
 
+def test_prose_quoting_a_trailer_does_not_hide_a_commit(git_root):
+    """R8.3 puts the user's words into commit bodies verbatim, so a captured
+    note can contain text shaped exactly like one of our trailers. Scanning for
+    a line prefix would let that retire a real commit, which `undo` would then
+    report as "nothing to undo" while it sat there un-reverted."""
+    path = git_root / "projects" / "acme-migration.md"
+    path.write_text(path.read_text(encoding="utf-8") + "- real\n", encoding="utf-8")
+    victim = g.commit(git_root, ["projects/acme-migration.md"], "brain: log real")
+    path.write_text(path.read_text(encoding="utf-8") + "- quoting\n", encoding="utf-8")
+    g.commit(
+        git_root,
+        ["projects/acme-migration.md"],
+        "brain: log quote\n\nthe note said:\nBrain-Undo: " + victim,
+    )
+    g.undo(git_root)                       # retires the quoting commit only
+    assert g.undoable(git_root).sha == victim
+
+
+def test_a_subject_that_merely_looks_like_an_undo_is_still_undoable(git_root):
+    """Undo commits are identified by their trailer, not by their wording."""
+    (git_root / "inbox.md").write_text("## n40 - note\nbody\n", encoding="utf-8")
+    sha = g.commit(git_root, ["inbox.md"], "brain: undo the vendor review decision")
+    assert g.undoable(git_root).sha == sha
+
+
+def test_a_failed_commit_after_the_revert_restores_the_tree(git_root, monkeypatch):
+    """The revert applied but recording it did not. Leaving the reverted content
+    in the tree would be a half-done undo no later call knows about."""
+    path = git_root / "projects" / "acme-migration.md"
+    path.write_text(path.read_text(encoding="utf-8") + "- one\n", encoding="utf-8")
+    g.commit(git_root, ["projects/acme-migration.md"], "brain: log one")
+    after_commit = path.read_bytes()
+    head_before = g.head(git_root)
+
+    def boom(*args, **kwargs):
+        raise g.GitError("recording the undo failed")
+
+    monkeypatch.setattr(g, "commit", boom)
+    with pytest.raises(g.GitError):
+        g.undo(git_root)
+    assert path.read_bytes() == after_commit
+    assert g.head(git_root) == head_before
+    assert g.run(["status", "--porcelain"], git_root) == ""
+
+
 def test_undo_that_would_conflict_changes_nothing(git_root):
     """R6.2 applied to history: an ambiguous rollback is an error, not a guess.
 
@@ -919,7 +964,8 @@ Append to `brain/git.py`:
 class BrainCommit(NamedTuple):
     sha: str
     subject: str
-    body: str
+    source: str
+    undo_of: Optional[str]
 
 
 def _unstage(root, paths) -> None:
@@ -934,38 +980,66 @@ def _unstage(root, paths) -> None:
         _git(["reset", "-q", "--"] + list(paths), root, check=False)
 
 
-def brain_commits(root, limit: int = 200) -> List[BrainCommit]:
-    """Brain-authored commits, newest first (R11.3's trailer is the marker)."""
-    out = _git(
-        ["log", "-n", str(limit), "--format=%H%x1f%s%x1f%B%x1e"], root
-    ).stdout
+def brain_commits(root, limit: Optional[int] = None) -> List[BrainCommit]:
+    """Brain-authored commits, newest first (R11.3's trailer is the marker).
+
+    Trailers come from git's own trailer parser rather than from scanning the
+    message for a line prefix. R8.3 puts the user's words into commit bodies
+    verbatim, so a quoted note can contain text shaped exactly like one of our
+    trailers - and only git knows which lines are really the trailer block.
+
+    There is no default window: a commit that aged out of one would make `undo`
+    report "nothing to undo" while the target sat there un-reverted, which is a
+    silent wrong answer rather than the refusal R6.2 asks for.
+    """
+    args = ["log"]
+    if limit is not None:
+        args += ["-n", str(limit)]
+    args.append(
+        "--format=%H%x1f%s%x1f"
+        "%(trailers:key=Brain-Source,valueonly)%x1f"
+        "%(trailers:key=Brain-Undo,valueonly)%x1e"
+    )
     found = []
-    for entry in out.split("\x1e"):
+    for entry in _git(args, root).stdout.split("\x1e"):
         entry = entry.strip("\n")
         if not entry:
             continue
-        sha, subject, body = entry.split("\x1f", 2)
-        if "Brain-Source:" in body:
-            found.append(BrainCommit(sha=sha, subject=subject, body=body))
+        sha, subject, source, undo_of = entry.split("\x1f", 3)
+        source = source.strip()
+        if not source:
+            continue
+        found.append(BrainCommit(
+            sha=sha, subject=subject, source=source,
+            undo_of=undo_of.strip() or None,
+        ))
     return found
 
 
 def _already_undone(commits) -> set:
-    """Shas named by a `Brain-Undo:` trailer on some later commit."""
-    undone = set()
-    for entry in commits:
-        for line in entry.body.splitlines():
-            if line.startswith("Brain-Undo:"):
-                undone.add(line.split(":", 1)[1].strip())
-    return undone
+    """Shas retired by an undo commit.
+
+    Keyed on `Brain-Source: undo`, so only a commit this tool wrote as an undo
+    can retire another one.
+    """
+    return {
+        entry.undo_of for entry in commits
+        if entry.source == "undo" and entry.undo_of
+    }
 
 
 def undoable(root) -> Optional[BrainCommit]:
-    """The newest brain-authored commit that has not already been undone."""
+    """The newest brain-authored commit that has not already been undone.
+
+    Undo commits are recognised by their `Brain-Source: undo` trailer, not by
+    their subject. R11.5 asks repeated calls to walk BACK, so reverting a revert
+    would ping-pong - but testing the subject would also permanently hide any
+    commit whose message merely began with the same words.
+    """
     commits = brain_commits(root)
     undone = _already_undone(commits)
     for entry in commits:
-        if entry.sha not in undone and not entry.subject.startswith("brain: undo "):
+        if entry.source != "undo" and entry.sha not in undone:
             return entry
     return None
 
@@ -1003,25 +1077,33 @@ def undo(root) -> Optional[str]:
             "changed.".format(target.sha[:7], target.subject)
         )
 
-    _unstage(root, touched)
-    return commit(
-        root,
-        touched,
-        "brain: undo {} - {}".format(target.sha[:7], target.subject),
-        source="undo",
-        undo_of=target.sha,
-    )
+    try:
+        _unstage(root, touched)
+        return commit(
+            root,
+            touched,
+            "brain: undo {} - {}".format(target.sha[:7], target.subject),
+            source="undo",
+            undo_of=target.sha,
+        )
+    except Exception:
+        # The revert applied but recording it did not. Leaving the reverted
+        # content in the tree would be a half-done undo that no later call knows
+        # about - the same half-applied state the conflict path already refuses.
+        _unstage(root, touched)
+        restore(root, cp)
+        raise
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_git_undo.py -v`
-Expected: 6 passed.
+Expected: 9 passed.
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 131 passed.
+Expected: 134 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1155,7 +1237,7 @@ Expected: 5 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 136 passed.
+Expected: 139 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1375,7 +1457,7 @@ Expected: 8 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 144 passed.
+Expected: 147 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1480,7 +1562,7 @@ In the "Build order" section, mark milestones 1 and 2 done. In the module map, a
 - [ ] **Step 6: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 147 passed.
+Expected: 150 passed.
 
 - [ ] **Step 7: Commit**
 
@@ -1502,7 +1584,7 @@ Per §12, milestone 3 (`commands.py` + `cli.py`) comes next and is much larger.
 Verify before handing back:
 
 ```bash
-.venv/bin/python -m pytest -q          # 147 passed
+.venv/bin/python -m pytest -q          # 150 passed
 git log --oneline milestone-1-doc-entities..HEAD
 ```
 
