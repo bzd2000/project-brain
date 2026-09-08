@@ -1154,6 +1154,8 @@ inside them, and a file without a trailing newline does not gain one."
 `tests/test_doc_mutate.py`:
 
 ```python
+import pytest
+
 from conftest import snapshot, assert_only_changed
 from brain.model import Doc
 
@@ -1199,6 +1201,22 @@ def test_set_field_creates_front_matter_when_absent(broken_dir):
     assert "Summary" in reloaded.sections
 
 
+def test_set_field_refuses_on_unterminated_front_matter(tmp_path):
+    """R6.2/R10.11: a write that cannot be made unambiguously is refused, not
+    guessed. `fm_range` is None both when there is no front matter and when the
+    block is unterminated; conflating them fabricates a second block and
+    silently corrupts the file."""
+    path = tmp_path / "unterminated.md"
+    path.write_text(
+        "---\nproject: Foo\nstatus: active\n\n## Log\n- entry\n", encoding="utf-8"
+    )
+    doc = Doc(path)                                  # loading is still tolerant
+    assert any("not closed" in p for p in doc.problems)
+    with pytest.raises(ValueError):
+        doc.set_field("status", "paused")
+    assert doc.lines.count("---") == 1, "a second front-matter block was fabricated"
+
+
 def test_touch_sets_updated(brain_tree):
     path = brain_tree / "projects" / "acme-migration.md"
     doc = Doc(path)
@@ -1225,9 +1243,22 @@ Add to `class Doc`:
 ```python
     # -- front-matter mutation --------------------------------------------
     def _ensure_front_matter(self) -> None:
-        """Create an empty front-matter block if the file has none."""
+        """Create an empty front-matter block if the file has none.
+
+        A file whose front matter is *opened but never closed* is refused
+        rather than repaired: where such a block ends is unknowable, so any
+        repair either swallows the body or fabricates a second block. R6.2
+        makes ambiguity an error and never a guess, and R10.11 rejects a write
+        that would break the format rather than writing it. Loading the same
+        file still never raises (R4.2.4) - only writing to it does.
+        """
         if self.fm_range is not None:
             return
+        if self.lines and self.lines[0].strip() == "---":
+            raise ValueError(
+                "{}: front matter is opened but never closed; refusing to "
+                "write. Close the block or remove the opening marker.".format(self.path)
+            )
         self.lines[0:0] = ["---", "---", ""]
         self.reindex()
 
