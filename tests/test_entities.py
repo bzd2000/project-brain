@@ -123,6 +123,47 @@ def test_scribbled_inbox_survives(tmp_path):
     assert notes[1].id == "n3"
 
 
+def test_note_body_containing_a_fenced_heading_is_not_split(tmp_path):
+    """R4.6.1: nothing may drop a body line. Splitting on `## ` without fence
+    awareness promotes a heading inside a code fence to a note header, so that
+    line disappears from every body."""
+    path = tmp_path / "inbox.md"
+    path.write_text(
+        "## n1 · 2026-09-07 09:00 · note ·\n"
+        "here is some markdown\n"
+        "```\n"
+        "## this is inside a fence\n"
+        "```\n"
+        "trailing line\n",
+        encoding="utf-8",
+    )
+    notes = load_notes(path)
+    assert len(notes) == 1
+    assert notes[0].body == [
+        "here is some markdown",
+        "```",
+        "## this is inside a fence",
+        "```",
+        "trailing line",
+    ]
+
+
+def test_missing_status_is_flagged_for_check(tmp_path):
+    """R4.2.4: a file that reports `unknown` must also be flagged, or
+    `brain check` has nothing to surface."""
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    path = projects / "sparse.md"
+    path.write_text(
+        "---\nproject: Sparse\n---\n\n## Summary\n\n## Next actions\n\n"
+        "## Open questions\n\n## Decisions\n\n## Log\n",
+        encoding="utf-8",
+    )
+    project = Project(path)
+    assert project.status == "unknown"
+    assert any("status" in p for p in project.problems)
+
+
 def test_empty_inbox_yields_no_notes(tmp_path):
     path = tmp_path / "inbox.md"
     path.write_text("", encoding="utf-8")
