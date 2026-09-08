@@ -84,6 +84,26 @@ FORBIDDEN_SUBCOMMANDS = {
 }
 
 
+# Global flags that take a SEPARATE value. `git -C /path push` would otherwise
+# resolve its subcommand to "/path" and smuggle a forbidden verb straight past
+# this stub - which is the one thing the stub exists to prevent.
+VALUE_FLAGS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+
+
+def subcommand(argv):
+    """The git subcommand, skipping global flags and their values."""
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in VALUE_FLAGS:
+            i += 2                      # the flag and the value it consumes
+        elif arg.startswith("-"):
+            i += 1                      # a bare switch, or --flag=value
+        else:
+            return arg
+    return None
+
+
 def main() -> int:
     argv = sys.argv[1:]
     log = os.environ.get("BRAIN_GIT_LOG")
@@ -91,7 +111,7 @@ def main() -> int:
         with open(log, "a", encoding="utf-8") as handle:
             handle.write("\x00".join(argv) + "\n")
 
-    sub = next((a for a in argv if not a.startswith("-")), None)
+    sub = subcommand(argv)
     reason = None
     if sub in FORBIDDEN_SUBCOMMANDS:
         reason = "R11.4 forbids `git {}`".format(sub)
@@ -233,14 +253,38 @@ def test_every_invocation_goes_through_the_stub(git_root, stub_git):
     assert ["rev-parse", "--is-inside-work-tree"] in calls
 
 
-def test_the_stub_refuses_a_forbidden_operation(git_root, stub_git):
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["push", "origin", "master"],
+        ["rebase", "master"],
+        ["merge", "other"],
+        ["checkout", "-b", "new"],
+        ["add", "-A"],
+        ["add", "--all"],
+        ["commit", "--amend", "-m", "x"],
+        ["branch", "new"],
+        # A global flag with a value must not hide the verb behind it.
+        ["-C", ".", "push", "origin", "master"],
+        ["--git-dir=.git", "push", "origin", "master"],
+    ],
+)
+def test_the_stub_refuses_a_forbidden_operation(git_root, stub_git, argv):
     """Proves the harness has teeth. If this ever passes silently, A10 is blind."""
     proc = subprocess.run(
-        ["git", "push", "origin", "master"],
-        cwd=str(git_root), capture_output=True, text=True,
+        ["git"] + argv, cwd=str(git_root), capture_output=True, text=True
     )
-    assert proc.returncode == 99
-    assert "R11.4" in proc.stderr
+    assert proc.returncode == 99, proc.stdout + proc.stderr
+    assert "R11." in proc.stderr
+
+
+@pytest.mark.parametrize("argv", [["merge-base", "HEAD", "HEAD"], ["status", "--porcelain"]])
+def test_the_stub_does_not_over_refuse(git_root, stub_git, argv):
+    """`merge-base` is not `merge`. A stub that over-refuses blocks real work."""
+    proc = subprocess.run(
+        ["git"] + argv, cwd=str(git_root), capture_output=True, text=True
+    )
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_git_py_names_no_forbidden_subcommand():
@@ -321,12 +365,12 @@ def require_repo(root) -> None:
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_git_repo.py -v`
-Expected: 6 passed.
+Expected: 17 passed (the two parametrised tests contribute 10 and 2 cases).
 
 - [ ] **Step 7: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 97 passed (91 from milestone 1 plus 6).
+Expected: 108 passed (91 from milestone 1 plus 17).
 
 - [ ] **Step 8: Commit**
 
