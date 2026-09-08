@@ -58,6 +58,51 @@ def test_undo_with_nothing_to_undo_returns_none(git_root):
     assert g.undo(git_root) is None
 
 
+def test_prose_quoting_a_trailer_does_not_hide_a_commit(git_root):
+    """R8.3 puts the user's words into commit bodies verbatim, so a captured
+    note can contain text shaped exactly like one of our trailers. Scanning for
+    a line prefix would let that retire a real commit, which `undo` would then
+    report as "nothing to undo" while it sat there un-reverted."""
+    path = git_root / "projects" / "acme-migration.md"
+    path.write_text(path.read_text(encoding="utf-8") + "- real\n", encoding="utf-8")
+    victim = g.commit(git_root, ["projects/acme-migration.md"], "brain: log real")
+    path.write_text(path.read_text(encoding="utf-8") + "- quoting\n", encoding="utf-8")
+    g.commit(
+        git_root,
+        ["projects/acme-migration.md"],
+        "brain: log quote\n\nthe note said:\nBrain-Undo: " + victim,
+    )
+    g.undo(git_root)                       # retires the quoting commit only
+    assert g.undoable(git_root).sha == victim
+
+
+def test_a_subject_that_merely_looks_like_an_undo_is_still_undoable(git_root):
+    """Undo commits are identified by their trailer, not by their wording."""
+    (git_root / "inbox.md").write_text("## n40 - note\nbody\n", encoding="utf-8")
+    sha = g.commit(git_root, ["inbox.md"], "brain: undo the vendor review decision")
+    assert g.undoable(git_root).sha == sha
+
+
+def test_a_failed_commit_after_the_revert_restores_the_tree(git_root, monkeypatch):
+    """The revert applied but recording it did not. Leaving the reverted content
+    in the tree would be a half-done undo no later call knows about."""
+    path = git_root / "projects" / "acme-migration.md"
+    path.write_text(path.read_text(encoding="utf-8") + "- one\n", encoding="utf-8")
+    g.commit(git_root, ["projects/acme-migration.md"], "brain: log one")
+    after_commit = path.read_bytes()
+    head_before = g.head(git_root)
+
+    def boom(*args, **kwargs):
+        raise g.GitError("recording the undo failed")
+
+    monkeypatch.setattr(g, "commit", boom)
+    with pytest.raises(g.GitError):
+        g.undo(git_root)
+    assert path.read_bytes() == after_commit
+    assert g.head(git_root) == head_before
+    assert g.run(["status", "--porcelain"], git_root) == ""
+
+
 def test_undo_that_would_conflict_changes_nothing(git_root):
     """R6.2 applied to history: an ambiguous rollback is an error, not a guess.
 

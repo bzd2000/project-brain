@@ -193,7 +193,8 @@ def restore(root, cp: Checkpoint) -> None:
 class BrainCommit(NamedTuple):
     sha: str
     subject: str
-    body: str
+    source: str
+    undo_of: Optional[str]
 
 
 def _unstage(root, paths) -> None:
@@ -208,38 +209,66 @@ def _unstage(root, paths) -> None:
         _git(["reset", "-q", "--"] + list(paths), root, check=False)
 
 
-def brain_commits(root, limit: int = 200) -> List[BrainCommit]:
-    """Brain-authored commits, newest first (R11.3's trailer is the marker)."""
-    out = _git(
-        ["log", "-n", str(limit), "--format=%H%x1f%s%x1f%B%x1e"], root
-    ).stdout
+def brain_commits(root, limit: Optional[int] = None) -> List[BrainCommit]:
+    """Brain-authored commits, newest first (R11.3's trailer is the marker).
+
+    Trailers come from git's own trailer parser rather than from scanning the
+    message for a line prefix. R8.3 puts the user's words into commit bodies
+    verbatim, so a quoted note can contain text shaped exactly like one of our
+    trailers - and only git knows which lines are really the trailer block.
+
+    There is no default window: a commit that aged out of one would make `undo`
+    report "nothing to undo" while the target sat there un-reverted, which is a
+    silent wrong answer rather than the refusal R6.2 asks for.
+    """
+    args = ["log"]
+    if limit is not None:
+        args += ["-n", str(limit)]
+    args.append(
+        "--format=%H%x1f%s%x1f"
+        "%(trailers:key=Brain-Source,valueonly)%x1f"
+        "%(trailers:key=Brain-Undo,valueonly)%x1e"
+    )
     found = []
-    for entry in out.split("\x1e"):
+    for entry in _git(args, root).stdout.split("\x1e"):
         entry = entry.strip("\n")
         if not entry:
             continue
-        sha, subject, body = entry.split("\x1f", 2)
-        if "Brain-Source:" in body:
-            found.append(BrainCommit(sha=sha, subject=subject, body=body))
+        sha, subject, source, undo_of = entry.split("\x1f", 3)
+        source = source.strip()
+        if not source:
+            continue
+        found.append(BrainCommit(
+            sha=sha, subject=subject, source=source,
+            undo_of=undo_of.strip() or None,
+        ))
     return found
 
 
 def _already_undone(commits) -> set:
-    """Shas named by a `Brain-Undo:` trailer on some later commit."""
-    undone = set()
-    for entry in commits:
-        for line in entry.body.splitlines():
-            if line.startswith("Brain-Undo:"):
-                undone.add(line.split(":", 1)[1].strip())
-    return undone
+    """Shas retired by an undo commit.
+
+    Keyed on `Brain-Source: undo`, so only a commit this tool wrote as an undo
+    can retire another one.
+    """
+    return {
+        entry.undo_of for entry in commits
+        if entry.source == "undo" and entry.undo_of
+    }
 
 
 def undoable(root) -> Optional[BrainCommit]:
-    """The newest brain-authored commit that has not already been undone."""
+    """The newest brain-authored commit that has not already been undone.
+
+    Undo commits are recognised by their `Brain-Source: undo` trailer, not by
+    their subject. R11.5 asks repeated calls to walk BACK, so reverting a revert
+    would ping-pong - but testing the subject would also permanently hide any
+    commit whose message merely began with the same words.
+    """
     commits = brain_commits(root)
     undone = _already_undone(commits)
     for entry in commits:
-        if entry.sha not in undone and not entry.subject.startswith("brain: undo "):
+        if entry.source != "undo" and entry.sha not in undone:
             return entry
     return None
 
@@ -277,11 +306,19 @@ def undo(root) -> Optional[str]:
             "changed.".format(target.sha[:7], target.subject)
         )
 
-    _unstage(root, touched)
-    return commit(
-        root,
-        touched,
-        "brain: undo {} - {}".format(target.sha[:7], target.subject),
-        source="undo",
-        undo_of=target.sha,
-    )
+    try:
+        _unstage(root, touched)
+        return commit(
+            root,
+            touched,
+            "brain: undo {} - {}".format(target.sha[:7], target.subject),
+            source="undo",
+            undo_of=target.sha,
+        )
+    except Exception:
+        # The revert applied but recording it did not. Leaving the reverted
+        # content in the tree would be a half-done undo that no later call knows
+        # about - the same half-applied state the conflict path already refuses.
+        _unstage(root, touched)
+        restore(root, cp)
+        raise
