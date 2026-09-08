@@ -527,6 +527,21 @@ def is_brain_path(root, path) -> bool:
     return len(parts) == 2 and parts[0] in BRAIN_DIRS and parts[1].endswith(".md")
 
 
+def _require_brain_paths(root, paths) -> None:
+    """Refuse any path outside the allowlist (R11.2).
+
+    Shared by `commit`, `checkpoint` and `restore`. The rollback path needs this
+    most: it writes bytes wherever it is told, and it runs when something has
+    already gone wrong - the worst moment to discover a caller passed a path
+    outside the brain.
+    """
+    bad = [str(p) for p in paths if not is_brain_path(root, p)]
+    if bad:
+        raise GitError(
+            "refusing to touch paths outside the brain: {}".format(", ".join(bad))
+        )
+
+
 def _trailers(message: str, source: str, notes=None, undo_of=None) -> str:
     """R11.3: a legible subject, then machine-readable trailers."""
     lines = [message.rstrip(), "", "Brain-Source: " + source]
@@ -564,11 +579,7 @@ def commit(root, paths, message: str, source: str = "cli",
         # empty path set - a no-op batch, a revert touching no brain path - must
         # get a no-op, not the user's staged work in a brain commit.
         return None
-    bad = [p for p in paths if not is_brain_path(root, p)]
-    if bad:
-        raise GitError(
-            "refusing to stage paths outside the brain: {}".format(", ".join(bad))
-        )
+    _require_brain_paths(root, paths)
     for path in paths:
         _git(["add", "--", path], root)
     staged = _git(["diff", "--cached", "--name-only", "--"] + paths, root).stdout.strip()
@@ -620,6 +631,8 @@ undo (R11.5) and check --authored (R11.6) both read it."
 `tests/test_git_checkpoint.py`:
 
 ```python
+import pytest
+
 from brain import git as g
 
 
@@ -656,6 +669,41 @@ def test_checkpoint_records_head(git_root):
     assert cp.head == g.head(git_root)
 
 
+def test_checkpoint_refuses_a_path_outside_the_brain(git_root):
+    """R11.2 applies to the rollback path too."""
+    with pytest.raises(g.GitError):
+        g.checkpoint(git_root, ["../escape.md"])
+    with pytest.raises(g.GitError):
+        g.checkpoint(git_root, ["unrelated.txt"])
+
+
+def test_restore_reports_a_partial_failure_rather_than_hiding_it(git_root, monkeypatch):
+    """A rollback that gives up half way and returns normally is the failure
+    R6.5 exists to prevent, one level down."""
+    cp = g.checkpoint(git_root, ["inbox.md", "projects/acme-migration.md"])
+    (git_root / "inbox.md").write_bytes(b"clobbered\n")
+    real_write = g.Path.write_bytes
+
+    def explode(self, data):
+        if self.name == "inbox.md":
+            raise OSError(13, "Permission denied")
+        return real_write(self, data)
+
+    monkeypatch.setattr(g.Path, "write_bytes", explode)
+    with pytest.raises(g.GitError) as excinfo:
+        g.restore(git_root, cp)
+    assert "part-restored" in str(excinfo.value)
+    assert "inbox.md" in str(excinfo.value)
+
+
+def test_checkpoint_on_a_directory_does_not_crash(git_root):
+    """A directory where a file was expected is recorded as absent, not raised
+    as a bare IsADirectoryError out of the capture step."""
+    (git_root / "projects" / "odd.md").mkdir()
+    cp = g.checkpoint(git_root, ["projects/odd.md"])
+    assert cp.files["projects/odd.md"] is None
+
+
 def test_restore_is_idempotent(git_root):
     path = git_root / "inbox.md"
     original = path.read_bytes()
@@ -689,35 +737,57 @@ def checkpoint(root, paths) -> Checkpoint:
     does not exist yet is recorded as None so `restore` can delete it again.
     """
     root = Path(root)
+    _require_brain_paths(root, paths)
     files = {}
     for path in paths:
         target = root / path
-        files[Path(path).as_posix()] = target.read_bytes() if target.exists() else None
+        # `is_file()` rather than `exists()`: a directory where a file was
+        # expected is recorded as absent instead of raising IsADirectoryError,
+        # so malformed input surfaces through restore's error report rather than
+        # as a bare traceback out of the capture step.
+        files[Path(path).as_posix()] = target.read_bytes() if target.is_file() else None
     return Checkpoint(head=head(root), files=files)
 
 
 def restore(root, cp: Checkpoint) -> None:
-    """Put every captured path back exactly as it was."""
+    """Put every captured path back exactly as it was.
+
+    Every path is attempted even if one fails, and the failures are raised
+    together afterwards. A rollback that gave up half way and returned normally
+    would leave a part-restored tree with no signal - the exact failure R6.5
+    exists to prevent, one level down.
+    """
     root = Path(root)
+    _require_brain_paths(root, cp.files)
+    problems = []
     for rel, data in cp.files.items():
         target = root / rel
-        if data is None:
-            if target.exists():
-                target.unlink()
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        try:
+            if data is None:
+                if target.exists():
+                    target.unlink()
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        except OSError as exc:
+            problems.append("{}: {}".format(rel, exc))
+    if problems:
+        raise GitError(
+            "rollback incomplete, the tree is part-restored: {}".format(
+                "; ".join(problems)
+            )
+        )
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_git_checkpoint.py -v`
-Expected: 5 passed.
+Expected: 8 passed.
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 122 passed.
+Expected: 125 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -913,10 +983,13 @@ def undo(root) -> Optional[str]:
     if target is None:
         return None
 
+    # Filter before checkpointing: `checkpoint` now refuses non-brain paths, and
+    # a hand-made commit carrying the trailer could name one.
     touched = [
         p for p in _git(
             ["show", "--name-only", "--format=", target.sha], root
         ).stdout.split()
+        if is_brain_path(root, p)
     ]
     cp = checkpoint(root, touched)
 
@@ -933,7 +1006,7 @@ def undo(root) -> Optional[str]:
     _unstage(root, touched)
     return commit(
         root,
-        [p for p in touched if is_brain_path(root, p)],
+        touched,
         "brain: undo {} - {}".format(target.sha[:7], target.subject),
         source="undo",
         undo_of=target.sha,
@@ -948,7 +1021,7 @@ Expected: 6 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 128 passed.
+Expected: 131 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1082,7 +1155,7 @@ Expected: 5 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 133 passed.
+Expected: 136 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1302,7 +1375,7 @@ Expected: 8 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 141 passed.
+Expected: 144 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1407,7 +1480,7 @@ In the "Build order" section, mark milestones 1 and 2 done. In the module map, a
 - [ ] **Step 6: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 144 passed.
+Expected: 147 passed.
 
 - [ ] **Step 7: Commit**
 
@@ -1429,7 +1502,7 @@ Per §12, milestone 3 (`commands.py` + `cli.py`) comes next and is much larger.
 Verify before handing back:
 
 ```bash
-.venv/bin/python -m pytest -q          # 144 passed
+.venv/bin/python -m pytest -q          # 147 passed
 git log --oneline milestone-1-doc-entities..HEAD
 ```
 
