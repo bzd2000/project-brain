@@ -1170,6 +1170,30 @@ def test_an_untracked_file_is_not_authored(git_root):
     assert g.authored(git_root, "projects/stray.md") is False
 
 
+def test_a_prose_mention_of_the_trailer_does_not_confer_authorship(git_root):
+    """R3.2 exists so a violation is visible. A body that merely MENTIONS the
+    trailer must not make a hand-made commit look brain-authored - that failure
+    runs the wrong way, hiding the offender instead of over-reporting it."""
+    (git_root / "inbox.md").write_text("## n50 - by hand\nbody\n", encoding="utf-8")
+    g.run(["add", "--", "inbox.md"], git_root)
+    g.run(
+        ["commit", "-q", "-m",
+         "hand edit\n\nreminder: Brain-Source: is the trailer brain writes"],
+        git_root,
+    )
+    assert g.authored(git_root, "inbox.md") is False
+    assert "inbox.md" in g.unauthored(git_root)
+
+
+def test_a_hand_deleted_file_is_still_reported(git_root):
+    """An offender must not escape the report by ceasing to exist on disk."""
+    (git_root / "inbox.md").write_text("## n51 - note\nbody\n", encoding="utf-8")
+    g.commit(git_root, ["inbox.md"], "brain: capture n51", source="tui")
+    (git_root / "inbox.md").unlink()
+    assert g.authored(git_root, "inbox.md") is False
+    assert "inbox.md" in g.unauthored(git_root)
+
+
 def test_unauthored_lists_every_offender(git_root):
     _touch(git_root, "inbox.md", "## n23 - note\nbody\n")
     g.commit(git_root, ["inbox.md"], "brain: capture n23", source="tui")
@@ -1210,34 +1234,46 @@ def authored(root, path) -> bool:
         return False
     if _git(["diff", "--quiet", "HEAD", "--", path], root, check=False).returncode != 0:
         return False
-    body = _git(["log", "-1", "--format=%B", "--", path], root).stdout
-    return "Brain-Source:" in body
+    # Read the trailer through git's own parser, not by scanning the message.
+    # A body can quote anything (R8.3), and a substring match here runs the
+    # WRONG way: a hand-made commit that merely mentions the trailer would be
+    # counted as brain-authored, erasing the violation R3.2 exists to surface.
+    source = _git(
+        ["log", "-1", "--format=%(trailers:key=Brain-Source,valueonly)", "--", path],
+        root,
+    ).stdout.strip()
+    return bool(source)
 
 
 def unauthored(root) -> List[str]:
     """Every brain path whose current content did not come through `brain`."""
     root = Path(root)
-    offenders = []
+    candidates = set()
     for name in BRAIN_FILES:
-        if (root / name).exists() and not authored(root, name):
-            offenders.append(name)
+        if (root / name).exists():
+            candidates.add(name)
     for directory in BRAIN_DIRS:
-        for target in sorted((root / directory).glob("*.md")):
-            rel = target.relative_to(root).as_posix()
-            if not authored(root, rel):
-                offenders.append(rel)
-    return offenders
+        for target in (root / directory).glob("*.md"):
+            candidates.add(target.relative_to(root).as_posix())
+    # Everything git still tracks, too. A file deleted by hand is gone from the
+    # disk walk, and a hand-deletion is exactly the unauthored change R3.2 wants
+    # made visible - an offender must not escape the report by ceasing to exist.
+    for tracked in _git(["ls-files"], root).stdout.splitlines():
+        tracked = tracked.strip()
+        if tracked and is_brain_path(root, tracked):
+            candidates.add(tracked)
+    return [rel for rel in sorted(candidates) if not authored(root, rel)]
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_git_authored.py -v`
-Expected: 5 passed.
+Expected: 7 passed.
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 139 passed.
+Expected: 141 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1457,7 +1493,7 @@ Expected: 8 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 147 passed.
+Expected: 149 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1562,7 +1598,7 @@ In the "Build order" section, mark milestones 1 and 2 done. In the module map, a
 - [ ] **Step 6: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 150 passed.
+Expected: 152 passed.
 
 - [ ] **Step 7: Commit**
 
@@ -1584,7 +1620,7 @@ Per §12, milestone 3 (`commands.py` + `cli.py`) comes next and is much larger.
 Verify before handing back:
 
 ```bash
-.venv/bin/python -m pytest -q          # 150 passed
+.venv/bin/python -m pytest -q          # 152 passed
 git log --oneline milestone-1-doc-entities..HEAD
 ```
 
@@ -1593,3 +1629,9 @@ git log --oneline milestone-1-doc-entities..HEAD
 - **`brain init` does not exist.** R4.0 says how a root is found, R4.6.6 needs a committed `_seq` and R5.4 a `.gitattributes`, but no verb creates any of it. Milestone 3 must add it and §6.1 needs the verb.
 - **`commands.py` acquires the lock**, not `git.py`. Every write verb wraps its work in `lock.held(root)`; A15 asserts two concurrent `apply` runs leave exactly one batch's changes.
 - **`apply` uses `checkpoint`/`restore`** around the whole batch, and commits once (R6.5, A2).
+- **`brain init`'s first commit must be brain-authored.** `check --authored`
+  reports every file whose last change lacks the trailer, which is literally
+  correct but makes the check unusably noisy on a root whose files were
+  committed before `brain` existed. `init` creating the skeleton through
+  `git.commit()` fixes it at the source; anything else leaves the user's first
+  `brain check` reporting their whole brain as a violation.
