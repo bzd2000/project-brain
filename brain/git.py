@@ -72,7 +72,10 @@ def is_brain_path(root, path) -> bool:
         return False
     if len(parts) == 1:
         return parts[0] in BRAIN_FILES
-    return parts[0] in BRAIN_DIRS and parts[-1].endswith(".md")
+    # Exactly two parts: §4's layout is flat, and entities.load_root globs
+    # `<dir>/*.md` non-recursively. A nested path is one brain could stage but
+    # could never load back.
+    return len(parts) == 2 and parts[0] in BRAIN_DIRS and parts[1].endswith(".md")
 
 
 def _trailers(message: str, source: str, notes=None, undo_of=None) -> str:
@@ -105,6 +108,13 @@ def commit(root, paths, message: str, source: str = "cli",
     """
     require_repo(root)
     paths = [str(p) for p in paths]
+    if not paths:
+        # `git commit -- ` with nothing after the separator is NO RESTRICTION,
+        # not "no files": it would commit the whole index, including work the
+        # user staged, under a Brain-Source trailer. A caller that computed an
+        # empty path set - a no-op batch, a revert touching no brain path - must
+        # get a no-op, not the user's staged work in a brain commit.
+        return None
     bad = [p for p in paths if not is_brain_path(root, p)]
     if bad:
         raise GitError(

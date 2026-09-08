@@ -53,6 +53,24 @@ def test_commit_refuses_a_path_outside_the_brain(git_root):
     assert "unrelated.txt" in str(excinfo.value)
 
 
+def test_commit_with_no_paths_commits_nothing(git_root):
+    """An empty pathspec is not "no files" to git. Without a guard this sweeps
+    the user's staged work into a Brain-Source commit, breaking R11.2 and then
+    telling R11.6's check that the user's own file was brain-authored."""
+    (git_root / "unrelated.txt").write_text("staged by the user\n", encoding="utf-8")
+    g.run(["add", "--", "unrelated.txt"], git_root)
+    before = g.head(git_root)
+    assert g.commit(git_root, [], "brain: nothing to do") is None
+    assert g.head(git_root) == before
+    assert "unrelated.txt" in g.run(["diff", "--cached", "--name-only"], git_root)
+
+
+def test_is_brain_path_rejects_a_nested_entity_path(git_root):
+    """§4's layout is flat and load_root globs non-recursively."""
+    assert g.is_brain_path(git_root, "projects/acme-migration.md") is True
+    assert g.is_brain_path(git_root, "projects/sub/deep.md") is False
+
+
 def test_commit_with_no_change_returns_none_and_adds_nothing(git_root):
     before = g.head(git_root)
     assert g.commit(git_root, ["inbox.md"], "brain: nothing to do") is None
