@@ -1313,6 +1313,10 @@ import pytest
 from brain import lock as L
 
 
+def holder_pid(root):
+    return L.holder(root)["pid"]
+
+
 def test_the_lock_excludes_a_second_writer(tmp_path):
     """R11.7: both panes shell out to `brain` against one tree."""
     with L.held(tmp_path):
@@ -1361,11 +1365,35 @@ def test_a_fresh_lock_from_another_host_is_respected(tmp_path):
             pass
 
 
-def test_an_unreadable_lock_is_treated_as_stale(tmp_path):
-    """A truncated or half-written lock file must not wedge the brain."""
-    (tmp_path / L.LOCK_NAME).write_text("{ not json", encoding="utf-8")
+def test_an_unreadable_lock_is_broken_once_it_is_old(tmp_path):
+    """A truncated lock must not wedge the brain forever - but nor may it be
+    broken instantly, because a lock being written right now looks identical."""
+    path = tmp_path / L.LOCK_NAME
+    path.write_text("{ not json", encoding="utf-8")
+    old = time.time() - 3600
+    os.utime(path, (old, old))
     with L.held(tmp_path):
         pass
+
+
+def test_a_lock_being_written_right_now_is_not_stale(tmp_path):
+    """O_EXCL creates the file before the payload lands. A reader in that window
+    sees empty content and must not conclude the holder is dead - doing so
+    breaks a LIVE lock, which is the one thing R11.7 exists to prevent."""
+    (tmp_path / L.LOCK_NAME).write_text("", encoding="utf-8")
+    with pytest.raises(L.LockBusy):
+        with L.held(tmp_path):
+            pass
+
+
+def test_release_does_not_delete_a_lock_that_is_no_longer_ours(tmp_path):
+    """If our lock were broken and re-taken, our exit must not remove the new
+    holder's claim - that would silently un-protect both processes."""
+    usurper = {"pid": 999999, "started": time.time(), "host": "elsewhere"}
+    with L.held(tmp_path):
+        (tmp_path / L.LOCK_NAME).write_text(json.dumps(usurper), encoding="utf-8")
+    assert (tmp_path / L.LOCK_NAME).exists()
+    assert holder_pid(tmp_path) == 999999
 
 
 def test_a_lock_file_is_not_a_socket(tmp_path):
@@ -1423,9 +1451,18 @@ def holder(root) -> Optional[dict]:
         return None
 
 
-def _is_stale(info: Optional[dict], stale_after: float) -> bool:
+def _is_stale(info: Optional[dict], stale_after: float, path=None) -> bool:
     if info is None:
-        return True  # absent, truncated or half-written: not a live claim
+        # Empty or unparseable. This is ALSO what a lock looks like in the
+        # window between O_EXCL creating it and the payload landing, so it
+        # cannot be assumed dead: judge it by the file's own age instead. A
+        # truncated lock still gets broken, just not instantly.
+        if path is not None:
+            try:
+                return (time.time() - path.stat().st_mtime) > stale_after
+            except OSError:
+                return True
+        return True
     started = info.get("started")
     if not isinstance(started, (int, float)):
         return True
@@ -1455,7 +1492,7 @@ def held(root, stale_after: float = STALE_AFTER):
             fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             info = holder(root)
-            if attempt == 0 and _is_stale(info, stale_after):
+            if attempt == 0 and _is_stale(info, stale_after, path):
                 try:
                     path.unlink()
                 except OSError:
@@ -1477,23 +1514,27 @@ def held(root, stale_after: float = STALE_AFTER):
                     handle.write(payload)
                 yield path
             finally:
+                # Only remove the lock if it is still OURS. If ours was broken
+                # as stale and re-taken, unlinking here would delete the new
+                # holder's claim and leave two processes each believing they
+                # hold it - worse than never having locked at all.
                 try:
-                    path.unlink()
+                    if path.read_text(encoding="utf-8") == payload:
+                        path.unlink()
                 except OSError:
                     pass
             return
-    raise LockBusy("could not take the write lock on {}".format(root))
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_lock.py -v`
-Expected: 8 passed.
+Expected: 11 passed.
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 149 passed.
+Expected: 152 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1598,7 +1639,7 @@ In the "Build order" section, mark milestones 1 and 2 done. In the module map, a
 - [ ] **Step 6: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 152 passed.
+Expected: 155 passed.
 
 - [ ] **Step 7: Commit**
 
@@ -1620,7 +1661,7 @@ Per §12, milestone 3 (`commands.py` + `cli.py`) comes next and is much larger.
 Verify before handing back:
 
 ```bash
-.venv/bin/python -m pytest -q          # 152 passed
+.venv/bin/python -m pytest -q          # 155 passed
 git log --oneline milestone-1-doc-entities..HEAD
 ```
 
