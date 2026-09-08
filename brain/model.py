@@ -15,6 +15,14 @@ from ._yaml import parse_front_matter, render_value
 
 FENCE = "```"
 
+GENERATED_MARKER = "<!-- generated"
+
+# R4.2.1: fixed in name and order.
+PROJECT_SECTIONS = ("Summary", "Next actions", "Open questions", "Decisions", "Log")
+PROGRAM_SECTIONS = ("Summary", "Roll-up", "Log")
+STAKEHOLDER_SECTIONS = ("Concerns", "Pending", "Next agenda", "History")
+BOARD_SECTIONS = ("Purpose", "Standing agenda", "Pending", "Next agenda", "Minutes")
+
 
 class Section(NamedTuple):
     name: str
@@ -146,6 +154,84 @@ class Doc:
     def touch(self, today: Optional[str] = None) -> int:
         """Set `updated:`, which R4.2.3 makes authoritative over mtime."""
         return self.set_field("updated", today or date.today().isoformat())
+
+    # -- section mutation --------------------------------------------------
+    def ensure_section(self, name: str, order) -> Section:
+        """Create `name` if absent, positioned per `order` (R4.2.1)."""
+        if name in self.sections:
+            return self.sections[name]
+        order = list(order)
+        insert_at = None
+        if name in order:
+            index = order.index(name)
+            for earlier in reversed(order[:index]):
+                if earlier in self.sections:
+                    insert_at = self.sections[earlier].end
+                    break
+            if insert_at is None:
+                for later in order[index + 1:]:
+                    if later in self.sections:
+                        insert_at = self.sections[later].header
+                        break
+        if insert_at is None:
+            insert_at = len(self.lines)
+        block = ["## " + name, ""]
+        if insert_at > 0 and self.lines[insert_at - 1].strip() != "":
+            block.insert(0, "")
+        self.lines[insert_at:insert_at] = block
+        self.reindex()
+        return self.sections[name]
+
+    def add_bullet(self, section: str, line: str, newest_first: bool = False) -> int:
+        """Insert one line into `section`. Returns its 0-based index.
+
+        `## Log` and `## Decisions` are newest-first; `## Next actions` appends
+        (R4.2.1). The caller decides which, because Doc has no entity type.
+        """
+        found = self.section(section)
+        if found is None:
+            raise KeyError("no section {!r} in {}".format(section, self.path))
+        if newest_first:
+            # Insert before the first real content, not merely past the blanks:
+            # an empty section is all blanks, and skipping them would land the
+            # bullet after the section's own end.
+            first_content = None
+            for offset in range(found.start, found.end):
+                if self.lines[offset].strip():
+                    first_content = offset
+                    break
+            if first_content is None:
+                at = found.start
+            else:
+                at = first_content
+                if self.lines[at].lstrip().startswith(GENERATED_MARKER):
+                    at += 1
+        else:
+            at = found.end
+        self.lines.insert(at, line)
+        self.reindex()
+        return at
+
+    def set_section(self, name: str, text: str) -> None:
+        """Replace the body of a generated section (R4.3.1, R9.2).
+
+        The `<!-- generated -->` marker is machine-owned and is preserved or
+        added; it is what tells the user not to hand-edit the block, and what
+        `brain check` reads to warn when they did.
+        """
+        found = self.section(name)
+        if found is None:
+            raise KeyError("no section {!r} in {}".format(name, self.path))
+        marker = None
+        for i in range(found.start, found.end):
+            if self.lines[i].lstrip().startswith(GENERATED_MARKER):
+                marker = self.lines[i]
+                break
+        body = [marker or "<!-- generated -->"]
+        body.extend(text.split("\n"))
+        body.append("")
+        self.lines[found.start:found.end] = body
+        self.reindex()
 
     # -- writing ----------------------------------------------------------
     def _tidy(self) -> List[str]:

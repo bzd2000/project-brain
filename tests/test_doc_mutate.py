@@ -1,7 +1,7 @@
 import pytest
 
 from conftest import snapshot, assert_only_changed
-from brain.model import Doc
+from brain.model import Doc, PROJECT_SECTIONS
 
 
 def test_set_field_changes_exactly_one_line(brain_tree):
@@ -67,3 +67,76 @@ def test_touch_sets_updated(brain_tree):
     doc.touch(today="2026-09-08")
     doc.save()
     assert Doc(path).fm["updated"] == "2026-09-08"
+
+
+def test_add_bullet_newest_first_inserts_at_the_top(brain_tree):
+    before = snapshot(brain_tree)
+    path = brain_tree / "projects" / "acme-migration.md"
+    doc = Doc(path)
+    lineno = doc.add_bullet("Log", "- 2026-09-08 - Cutover window agreed.", newest_first=True)
+    doc.save()
+    body = Doc(path).section_lines("Log")
+    assert body[0] == "- 2026-09-08 - Cutover window agreed."
+    assert body[1] == "- 2026-09-03 - Reporting service live in prod, no incidents."
+    after = snapshot(brain_tree)
+    assert after["projects/acme-migration.md"][lineno] == "- 2026-09-08 - Cutover window agreed."
+    assert_only_changed(before, after, {"projects/acme-migration.md": set()})
+
+
+def test_add_bullet_appends_when_not_newest_first(brain_tree):
+    path = brain_tree / "projects" / "acme-migration.md"
+    doc = Doc(path)
+    doc.add_bullet("Next actions", "- [ ] Book the change window", newest_first=False)
+    doc.save()
+    assert Doc(path).section_lines("Next actions")[-1] == "- [ ] Book the change window"
+
+
+def test_add_bullet_into_an_empty_section(brain_tree):
+    path = brain_tree / "projects" / "q4-budget.md"
+    doc = Doc(path)
+    doc.add_bullet("Decisions", "- 2026-09-08 - Deferred the vendor review.", newest_first=True)
+    doc.save()
+    assert Doc(path).section_lines("Decisions") == ["- 2026-09-08 - Deferred the vendor review.", ""]
+
+
+def test_ensure_section_inserts_in_canonical_order(broken_dir):
+    """R4.2.1: the five H2 sections are fixed in name and order."""
+    path = broken_dir / "missing-sections.md"
+    doc = Doc(path)
+    for name in PROJECT_SECTIONS:
+        doc.ensure_section(name, PROJECT_SECTIONS)
+    doc.save()
+    assert list(Doc(path).sections) == list(PROJECT_SECTIONS)
+
+
+def test_ensure_section_is_a_no_op_when_present(brain_tree):
+    before = snapshot(brain_tree)
+    path = brain_tree / "projects" / "acme-migration.md"
+    doc = Doc(path)
+    doc.ensure_section("Log", PROJECT_SECTIONS)
+    doc.save()
+    assert_only_changed(before, snapshot(brain_tree), {})
+
+
+def test_set_section_replaces_a_generated_body_and_keeps_the_marker(brain_tree):
+    before = snapshot(brain_tree)
+    path = brain_tree / "boards" / "arch-board.md"
+    doc = Doc(path)
+    doc.set_section("Next agenda", "1. Terraform vs ARM sign-off\n2. Cutover risk")
+    doc.save()
+    body = Doc(path).section_lines("Next agenda")
+    assert body[0].startswith("<!-- generated")
+    assert "1. Terraform vs ARM sign-off" in body
+    after = snapshot(brain_tree)
+    assert_only_changed(before, after, {"boards/arch-board.md": set()})
+    assert after["boards/arch-board.md"][:20] == before["boards/arch-board.md"][:20]
+
+
+def test_set_section_does_not_disturb_neighbouring_sections(brain_tree):
+    path = brain_tree / "boards" / "arch-board.md"
+    doc = Doc(path)
+    doc.set_section("Next agenda", "1. One item")
+    doc.save()
+    reloaded = Doc(path)
+    assert reloaded.section_lines("Pending")[0].startswith("- 2026-09-04 - Terraform vs ARM")
+    assert reloaded.section_lines("Minutes")[0] == "### 2026-08-20"
