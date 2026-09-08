@@ -559,7 +559,7 @@ Expected: 7 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 104 passed.
+Expected: 115 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -689,7 +689,7 @@ Expected: 5 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 109 passed.
+Expected: 120 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -920,7 +920,7 @@ Expected: 6 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 115 passed.
+Expected: 126 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1054,7 +1054,7 @@ Expected: 5 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 120 passed.
+Expected: 131 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1274,7 +1274,7 @@ Expected: 8 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 128 passed.
+Expected: 139 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1379,7 +1379,7 @@ In the "Build order" section, mark milestones 1 and 2 done. In the module map, a
 - [ ] **Step 6: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 131 passed.
+Expected: 142 passed.
 
 - [ ] **Step 7: Commit**
 
@@ -1401,7 +1401,7 @@ Per §12, milestone 3 (`commands.py` + `cli.py`) comes next and is much larger.
 Verify before handing back:
 
 ```bash
-.venv/bin/python -m pytest -q          # 131 passed
+.venv/bin/python -m pytest -q          # 142 passed
 git log --oneline milestone-1-doc-entities..HEAD
 ```
 
