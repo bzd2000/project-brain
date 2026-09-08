@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 from . import git as g
-from .errors import RootNotFound
+from .errors import BrainError, RootNotFound
 
 SKELETON_DIRS = ("programs", "projects", "stakeholders", "boards")
 
@@ -77,9 +77,12 @@ def init(path) -> Path:
     (R4.6.1) and re-running init must not be able to lose them.
     """
     root = Path(path).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    for name in SKELETON_DIRS:
-        (root / name).mkdir(exist_ok=True)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        for name in SKELETON_DIRS:
+            (root / name).mkdir(exist_ok=True)
+    except OSError as exc:
+        raise BrainError("cannot create a brain at {}: {}".format(root, exc))
 
     created = []
     for name, contents in (

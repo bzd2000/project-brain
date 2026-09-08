@@ -2,15 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Status: milestone 2 done
+## Status: milestone 3a done
 
 `brain/model.py` (the `Doc` class), `brain/entities.py` (the four entity types
 plus notes), `brain/_yaml.py` (front-matter parsing), `brain/git.py` (commit,
 checkpoint/restore, undo, `log`/`diff`, the R11.4 guard) and `brain/lock.py`
-(the single-writer lock of R11.7) exist and are tested. Milestones 3–8 —
-`commands.py` + `cli.py`, `index.py`, `tui.py`, `AGENTS.md` + `process inbox`,
-agendas, and `tidy`/`review`/`rewrite` — are unbuilt. The repository also holds
-a decision-complete design and the screens to build against:
+(the single-writer lock of R11.7) exist and are tested. `brain/root.py` (root
+discovery and `brain init`), `brain/grammar.py` (the R6.4 line grammar),
+`brain/resolve.py` (reference resolution, R6.2), `brain/commands.py` (the verb
+registry) and `brain/cli.py` (the argparse front door) now also exist:
+`brain init`, `brain log`, `brain status set` and `brain note add` all work
+from a terminal. Milestone 3 continues in 3b (the remaining verbs) and 3c
+(`brain apply`). `index.py`, `tui.py`, `AGENTS.md` + `process inbox`, agendas,
+and `tidy`/`review`/`rewrite` are unbuilt. The repository also holds a
+decision-complete design and the screens to build against:
 
 - `BRAIN-SPEC.md` — requirements and solution design. Where a choice was made it
   is written as a requirement (`R<n>`), not an option. Read it end to end before
@@ -38,6 +43,9 @@ python -m pytest                 # everything
 python -m pytest tests/test_doc_tasks.py -v          # one file
 python -m pytest tests/test_doc_tasks.py::test_toggle_task_changes_exactly_one_line -v
 python -m pytest tests/test_stdlib_only.py -v        # the R3.3 seam
+
+.venv/bin/python -m brain init ~/mybrain
+.venv/bin/python -m brain --root ~/mybrain note add meeting -- scrappy notes here
 ```
 
 `tests/conftest.py` provides `brain_tree` (a writable copy of the fixture
@@ -116,11 +124,14 @@ Violating any of these silently breaks the design's economics or its trust model
 |---|---|---|
 | `brain/model.py` | `Doc` — line-aware markdown; entity loading | stdlib |
 | `brain/entities.py` | Program, Project, Stakeholder, Board, Note | stdlib |
+| `brain/root.py` | Root discovery (R4.0) and `brain init` | stdlib |
+| `brain/grammar.py` | The line grammar of R6.4 | stdlib |
+| `brain/resolve.py` | Reference resolution (R6.2) | stdlib |
 | `brain/commands.py` | The command verbs and their execution | stdlib |
 | `brain/index.py` | `_index.json`, digests, search index | stdlib |
 | `brain/git.py` | commit, checkpoint, diff, revert | stdlib |
 | `brain/lock.py` | the single-writer lock of R11.7 | stdlib |
-| `brain/cli.py` | argparse entry point | stdlib |
+| `brain/cli.py` | argparse entry point — `brain …` | stdlib |
 | `brain/tui.py` | The terminal UI | `textual` |
 
 Rejected dependencies, so nobody re-proposes them: `rich` (ships with textual),

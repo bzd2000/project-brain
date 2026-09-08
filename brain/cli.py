@@ -1,0 +1,65 @@
+"""The argparse front door.
+
+R10.8 will later map the TUI's COMMAND mode onto these same verbs - one
+implementation, two front doors - so the parsing done here stays thin: argv is
+rejoined into a line and handed to the same grammar `brain apply` uses.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+
+from . import commands, grammar, root
+from .errors import BrainError
+from .grammar import SEPARATOR
+
+
+def _line_from_argv(rest) -> str:
+    """Rejoin argv into one grammar line.
+
+    R6.4c: the shell has already tokenised free text, so it is rejoined with
+    single spaces. Note bodies that must survive byte for byte (R4.6.1) travel
+    by `-f -` instead, never by argv.
+    """
+    if "--" in rest:
+        cut = rest.index("--")
+        left, text = rest[:cut], " ".join(rest[cut + 1:])
+        return " ".join(left) + SEPARATOR + text
+    return " ".join(rest)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="brain",
+        description="A markdown knowledge base. `brain` is the only thing that "
+                    "writes (R3.1).",
+    )
+    parser.add_argument("--root", help="the brain to act on (R4.0)")
+    parser.add_argument("rest", nargs=argparse.REMAINDER)
+    args = parser.parse_args(argv)
+
+    if not args.rest:
+        parser.print_help()
+        return 2
+
+    try:
+        if args.rest[0] == "init":
+            target = args.rest[1] if len(args.rest) > 1 else "."
+            made = root.init(target)
+            sys.stdout.write("initialised brain at {}\n".format(made))
+            return 0
+
+        where = root.find_root(args.root)
+        parsed = grammar.parse_line(_line_from_argv(args.rest))
+        if parsed is None:
+            return 0
+        result = commands.execute(where, parsed, source="cli")
+        if result:
+            sys.stdout.write(result + "\n")
+        return 0
+    except (BrainError, OSError) as exc:
+        # Two families, not a blanket `except Exception`: R6.1 asks for a clear
+        # refusal on foreseeable failures, not for printing a genuine bug as
+        # though it were the user's mistake.
+        sys.stderr.write("brain: {}\n".format(exc))
+        return 1
