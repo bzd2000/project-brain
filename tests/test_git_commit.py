@@ -41,7 +41,11 @@ def test_commit_stages_only_the_named_paths(git_root):
 def test_commit_never_uses_add_dash_A(git_root, stub_git):
     _write(git_root, "inbox.md", "## n12 - note\nbody\n")
     g.commit(git_root, ["inbox.md"], "brain: capture n12")
-    for call in git_calls(stub_git):
+    calls = git_calls(stub_git)
+    # Without this the loop below iterates nothing and passes vacuously the day
+    # the stub stops being on PATH - and this test is R11.4's only backstop.
+    assert calls, "no git invocations were recorded: the stub is not on PATH"
+    for call in calls:
         assert "-A" not in call and "--all" not in call, call
 
 

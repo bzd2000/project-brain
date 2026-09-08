@@ -105,7 +105,11 @@ def test_a_full_write_cycle_issues_no_forbidden_git_call(git_root, stub_git):
     g.commit(git_root, ["inbox.md"], "brain: capture n31")
     g.authored(git_root, "inbox.md")
     g.undo(git_root)
-    for call in git_calls(stub_git):
+    calls = git_calls(stub_git)
+    # Without this the loop below iterates nothing and passes vacuously the day
+    # the stub stops being on PATH - and this test is R11.4's only backstop.
+    assert calls, "no git invocations were recorded: the stub is not on PATH"
+    for call in calls:
         sub = next((a for a in call if not a.startswith("-")), None)
         assert sub not in FORBIDDEN_SUBCOMMANDS, call
         assert "-A" not in call and "--all" not in call, call
