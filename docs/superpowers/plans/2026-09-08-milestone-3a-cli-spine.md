@@ -359,7 +359,7 @@ Expected: 166 passed (158 from milestones 1–2 plus 8).
 - [ ] **Step 8: Commit**
 
 ```bash
-git add brain/errors.py brain/root.py brain/git.py tests/test_root.py
+git add brain/errors.py brain/root.py brain/git.py tests/conftest.py tests/test_root.py
 git commit -m "Add root discovery and brain init (R4.0, R6.9)
 
 find_root implements R4.0's order and refuses an explicit path that is not a
