@@ -127,3 +127,36 @@ def test_list_items_containing_commas_survive(monkeypatch):
     monkeypatch.setattr(_y, "HAVE_PYYAML", False)
     fallback, _ = parse_front_matter([line])
     assert fallback["tags"] == value
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '"already quoted"',
+        'has "quotes" inside: yes',
+        "trailing backslash\\",
+        '#hash with "quote" and \\ backslash',
+        'both \\ and " together: colon',
+    ],
+)
+def test_quotes_and_backslashes_round_trip(raw, monkeypatch):
+    """R3.4: _quote escapes, so _unquote must unescape. Without that the
+    fallback path returns leaked backslashes where PyYAML returns the value."""
+    line = "field: " + render_value(raw)
+    with_pyyaml, problems = parse_front_matter([line])
+    assert problems == []
+    assert with_pyyaml["field"] == raw
+    monkeypatch.setattr(_y, "HAVE_PYYAML", False)
+    fallback, problems = parse_front_matter([line])
+    assert problems == []
+    assert fallback["field"] == raw
+
+
+def test_list_items_with_quotes_round_trip(monkeypatch):
+    value = ['a "quoted" item', "back\\slash", "plain"]
+    line = "tags: " + render_value(value)
+    with_pyyaml, _ = parse_front_matter([line])
+    assert with_pyyaml["tags"] == value
+    monkeypatch.setattr(_y, "HAVE_PYYAML", False)
+    fallback, _ = parse_front_matter([line])
+    assert fallback["tags"] == value

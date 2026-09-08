@@ -34,17 +34,36 @@ def _normalise(value):
 def _unquote(text: str) -> str:
     text = text.strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
-        return text[1:-1]
+        inner = text[1:-1]
+        if text[0] != '"':
+            return inner
+        # Reverse _quote's escaping in ONE left-to-right pass. A sequence of
+        # .replace() calls cannot do this correctly: unescaping \\ first turns
+        # \\" into ", and unescaping \" first turns \\" into \".
+        out, i = [], 0
+        while i < len(inner):
+            if inner[i] == "\\" and i + 1 < len(inner):
+                out.append(inner[i + 1])
+                i += 2
+            else:
+                out.append(inner[i])
+                i += 1
+        return "".join(out)
     return text
 
 
 def _split_flow(inner: str):
     """Split a flow list on commas that are not inside quotes."""
-    items, buf, quote = [], "", None
+    items, buf, quote, esc = [], "", None, False
     for ch in inner:
-        if quote:
+        if esc:
             buf += ch
-            if ch == quote:
+            esc = False
+        elif quote:
+            buf += ch
+            if ch == "\\" and quote == '"':
+                esc = True
+            elif ch == quote:
                 quote = None
         elif ch in "\"'":
             quote = ch
