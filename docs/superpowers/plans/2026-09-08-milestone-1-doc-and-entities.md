@@ -700,10 +700,25 @@ Expected: 7 passed.
 The fallback is the branch that must survive PyYAML being withdrawn (R3.4), so exercise it explicitly. Add to `tests/test_yaml.py`:
 
 ```python
+import pytest
+
 import brain._yaml as _y
 
+NEEDS_PYYAML = pytest.mark.skipif(
+    not _y.HAVE_PYYAML,
+    reason="PyYAML absent: there is nothing to compare the fallback against",
+)
 
+
+@NEEDS_PYYAML
 def test_subset_parser_matches_pyyaml_on_the_fixtures(monkeypatch):
+    """R3.4: the two paths must agree.
+
+    The skipif is load-bearing. `reference` is computed before the monkeypatch,
+    under the ambient HAVE_PYYAML — so without the marker this test silently
+    degrades to comparing the fallback against itself and still reports a pass.
+    A PyYAML-less run must show as a skip, not as green.
+    """
     lines = [
         "project: Acme - Azure migration",
         "status: active",
@@ -716,10 +731,29 @@ def test_subset_parser_matches_pyyaml_on_the_fixtures(monkeypatch):
     fallback, problems = parse_front_matter(lines)
     assert problems == []
     assert fallback == reference
+
+
+@NEEDS_PYYAML
+def test_pyyaml_path_normalises_dates_and_scalars():
+    """The exact divergence R3.4 exists to prevent: safe_load returns
+    datetime.date for `due:`, and int/bool for the other scalars."""
+    fields, problems = parse_front_matter(["due: 2026-10-15", "count: 3", "active: true"])
+    assert problems == []
+    assert fields == {"due": "2026-10-15", "count": "3", "active": "true"}
+
+
+def test_fallback_path_normalises_identically(monkeypatch):
+    """Always runs, PyYAML present or not, and asserts the same dict as above."""
+    monkeypatch.setattr(_y, "HAVE_PYYAML", False)
+    fields, problems = parse_front_matter(["due: 2026-10-15", "count: 3", "active: true"])
+    assert problems == []
+    assert fields == {"due": "2026-10-15", "count": "3", "active": "true"}
 ```
 
 Run: `python -m pytest tests/test_yaml.py -v`
-Expected: 8 passed. If PyYAML is not installed in the environment, this test compares the fallback with itself and still passes — install the extra with `pip install -e ".[yaml,dev]"` to make it meaningful.
+Expected: 10 passed with PyYAML installed. Without it, 8 passed and 2 skipped —
+and the skip is the point: a run that cannot prove the two paths agree must say
+so rather than report green. Install the extra with `pip install -e ".[yaml,dev]"`.
 
 - [ ] **Step 6: Commit**
 
