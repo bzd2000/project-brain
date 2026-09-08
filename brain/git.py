@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Dict, List, NamedTuple, Optional, Sequence
 
 
 class GitError(Exception):
@@ -128,3 +128,36 @@ def commit(root, paths, message: str, source: str = "cli",
     _git(["commit", "-q", "-m", _trailers(message, source, notes, undo_of), "--"]
          + paths, root)
     return head(root)
+
+
+class Checkpoint(NamedTuple):
+    head: Optional[str]
+    files: Dict[str, Optional[bytes]]
+
+
+def checkpoint(root, paths) -> Checkpoint:
+    """Capture the exact bytes of `paths` before a batch writes to them.
+
+    R6.5 needs a rollback for a failure BETWEEN two file writes, where nothing
+    was committed and a HEAD sha therefore describes nothing useful. A file that
+    does not exist yet is recorded as None so `restore` can delete it again.
+    """
+    root = Path(root)
+    files = {}
+    for path in paths:
+        target = root / path
+        files[Path(path).as_posix()] = target.read_bytes() if target.exists() else None
+    return Checkpoint(head=head(root), files=files)
+
+
+def restore(root, cp: Checkpoint) -> None:
+    """Put every captured path back exactly as it was."""
+    root = Path(root)
+    for rel, data in cp.files.items():
+        target = root / rel
+        if data is None:
+            if target.exists():
+                target.unlink()
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
