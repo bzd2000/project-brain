@@ -62,9 +62,10 @@ def assert_only_changed(before: dict, after: dict, expected: dict,
             problems.append(f"{path}: changed but was not expected to")
             continue
         if len(old) == len(new):
-            differing = {i for i, (a, b) in enumerate(zip(old, new)) if a != b}
-            for i in sorted(differing - allowed):
-                problems.append(f"{path}:{i}: changed unexpectedly\n  - {old[i]!r}\n  + {new[i]!r}")
+            if allowed:
+                differing = {i for i, (a, b) in enumerate(zip(old, new)) if a != b}
+                for i in sorted(differing - allowed):
+                    problems.append(f"{path}:{i}: changed unexpectedly\n  - {old[i]!r}\n  + {new[i]!r}")
             continue
         # The length changed, so bound the edit to one small contiguous region:
         # everything before `prefix` and after `suffix` is identical already.
