@@ -49,6 +49,15 @@ def parse_line(line: str) -> Optional[ParsedLine]:
     tokens = head.split()
     if not tokens:
         raise GrammarError("{!r}: no verb before the ` -- ` separator".format(raw))
+    if "--" in tokens:
+        # `log a --` and `-- orphan` are the same mistake as `log a -- ` and
+        # ` -- orphan`, differing only by a space. Without this they would slip
+        # past as ordinary tokens and fail later, elsewhere, with a different
+        # message - one user error should have one explanation.
+        raise GrammarError(
+            "{!r}: a bare `--` means nothing here. The separator is ` -- ` - a "
+            "space on each side - with free text after it.".format(raw)
+        )
     return ParsedLine(tokens=tokens, text=text, raw=raw)
 
 
@@ -71,6 +80,15 @@ def split_flags(tokens) -> Tuple[List[str], Dict[str, str]]:
             if index + 1 >= len(tokens):
                 raise GrammarError("--{} needs a value".format(name))
             value = tokens[index + 1]
+            if value.startswith("--"):
+                # `--owner --due 2026-09-11` would otherwise store "--due" as
+                # the owner and drop the due date entirely: a silent misparse
+                # where R6.2 wants an error.
+                raise GrammarError(
+                    "--{} needs a value, but the next token is {!r}".format(
+                        name, value
+                    )
+                )
             # §6.1 writes `[--tag @ref]...` - a repeatable flag. Joining rather
             # than overwriting keeps the last one from silently winning.
             flags[name] = (flags[name] + " " + value) if name in flags else value

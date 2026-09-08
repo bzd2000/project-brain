@@ -65,6 +65,22 @@ def test_a_line_with_no_verb_is_an_error():
         gr.parse_line(" -- orphaned text")
 
 
+@pytest.mark.parametrize("line", ["log acme --", "-- orphan", "log acme -- "])
+def test_every_spelling_of_a_broken_separator_fails_the_same_way(line):
+    """One user error, one explanation. These differ only by a space, and
+    without the bare-`--` check they would fail at three different layers."""
+    with pytest.raises(GrammarError):
+        gr.parse_line(line)
+
+
+def test_a_flag_whose_value_looks_like_a_flag_is_an_error():
+    """`--owner --due 2026-09-11` would otherwise store "--due" as the owner
+    and drop the due date - a silent misparse where R6.2 wants an error."""
+    with pytest.raises(GrammarError) as excinfo:
+        gr.split_flags(["action", "add", "a", "--owner", "--due", "2026-09-11"])
+    assert "owner" in str(excinfo.value)
+
+
 def test_a_repeated_flag_accumulates():
     """§6.1 writes `[--tag @ref]...`; overwriting would silently drop tags."""
     _, flags = gr.split_flags(["note", "add", "--tag", "@acme", "--tag", "@q4"])
