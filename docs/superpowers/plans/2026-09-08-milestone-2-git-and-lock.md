@@ -59,7 +59,7 @@ The stub comes first for the same reason the stub `copilot` does in §13: it is 
 
 **Interfaces:**
 - Consumes: nothing from milestone 1.
-- Produces: `GitError(Exception)`; `_git(args, root, check=True) -> subprocess.CompletedProcess`; `run(args, root) -> str` (stdout, stripped); `is_repo(root) -> bool`; `require_repo(root) -> None` (raises `GitError`); `FORBIDDEN` (the tuple the stub and the source-guard test share). Fixtures `git_root` (a `pathlib.Path` to a real initialised repo containing a brain skeleton, committed) and `stub_git` (yields a `pathlib.Path` to the log file the stub appends to, with the stub ahead of the real git on `PATH`).
+- Produces: `GitError(Exception)`; `_git(args, root, check=True) -> subprocess.CompletedProcess`; `run(args, root) -> str` (stdout, stripped); `is_repo(root) -> bool`; `require_repo(root) -> None` (raises `GitError`). `FORBIDDEN_SUBCOMMANDS` lives in `tests/stub_git.py` only, never in `brain/git.py`, because git.py's source-scan test asserts the module names no forbidden verb. Fixtures `git_root` (a `pathlib.Path` to a real initialised repo containing a brain skeleton, committed) and `stub_git` (yields a `pathlib.Path` to the log file the stub appends to, with the stub ahead of the real git on `PATH`).
 
 - [ ] **Step 1: Write the stub**
 
