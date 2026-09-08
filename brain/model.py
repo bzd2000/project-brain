@@ -7,6 +7,7 @@ comments, ordering and formatting intact.
 """
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional
 
@@ -100,6 +101,38 @@ class Doc:
         if found is None:
             return []
         return self.lines[found.start:found.end]
+
+    # -- front-matter mutation --------------------------------------------
+    def _ensure_front_matter(self) -> None:
+        """Create an empty front-matter block if the file has none."""
+        if self.fm_range is not None:
+            return
+        self.lines[0:0] = ["---", "---", ""]
+        self.reindex()
+
+    def set_field(self, key: str, value) -> int:
+        """Set one front-matter field, touching exactly one line.
+
+        Returns the 0-based index of the line written. An absent key is
+        inserted immediately before the closing `---` so existing order and
+        any comments survive (R5.1).
+        """
+        self._ensure_front_matter()
+        rendered = "{}: {}".format(key, render_value(value))
+        start, end = self.fm_range
+        for i in range(start + 1, end):
+            stripped = self.lines[i].lstrip()
+            if stripped.startswith(key + ":") and not stripped.startswith("#"):
+                self.lines[i] = rendered
+                self.reindex()
+                return i
+        self.lines.insert(end, rendered)
+        self.reindex()
+        return end
+
+    def touch(self, today: Optional[str] = None) -> int:
+        """Set `updated:`, which R4.2.3 makes authoritative over mtime."""
+        return self.set_field("updated", today or date.today().isoformat())
 
     # -- writing ----------------------------------------------------------
     def _tidy(self) -> List[str]:
