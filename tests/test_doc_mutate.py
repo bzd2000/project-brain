@@ -1,3 +1,5 @@
+import pytest
+
 from conftest import snapshot, assert_only_changed
 from brain.model import Doc
 
@@ -41,6 +43,22 @@ def test_set_field_creates_front_matter_when_absent(broken_dir):
     assert reloaded.fm["project"] == "Recovered"
     assert reloaded.lines[0] == "---"
     assert "Summary" in reloaded.sections
+
+
+def test_set_field_refuses_on_unterminated_front_matter(tmp_path):
+    """R6.2/R10.11: a write that cannot be made unambiguously is refused, not
+    guessed. `fm_range` is None both when there is no front matter and when the
+    block is unterminated; conflating them fabricates a second block and
+    silently corrupts the file."""
+    path = tmp_path / "unterminated.md"
+    path.write_text(
+        "---\nproject: Foo\nstatus: active\n\n## Log\n- entry\n", encoding="utf-8"
+    )
+    doc = Doc(path)                                  # loading is still tolerant
+    assert any("not closed" in p for p in doc.problems)
+    with pytest.raises(ValueError):
+        doc.set_field("status", "paused")
+    assert doc.lines.count("---") == 1, "a second front-matter block was fabricated"
 
 
 def test_touch_sets_updated(brain_tree):

@@ -104,9 +104,22 @@ class Doc:
 
     # -- front-matter mutation --------------------------------------------
     def _ensure_front_matter(self) -> None:
-        """Create an empty front-matter block if the file has none."""
+        """Create an empty front-matter block if the file has none.
+
+        A file whose front matter is *opened but never closed* is refused
+        rather than repaired: where such a block ends is unknowable, so any
+        repair either swallows the body or fabricates a second block. R6.2
+        makes ambiguity an error and never a guess, and R10.11 rejects a write
+        that would break the format rather than writing it. Loading the same
+        file still never raises (R4.2.4) - only writing to it does.
+        """
         if self.fm_range is not None:
             return
+        if self.lines and self.lines[0].strip() == "---":
+            raise ValueError(
+                "{}: front matter is opened but never closed; refusing to "
+                "write. Close the block or remove the opening marker.".format(self.path)
+            )
         self.lines[0:0] = ["---", "---", ""]
         self.reindex()
 
