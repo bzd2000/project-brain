@@ -1626,13 +1626,18 @@ def test_add_log_and_add_decision_are_newest_first(brain_tree):
 
 
 def test_add_question_appends(brain_tree):
+    """Pins the whole body for the same reason as the add_bullet append test:
+    `[-1]` is the separator blank, so that assertion would pass only if the
+    question had been inserted after it."""
     path = brain_tree / "projects" / "acme-migration.md"
     doc = Doc(path)
     doc.add_question("Who signs off the rollback plan?")
     doc.save()
-    assert Doc(path).section_lines("Open questions")[-1] == (
-        "- Who signs off the rollback plan?"
-    )
+    assert Doc(path).section_lines("Open questions") == [
+        "- Who owns the legacy VPN after cutover?",
+        "- Who signs off the rollback plan?",
+        "",
+    ]
 
 
 def test_stray_checkbox_outside_next_actions_is_not_a_task(brain_tree):
