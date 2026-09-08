@@ -78,6 +78,15 @@ def is_brain_path(root, path) -> bool:
     return len(parts) == 2 and parts[0] in BRAIN_DIRS and parts[1].endswith(".md")
 
 
+def _require_brain_paths(root, paths) -> None:
+    """R11.2: refuse to write paths outside the brain."""
+    bad = [p for p in paths if not is_brain_path(root, p)]
+    if bad:
+        raise GitError(
+            "refusing to touch paths outside the brain: {}".format(", ".join(bad))
+        )
+
+
 def _trailers(message: str, source: str, notes=None, undo_of=None) -> str:
     """R11.3: a legible subject, then machine-readable trailers."""
     lines = [message.rstrip(), "", "Brain-Source: " + source]
@@ -115,11 +124,7 @@ def commit(root, paths, message: str, source: str = "cli",
         # empty path set - a no-op batch, a revert touching no brain path - must
         # get a no-op, not the user's staged work in a brain commit.
         return None
-    bad = [p for p in paths if not is_brain_path(root, p)]
-    if bad:
-        raise GitError(
-            "refusing to stage paths outside the brain: {}".format(", ".join(bad))
-        )
+    _require_brain_paths(root, paths)
     for path in paths:
         _git(["add", "--", path], root)
     staged = _git(["diff", "--cached", "--name-only", "--"] + paths, root).stdout.strip()
@@ -143,21 +148,43 @@ def checkpoint(root, paths) -> Checkpoint:
     does not exist yet is recorded as None so `restore` can delete it again.
     """
     root = Path(root)
+    _require_brain_paths(root, paths)
     files = {}
     for path in paths:
         target = root / path
-        files[Path(path).as_posix()] = target.read_bytes() if target.exists() else None
+        # `is_file()` rather than `exists()`: a directory where a file was
+        # expected is recorded as absent instead of raising IsADirectoryError,
+        # so malformed input surfaces through restore's error report rather than
+        # as a bare traceback out of the capture step.
+        files[Path(path).as_posix()] = target.read_bytes() if target.is_file() else None
     return Checkpoint(head=head(root), files=files)
 
 
 def restore(root, cp: Checkpoint) -> None:
-    """Put every captured path back exactly as it was."""
+    """Put every captured path back exactly as it was.
+
+    Every path is attempted even if one fails, and the failures are raised
+    together afterwards. A rollback that gave up half way and returned normally
+    would leave a part-restored tree with no signal - the exact failure R6.5
+    exists to prevent, one level down.
+    """
     root = Path(root)
+    _require_brain_paths(root, cp.files)
+    problems = []
     for rel, data in cp.files.items():
         target = root / rel
-        if data is None:
-            if target.exists():
-                target.unlink()
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        try:
+            if data is None:
+                if target.exists():
+                    target.unlink()
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        except OSError as exc:
+            problems.append("{}: {}".format(rel, exc))
+    if problems:
+        raise GitError(
+            "rollback incomplete, the tree is part-restored: {}".format(
+                "; ".join(problems)
+            )
+        )
