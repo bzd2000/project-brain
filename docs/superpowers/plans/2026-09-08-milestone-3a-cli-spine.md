@@ -608,12 +608,12 @@ def split_flags(tokens) -> Tuple[List[str], Dict[str, str]]:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_grammar.py -v`
-Expected: 15 passed.
+Expected: 16 passed (the parametrised separator test contributes three cases).
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 181 passed.
+Expected: 182 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -856,7 +856,7 @@ Expected: 12 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 193 passed.
+Expected: 194 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1190,7 +1190,7 @@ Expected: 9 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 202 passed.
+Expected: 203 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1469,7 +1469,7 @@ Leave the invariants list alone.
 - [ ] **Step 8: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 209 passed.
+Expected: 210 passed.
 
 - [ ] **Step 9: Commit**
 
@@ -1491,7 +1491,7 @@ locked-down machine will not put a console shim on PATH."
 ## Milestone 3a done — stop here
 
 ```bash
-.venv/bin/python -m pytest -q          # 209 passed
+.venv/bin/python -m pytest -q          # 210 passed
 .venv/bin/python -m brain init /tmp/demo-brain
 ```
 
