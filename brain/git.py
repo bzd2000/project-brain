@@ -322,3 +322,41 @@ def undo(root) -> Optional[str]:
         _unstage(root, touched)
         restore(root, cp)
         raise
+
+
+def _tracked(root, path) -> bool:
+    return _git(
+        ["ls-files", "--error-unmatch", "--", str(path)], root, check=False
+    ).returncode == 0
+
+
+def authored(root, path) -> bool:
+    """R11.6: was this file's current content written through `brain`?
+
+    Two conditions, and both are necessary. The last commit touching it must
+    carry the trailer, and the working copy must match HEAD - an uncommitted
+    modification is by definition not something `brain` wrote, which is exactly
+    the violation R3.2 asks this check to make visible.
+    """
+    path = str(path)
+    if not _tracked(root, path):
+        return False
+    if _git(["diff", "--quiet", "HEAD", "--", path], root, check=False).returncode != 0:
+        return False
+    body = _git(["log", "-1", "--format=%B", "--", path], root).stdout
+    return "Brain-Source:" in body
+
+
+def unauthored(root) -> List[str]:
+    """Every brain path whose current content did not come through `brain`."""
+    root = Path(root)
+    offenders = []
+    for name in BRAIN_FILES:
+        if (root / name).exists() and not authored(root, name):
+            offenders.append(name)
+    for directory in BRAIN_DIRS:
+        for target in sorted((root / directory).glob("*.md")):
+            rel = target.relative_to(root).as_posix()
+            if not authored(root, rel):
+                offenders.append(rel)
+    return offenders
