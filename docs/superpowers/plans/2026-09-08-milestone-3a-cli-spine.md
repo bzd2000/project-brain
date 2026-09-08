@@ -1335,10 +1335,10 @@ def main(argv=None) -> int:
         if result:
             sys.stdout.write(result + "\n")
         return 0
-    except BrainError as exc:
-        sys.stderr.write("brain: {}\n".format(exc))
-        return 1
-    except Exception as exc:  # noqa: BLE001 - git and filesystem failures
+    except (BrainError, OSError) as exc:
+        # Two families, not a blanket `except Exception`: R6.1 asks for a clear
+        # refusal on foreseeable failures, not for printing a genuine bug as
+        # though it were the user's mistake.
         sys.stderr.write("brain: {}\n".format(exc))
         return 1
 ```
@@ -1357,7 +1357,52 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-- [ ] **Step 4: Add the console entry point**
+- [ ] **Step 4: Make `init`'s filesystem failures printable, and narrow the catch**
+
+Task 1's review found `init()` raising a raw `NotADirectoryError` or
+`PermissionError` when the target cannot be created — a file sitting where a
+directory should be, or a read-only parent. R6.1 wants a one-line refusal, and
+`cli.py` is where that contract lives.
+
+In `brain/root.py`, wrap the filesystem work at the top of `init`:
+
+```python
+    root = Path(path).expanduser().resolve()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        for name in SKELETON_DIRS:
+            (root / name).mkdir(exist_ok=True)
+    except OSError as exc:
+        raise BrainError("cannot create a brain at {}: {}".format(root, exc))
+```
+
+and import it: `from .errors import BrainError, RootNotFound`.
+
+Then in `brain/cli.py`, **do not** add a bare `except Exception`. Catch the two
+families that represent a refusal, and let anything else surface:
+
+```python
+    except (BrainError, OSError) as exc:
+        sys.stderr.write("brain: {}\n".format(exc))
+        return 1
+```
+
+A blanket `except Exception` would print a genuine bug as though it were the
+user's mistake, which is worse than a traceback: R6.1 asks for a clear refusal
+on foreseeable failures, not for hiding defects.
+
+Add to `tests/test_cli.py`:
+
+```python
+def test_init_on_an_uncreatable_path_refuses(tmp_path, capsys):
+    """R6.1: a foreseeable failure is one line on stderr, not a traceback."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("I am a file, not a directory\n", encoding="utf-8")
+    assert _cli("init", blocker / "brain") != 0
+    assert "brain:" in capsys.readouterr().err
+```
+
+- [ ] **Step 5: Add the console entry point**
 
 In `pyproject.toml`, after the `dependencies` line, add:
 
@@ -1366,12 +1411,12 @@ In `pyproject.toml`, after the `dependencies` line, add:
 brain = "brain.cli:main"
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_cli.py -v`
-Expected: 6 passed.
+Expected: 7 passed.
 
-- [ ] **Step 6: Update `CLAUDE.md`**
+- [ ] **Step 7: Update `CLAUDE.md`**
 
 In the status paragraph, add that `brain/root.py`, `brain/grammar.py`,
 `brain/resolve.py`, `brain/commands.py` and `brain/cli.py` now exist, that
@@ -1387,15 +1432,15 @@ show the first real usage:
 
 Leave the invariants list alone.
 
-- [ ] **Step 7: Run the whole suite**
+- [ ] **Step 8: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 205 passed.
+Expected: 206 passed.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add brain/cli.py brain/__main__.py pyproject.toml CLAUDE.md tests/test_cli.py
+git add brain/cli.py brain/root.py brain/__main__.py pyproject.toml CLAUDE.md tests/test_cli.py
 git commit -m "Add the CLI front door (R6.1, R6.4c, R3.5)
 
 argv is rejoined into one grammar line and handed to the same parser brain
@@ -1412,7 +1457,7 @@ locked-down machine will not put a console shim on PATH."
 ## Milestone 3a done — stop here
 
 ```bash
-.venv/bin/python -m pytest -q          # 205 passed
+.venv/bin/python -m pytest -q          # 206 passed
 .venv/bin/python -m brain init /tmp/demo-brain
 ```
 
