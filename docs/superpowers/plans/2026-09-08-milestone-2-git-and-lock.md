@@ -1529,12 +1529,12 @@ def held(root, stale_after: float = STALE_AFTER):
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_lock.py -v`
-Expected: 11 passed.
+Expected: 10 passed.
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 152 passed.
+Expected: 151 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1639,7 +1639,7 @@ In the "Build order" section, mark milestones 1 and 2 done. In the module map, a
 - [ ] **Step 6: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 155 passed.
+Expected: 154 passed.
 
 - [ ] **Step 7: Commit**
 
@@ -1661,7 +1661,7 @@ Per §12, milestone 3 (`commands.py` + `cli.py`) comes next and is much larger.
 Verify before handing back:
 
 ```bash
-.venv/bin/python -m pytest -q          # 155 passed
+.venv/bin/python -m pytest -q          # 154 passed
 git log --oneline milestone-1-doc-entities..HEAD
 ```
 
