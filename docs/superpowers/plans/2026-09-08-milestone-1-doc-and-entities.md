@@ -1337,12 +1337,25 @@ def test_add_bullet_newest_first_inserts_at_the_top(brain_tree):
     assert_only_changed(before, after, {"projects/acme-migration.md": set()})
 
 
-def test_add_bullet_appends_when_not_newest_first(brain_tree):
+def test_add_bullet_appends_after_the_last_bullet_not_after_the_blank(brain_tree):
+    """The append lands flush after the last existing bullet, and the blank line
+    separating the section from the next header survives.
+
+    Asserting on `section_lines(...)[-1]` would be wrong: that is the separator
+    blank, so the assertion would pass precisely when the bullet had been
+    inserted AFTER it - leaving a gap mid-list and no blank before the next
+    `## ` header. Pin the whole body instead.
+    """
     path = brain_tree / "projects" / "acme-migration.md"
     doc = Doc(path)
     doc.add_bullet("Next actions", "- [ ] Book the change window", newest_first=False)
     doc.save()
-    assert Doc(path).section_lines("Next actions")[-1] == "- [ ] Book the change window"
+    assert Doc(path).section_lines("Next actions") == [
+        "- [ ] Confirm the DNS cutover window with Sara  @sara  due:2026-09-11",
+        "- [x] Migrate the reporting service",
+        "- [ ] Book the change window",
+        "",
+    ]
 
 
 def test_add_bullet_into_an_empty_section(brain_tree):
