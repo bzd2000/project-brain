@@ -52,10 +52,25 @@ def test_render_value_round_trips():
     assert render_value([]) == "[]"
 
 
+import pytest
+
 import brain._yaml as _y
 
+NEEDS_PYYAML = pytest.mark.skipif(
+    not _y.HAVE_PYYAML,
+    reason="PyYAML absent: there is nothing to compare the fallback against",
+)
 
+
+@NEEDS_PYYAML
 def test_subset_parser_matches_pyyaml_on_the_fixtures(monkeypatch):
+    """R3.4: the two paths must agree.
+
+    The skipif is load-bearing. `reference` is computed before the monkeypatch,
+    under the ambient HAVE_PYYAML — so without the marker this test silently
+    degrades to comparing the fallback against itself and still reports a pass.
+    A PyYAML-less run must show as a skip, not as green.
+    """
     lines = [
         "project: Acme - Azure migration",
         "status: active",
@@ -68,3 +83,20 @@ def test_subset_parser_matches_pyyaml_on_the_fixtures(monkeypatch):
     fallback, problems = parse_front_matter(lines)
     assert problems == []
     assert fallback == reference
+
+
+@NEEDS_PYYAML
+def test_pyyaml_path_normalises_dates_and_scalars():
+    """The exact divergence R3.4 exists to prevent: safe_load returns
+    datetime.date for `due:`, and int/bool for the other scalars."""
+    fields, problems = parse_front_matter(["due: 2026-10-15", "count: 3", "active: true"])
+    assert problems == []
+    assert fields == {"due": "2026-10-15", "count": "3", "active": "true"}
+
+
+def test_fallback_path_normalises_identically(monkeypatch):
+    """Always runs, PyYAML present or not, and asserts the same dict as above."""
+    monkeypatch.setattr(_y, "HAVE_PYYAML", False)
+    fields, problems = parse_front_matter(["due: 2026-10-15", "count: 3", "active: true"])
+    assert problems == []
+    assert fields == {"due": "2026-10-15", "count": "3", "active": "true"}
