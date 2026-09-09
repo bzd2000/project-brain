@@ -25,7 +25,7 @@ from .model import (
     Doc,
     render_action,
 )
-from .resolve import normalise, resolve, resolve_action
+from .resolve import _candidates, normalise, resolve, resolve_among, resolve_action
 
 
 class Result(NamedTuple):
@@ -133,6 +133,7 @@ _VALUE_CHOICE_NOUN: Dict[Tuple[str, ...], str] = {
     ("status", "set"): "status",
     ("health", "set"): "health",
     ("note", "add"): "note type",
+    ("new",): "entity kind",
 }
 
 
@@ -439,30 +440,48 @@ NEW_ENTITY = {
 }
 
 
+# Every `NEW_ENTITY` key, sorted - the legal values for `new`'s kind
+# positional, shared between the decorator's `value_choices` (so `--dry-run`
+# catches a bad kind statically, F3) and `_new`'s own defence-in-depth raise,
+# which is why both route through `_value_choice_error` rather than each
+# spelling the list separately.
+_NEW_KINDS: Tuple[str, ...] = tuple(sorted(NEW_ENTITY))
+
+
 def _slug(title: str) -> str:
     return normalise(title)
 
 
-@verb("new", needs_text=True, arity=(1, 1))
+def _find_existing_kind(root, slug: str) -> Optional[str]:
+    """The entity kind that already holds `slug`, checked across ALL FOUR
+    directories - not just the one the caller has in mind. A slug that exists
+    under two kinds makes `resolve(root, slug)` permanently ambiguous for any
+    caller that does not pass `kinds`, which is a trap the user cannot see
+    coming (R6.2) - so `new` and `validate_batch`'s `_exists_on_disk` share
+    this ONE check rather than each drawing the boundary differently (F6).
+    """
+    for kind, (directory, _title_field, _sections, _defaults) in NEW_ENTITY.items():
+        if (Path(root) / directory / (slug + ".md")).exists():
+            return kind
+    return None
+
+
+@verb("new", needs_text=True, arity=(1, 1), value_choices=(0, _NEW_KINDS))
 def _new(root, positional, flags, text):
     kind = positional[0]
     if kind not in NEW_ENTITY:
-        raise VerbError(
-            "{!r} is not an entity kind. One of: {}".format(
-                kind, ", ".join(sorted(NEW_ENTITY))
-            )
-        )
+        raise _value_choice_error(("new",), kind, _NEW_KINDS)
     directory, title_field, sections, defaults = NEW_ENTITY[kind]
     slug = _slug(text)
     if not slug:
         raise VerbError("{!r} has no letters or digits to make a slug from".format(text))
-    target = Path(root) / directory / (slug + ".md")
-    if target.exists():
+    existing_kind = _find_existing_kind(root, slug)
+    if existing_kind is not None:
         raise VerbError(
-            "{} already exists at {}. Pick another name, or edit that one.".format(
-                slug, target
-            )
+            "{} already exists as a {}. Pick another name, or edit that "
+            "one.".format(slug, existing_kind)
         )
+    target = Path(root) / directory / (slug + ".md")
 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("---\n---\n\n", encoding="utf-8")
@@ -756,26 +775,14 @@ class BatchError(VerbError):
 
 
 def _numbered_lines(text: str):
-    """`text` split on "\\n", each paired with its 1-based line number."""
+    """`text` split on "\\n", each paired with its 1-based line number - the
+    single tested path a batch's lines are walked through. (An earlier
+    `parse_batch` wrapped this with `grammar.parse_line`, but nothing outside
+    its own test called it, and an interface with an untested contract - "a
+    malformed line raises unnumbered" - is worse than no interface; deleted.)
+    """
     for offset, line in enumerate(text.split("\n")):
         yield offset + 1, line
-
-
-def parse_batch(text: str) -> List[Tuple[int, "grammar.ParsedLine"]]:
-    """One entry per meaningful line, with its 1-based number in `text`.
-
-    A line `grammar.parse_line` refuses (R6.4) raises `GrammarError` here too
-    - unnumbered, same as calling `parse_line` directly. `validate_batch`
-    below is what attaches a line number to that failure (via `BatchError`);
-    this function's own contract is only the numbering of the lines that DO
-    parse.
-    """
-    out = []
-    for lineno, line in _numbered_lines(text):
-        parsed = grammar.parse_line(line)
-        if parsed is not None:
-            out.append((lineno, parsed))
-    return out
 
 
 def _reference_sites(plan: "Plan"):
@@ -789,80 +796,106 @@ def _reference_sites(plan: "Plan"):
 
 
 def _projected_slug(plan: "Plan"):
-    """The `(slug, kind)` a `new` line will create, or `None` if this line is
-    not a `new`, or its text has no slug in it (an empty-slug `new` is left
-    to fail at PERFORM time, same as today - `validate` does not check it
-    either, because R6.5.1 does not list it among what is checked statically).
+    """The `(slug, kind, title)` a `new` line will create, or `None` if this
+    line is not a `new`. `title` is the exact free text the line will pass to
+    `doc.set_field` - the same text a stand-in candidate needs for the title
+    pass in `resolve_among` (F1) to behave like the real entity will.
+
+    Raises `VerbError` when the text has no slug in it - `_new` makes the same
+    refusal at PERFORM time, but the text is known statically, so a batch
+    names the line here instead of failing mid-write for a check R6.5.1 could
+    have made up front (F8).
     """
     if plan.verb.name != ("new",) or plan.text is None:
         return None
     slug = _slug(plan.text)
     if not slug:
-        return None
+        raise VerbError(
+            "{!r} has no letters or digits to make a slug from".format(plan.text)
+        )
     kind = plan.positional[0] if plan.positional else None
-    return slug, kind
+    return slug, kind, plan.text
 
 
 def _exists_on_disk(root, slug: str) -> bool:
     """True when `slug` already names a file in any of the four entity
-    directories."""
-    return any(
-        (Path(root) / directory / (slug + ".md")).exists()
-        for directory, _title_field, _sections, _defaults in NEW_ENTITY.values()
-    )
+    directories - the same check `_new` makes, through the same helper
+    (`_find_existing_kind`), so validation and the verb can never disagree
+    about what counts as a collision (F6)."""
+    return _find_existing_kind(root, slug) is not None
 
 
-def _match_projected(ref: str, kinds, projected):
-    """Slugs in `projected` (`slug -> (lineno, kind)`) that `ref` could mean,
-    matched the same two ways `resolve` matches the tree - exact slug, then
-    unique slug prefix - and restricted to `kinds` (empty tuple means "any
-    kind", `resolve`'s own convention).
-
-    A slug of the wrong kind is not a candidate: without this, `log acme -- x`
-    (a project reference) could match a projected STAKEHOLDER slug that merely
-    shares a prefix, and validation would accept a line that fails at write
-    time - the exact lie R6.5.1 exists to prevent.
+class _ProjectedEntity(NamedTuple):
+    """A stand-in for the entity a `new` line in this batch will create - just
+    enough surface for `resolve_among`'s four passes to treat it exactly like
+    a real, on-disk entity (F1): `slug` and `title` are what the passes read.
+    `pending_line` is not read by the passes at all; `_one`'s ambiguity
+    message reads it (via `resolve._describe`) to tell the user this
+    candidate does not exist on disk yet - a real `Entity` has no such
+    attribute, so `getattr(..., "pending_line", None)` tells the two apart.
     """
-    pool = [slug for slug, (_lineno, kind) in projected.items()
-            if not kinds or kind in kinds]
-    exact = [slug for slug in pool if slug == ref]
-    if exact:
-        return exact
-    wanted = normalise(ref)
-    return [slug for slug in pool if wanted and slug.startswith(wanted)]
+    slug: str
+    title: str
+    kind: str
+    pending_line: int
 
 
 def _resolve_against(root, ref: str, kinds, projected):
-    """Resolve `ref` against the tree UNIONED with `projected` - the slugs
-    this batch's earlier `new` lines will create (R6.5.1).
-
-    Tries the tree first. An `UnknownReference` there retries against the
-    projection. Either way the projection is always consulted: a match
-    against the tree does not short-circuit it, because a slug this batch is
-    about to create is a candidate exactly like one already on disk, and a
-    reference matching both is ambiguous - never a silent preference for the
-    file that happens to exist already (R6.2).
+    """Resolve `ref` against the tree UNIONED with `projected` - the entities
+    this batch's earlier `new` lines will create (R6.5.1) - by running R6.2's
+    ordered passes over the COMBINED candidate list (`resolve_among`), not by
+    resolving each side separately and unioning the results (F1/F7). An exact
+    slug on either side must beat a prefix or substring match on the other,
+    and that only holds if every candidate goes through the SAME passes
+    together: a slug already on disk and a slug this batch is about to create
+    are candidates of equal standing, in the same list, in the same order a
+    plain `resolve` against the tree alone would use.
     """
-    matches = _match_projected(ref, kinds, projected)
-    try:
-        found = resolve(root, ref, kinds=kinds or None)
-    except UnknownReference:
-        if len(matches) == 1:
-            return
-        if len(matches) > 1:
-            raise AmbiguousReference(
-                "{!r} matches {} entit(ies) this batch will create: {}. Say "
-                "which one.".format(ref, len(matches), ", ".join(sorted(matches)))
+    candidates = list(_candidates(root, kinds))
+    for slug, (lineno, kind, title) in projected.items():
+        if not kinds or kind in kinds:
+            candidates.append(
+                _ProjectedEntity(slug=slug, title=title, kind=kind,
+                                  pending_line=lineno)
             )
-        raise
-    else:
-        if matches:
-            raise AmbiguousReference(
-                "{!r} matches {} on disk and also {} this batch is about to "
-                "create. Say which one.".format(
-                    ref, found.slug, ", ".join(sorted(matches))
-                )
-            )
+    resolve_among(candidates, ref)
+
+
+def _line_creating(text: str, after_lineno: int, ref: str, kinds):
+    """The first line AFTER `after_lineno` whose `new` would create a slug
+    `ref` resolves to, or `None`.
+
+    Used only to enrich an `UnknownReference` with A18's second clause: a
+    backward reference must be refused "naming the referencing line and the
+    line that creates it" - not just the referencing line, which is the one
+    piece of information that tells the user what to do (move that line up).
+    Best-effort: a line that itself fails to parse or validate is silently
+    skipped here, because this is a diagnostic aid to the real error, not a
+    second validation pass - the ordered walk in `validate_batch` remains the
+    only thing that decides whether the batch is valid.
+    """
+    for lineno, line in _numbered_lines(text):
+        if lineno <= after_lineno:
+            continue
+        try:
+            parsed = grammar.parse_line(line)
+            plan = validate(parsed) if parsed is not None else None
+            projection = _projected_slug(plan) if plan is not None else None
+        except (VerbError, GrammarError):
+            continue
+        if projection is None:
+            continue
+        slug, kind, title = projection
+        if kinds and kind not in kinds:
+            continue
+        stub = _ProjectedEntity(slug=slug, title=title, kind=kind,
+                                 pending_line=lineno)
+        try:
+            resolve_among([stub], ref)
+        except UnknownReference:
+            continue
+        return lineno
+    return None
 
 
 def validate_batch(root, text: str) -> List[Tuple[int, "Plan"]]:
@@ -877,7 +910,8 @@ def validate_batch(root, text: str) -> List[Tuple[int, "Plan"]]:
     validation, rather than passing and failing mid-write (A18).
     """
     plans: List[Tuple[int, Plan]] = []
-    projected: Dict[str, Tuple[int, Optional[str]]] = {}  # slug -> (lineno, kind)
+    # slug -> (lineno, kind, title) - the entities earlier `new` lines project.
+    projected: Dict[str, Tuple[int, Optional[str], str]] = {}
 
     for lineno, line in _numbered_lines(text):
         try:
@@ -894,9 +928,12 @@ def validate_batch(root, text: str) -> List[Tuple[int, "Plan"]]:
         if plan is None:
             continue
 
-        projection = _projected_slug(plan)
+        try:
+            projection = _projected_slug(plan)
+        except VerbError as exc:
+            raise BatchError(lineno, parsed.raw, str(exc))
         if projection is not None:
-            slug, kind = projection
+            slug, kind, title = projection
             if slug in projected:
                 raise BatchError(
                     lineno, parsed.raw,
@@ -908,13 +945,22 @@ def validate_batch(root, text: str) -> List[Tuple[int, "Plan"]]:
                 raise BatchError(
                     lineno, parsed.raw, "{} already exists".format(slug)
                 )
-            projected[slug] = (lineno, kind)
+            projected[slug] = (lineno, kind, title)
 
         for ref, kinds in _reference_sites(plan):
             try:
                 _resolve_against(root, ref, kinds, projected)
-            except (UnknownReference, AmbiguousReference) as exc:
+            except AmbiguousReference as exc:
                 raise BatchError(lineno, parsed.raw, str(exc))
+            except UnknownReference as exc:
+                creator = _line_creating(text, lineno, ref, kinds)
+                if creator is None:
+                    raise BatchError(lineno, parsed.raw, str(exc))
+                raise BatchError(
+                    lineno, parsed.raw,
+                    "{!r} matches nothing yet - line {} creates it. Move "
+                    "that line above this one.".format(ref, creator),
+                )
 
         plans.append((lineno, plan))
     return plans

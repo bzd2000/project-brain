@@ -228,3 +228,57 @@ def test_declared_flag_refs_matches_the_resolve_calls_in_the_body(name):
         "{}: body resolves flags with kinds={!r}, decorator declares "
         "flag_refs={!r}".format(" ".join(name), found, verb.flag_refs)
     )
+
+
+def _resolved_flag_names(func):
+    """The SET of flag names whose value is passed as the `ref` argument to a
+    `resolve(...)` call anywhere in `func`'s body - via `flags[<literal>]` or
+    `flags.get(<literal>, ...)`.
+
+    Only the NAMES, not the kinds: this feeds a test that must see an entire
+    MISSING declaration (F5), and `test_declared_flag_refs_matches_the_
+    resolve_calls_in_the_body` above already pins the kinds for every verb
+    that has one. Parametrising over `sorted(c.VERBS.items() if v.flag_refs)`
+    - as that test and `EXPECTED_FLAG_REFS` both do - can only ever check a
+    declaration that already exists; deleting `_raise`'s `flag_refs={"ref":
+    ("project",)}` and its `EXPECTED_FLAG_REFS` row together left the WHOLE
+    suite green, because nothing was left parametrising over `raise` at all.
+    """
+    tree = ast.parse(inspect.getsource(func).lstrip())
+    names = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and getattr(node.func, "id", None) == "resolve"
+                and len(node.args) >= 2):
+            continue
+        ref_node = node.args[1]
+        if (isinstance(ref_node, ast.Subscript)
+                and getattr(ref_node.value, "id", None) == "flags"):
+            key = getattr(ref_node.slice, "value", None)
+            if isinstance(key, str):
+                names.add(key)
+        elif (isinstance(ref_node, ast.Call)
+                and getattr(ref_node.func, "attr", None) == "get"
+                and getattr(getattr(ref_node.func, "value", None), "id", None)
+                    == "flags"
+                and ref_node.args
+                and isinstance(ref_node.args[0], ast.Constant)
+                and isinstance(ref_node.args[0].value, str)):
+            names.add(ref_node.args[0].value)
+    return names
+
+
+@pytest.mark.parametrize("name", sorted(c.VERBS))
+def test_every_flag_reference_in_the_body_is_declared(name):
+    """Parametrising over verbs that already declare `flag_refs` can never
+    see an omission (F5) - this walks EVERY verb and compares the SET of
+    flags its body resolves against the SET it declares, so a missing
+    declaration fails here even when no other test is looking at that verb
+    at all."""
+    verb = c.VERBS[name]
+    resolved = _resolved_flag_names(verb.run)
+    declared = set(verb.flag_refs or {})
+    assert resolved == declared, (
+        "{}: body resolves flags {!r} through `resolve`, decorator declares "
+        "flag_refs for {!r}".format(" ".join(name), resolved, declared)
+    )

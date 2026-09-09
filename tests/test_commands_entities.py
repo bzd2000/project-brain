@@ -43,6 +43,20 @@ def test_new_refuses_to_overwrite(brain_repo):
     assert "acme-migration" in str(excinfo.value)
 
 
+def test_new_refuses_a_slug_used_by_another_kind(brain_repo):
+    """F6 (ruling): the strict rule wins - `new` must refuse a slug that
+    exists under ANY of the four entity directories, not just its own,
+    because a slug living under two kinds makes `resolve(root, slug)`
+    permanently ambiguous for any caller that does not pass `kinds` (R6.2).
+    `ann` is the fixture stakeholder's slug; before this fix `new project --
+    Ann` checked only `projects/` and happily created a second `ann`."""
+    with pytest.raises(VerbError) as excinfo:
+        _run(brain_repo, "new project -- Ann")
+    message = str(excinfo.value)
+    assert "ann" in message
+    assert "stakeholder" in message
+
+
 def test_new_is_committed_and_authored(brain_repo):
     _run(brain_repo, "new project -- Fresh thing")
     assert g.authored(brain_repo, "projects/fresh-thing.md")
