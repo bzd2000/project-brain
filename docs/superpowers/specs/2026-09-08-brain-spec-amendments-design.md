@@ -137,3 +137,41 @@ separator rejected by name; leading `#` skipped while inline `#` survives.
 **A15** concurrent `apply` — one wins, one names the lock holder, one batch lands.
 **A16** ids never reused across an emptied inbox.
 **A17** every write verb refuses outside a git repository, touching nothing.
+
+## R6.5.1 — what "validated in full" can actually mean (2026-09-09)
+
+R6.5 said a batch is "validated in full, then applied". Taken literally that
+forbids the batch the product exists to produce: `process inbox` reading a
+meeting note that mentions a project which does not exist yet must emit
+`new project` and then `log` against it, in one invocation, or R6.6's "one
+invocation, one round trip" is false for the most common case.
+
+The literal reading is also already contradicted inside R6.5 itself, which
+mandates a checkpoint before the first write "so a failure part-way through the
+writes restores the tree" — conceding that some failures land during the write
+phase.
+
+Three ways out were considered:
+
+1. **Projected namespace.** Validate statically, and while walking the batch
+   maintain the set of slugs the `new` lines will create so forward references
+   validate against the union of that set and the tree.
+2. **New lines first**, enforced by the grammar as a separate rule.
+3. **Strict** — no forward references; the agent emits two batches.
+
+3 was rejected: two commits and two round trips for one meeting note is exactly
+the cost R6.6 exists to avoid. 2 was rejected as a redundant rule — the ordering
+constraint falls out of 1 for free.
+
+1 was chosen. The consequence worth naming: because the projection is walked
+**in batch order**, a reference that precedes its `new` line fails at
+*validation*, not at write time. That is deliberate. The alternative — building
+the projection from the whole batch first, order-independently — would let such
+a batch pass validation and then fail mid-write, leaving the checkpoint to clean
+up and reporting the failure far from its cause. A rule that catches the error
+before any write is worth more than one that accepts a batch shape nobody writes
+on purpose. A18 pins this.
+
+The split this forces on the implementation is worth having anyway: validation
+becomes a pure function of the parsed batch, with no lock held and no disk
+writes, which is also what `--dry-run` needs.

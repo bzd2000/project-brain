@@ -607,6 +607,24 @@ nothing. Validation completes before any write, and a checkpoint is taken before
 the first one, so a failure part-way through the writes restores the tree instead
 of leaving it half-applied.
 
+**R6.5.1** "Validated in full" means every line is checked *statically* before any
+write: the verb exists, its arity and flags are legal, free text is present where
+the verb requires it, and every reference names something that will exist by the
+time that line runs. That last clause needs a projection, not the disk. Validation
+walks the batch in order maintaining the set of slugs the `new` lines will create,
+and a reference resolves against the union of that set and the tree. A batch may
+therefore create an entity and reference it on a later line — which is the shape
+`process inbox` produces from a meeting note mentioning a project that does not
+exist yet, and is the whole point of R6.6.
+
+Reference *resolution* still happens per line during the write phase, because a
+slug's identity is only fixed once its file exists. A resolution failure there is
+a failure part-way through the writes, and the checkpoint R6.5 already mandates
+covers it: the tree is restored and nothing is written, so A2 holds either way.
+A `new` line whose projected slug already exists on disk, or is already claimed
+by an earlier line of the same batch, is a validation error naming both lines —
+having the projection is what makes that detectable before anything is written.
+
 **R6.6** This is what replaces a multi-file edit. One invocation, one round trip,
 N changes across N files, one revertible commit — and unlike a multi-edit it needs
 only slugs, not the prior contents of every file it touches.
@@ -1098,6 +1116,15 @@ free text survives (R6.4b).
 **A15** Two concurrent `brain apply` invocations against one root: one succeeds,
 the other exits non-zero naming the lock holder, and the tree holds exactly one
 batch's changes (R11.7).
+
+**A18** A batch that creates an entity and references it on a later line applies
+as one commit (R6.5.1). The same batch with the two lines reversed is refused
+**at validation**, naming the referencing line and the line that creates it —
+because the projection is walked in batch order, a backward reference is caught
+before any write rather than failing mid-batch and relying on the checkpoint. A
+batch whose `new` line collides with a slug already on disk, or with one an
+earlier line of the same batch already claimed, is likewise refused before any
+write, naming both.
 
 **A16** Ids are never reused. Add three notes, process all three so `inbox.md` is
 empty, add a fourth: it is `n4` (R4.6.6).
