@@ -2,6 +2,7 @@
 import pytest
 
 from conftest import snapshot
+from test_batch_validation import _tree_digest
 
 from brain import commands as c
 from brain import git
@@ -91,8 +92,14 @@ def test_dry_run_includes_the_value_for_a_value_choices_verb(brain_repo):
 
 def test_a_failure_part_way_through_the_writes_restores(brain_repo, monkeypatch):
     """R6.5's checkpoint. Validation passes, then the third line blows up
-    mid-write - the tree must come back, not sit half-applied."""
-    before = snapshot(brain_repo)
+    mid-write - the tree must come back, not sit half-applied.
+
+    Asserts via `_tree_digest`, not `conftest.snapshot` (frozen, `*.md`
+    only): `git.checkpoint`/`restore` cover every brain path including
+    `_seq`, and a rollback check that cannot see a non-markdown file is
+    blind to exactly the kind of leak item 3 of the review found (see
+    `test_a_failure_after_seq_advances_restores_seq_too` below)."""
+    before = _tree_digest(brain_repo)
     calls = {"n": 0}
     real = c.perform
 
@@ -105,7 +112,7 @@ def test_a_failure_part_way_through_the_writes_restores(brain_repo, monkeypatch)
     monkeypatch.setattr(c, "perform", exploding)
     with pytest.raises(RuntimeError):
         c.apply_batch(brain_repo, BATCH)
-    assert snapshot(brain_repo) == before
+    assert _tree_digest(brain_repo) == before
 
 
 def test_a_forward_reference_batch_applies_as_one_commit(brain_repo):
@@ -167,8 +174,11 @@ def test_a_write_time_reference_failure_is_wrapped_naming_its_line(brain_repo):
 def test_a_non_brainerror_from_perform_propagates_unwrapped(brain_repo, monkeypatch):
     """The mutation this catches: wrapping every exception from `perform`
     (including bugs) into a `BatchError`, which would misreport a crash in
-    `perform` as a bad line of user input."""
-    before = snapshot(brain_repo)
+    `perform` as a bad line of user input.
+
+    `_tree_digest`, not `conftest.snapshot`, for the same reason as the test
+    above - rollback must be checked over every brain path, not just `*.md`."""
+    before = _tree_digest(brain_repo)
     calls = {"n": 0}
     real = c.perform
 
@@ -182,15 +192,17 @@ def test_a_non_brainerror_from_perform_propagates_unwrapped(brain_repo, monkeypa
     with pytest.raises(RuntimeError) as exc_info:
         c.apply_batch(brain_repo, BATCH)
     assert not isinstance(exc_info.value, BatchError)
-    assert snapshot(brain_repo) == before
+    assert _tree_digest(brain_repo) == before
 
 
 def test_a_keyboard_interrupt_between_writes_still_restores(brain_repo, monkeypatch):
     """M3, fix round 1: `except Exception` misses `KeyboardInterrupt`, which
     derives from `BaseException` directly. A Ctrl-C between two writes must
     still trigger the checkpoint restore - `except BaseException` is the
-    fix - or the tree is left with 2 of 3 lines written and no commit."""
-    before = snapshot(brain_repo)
+    fix - or the tree is left with 2 of 3 lines written and no commit.
+
+    `_tree_digest`, not `conftest.snapshot`, for the same reason as above."""
+    before = _tree_digest(brain_repo)
     calls = {"n": 0}
     real = c.perform
 
@@ -203,7 +215,7 @@ def test_a_keyboard_interrupt_between_writes_still_restores(brain_repo, monkeypa
     monkeypatch.setattr(c, "perform", exploding)
     with pytest.raises(KeyboardInterrupt):
         c.apply_batch(brain_repo, BATCH)
-    assert snapshot(brain_repo) == before
+    assert _tree_digest(brain_repo) == before
 
 
 def test_a_rejected_commit_leaves_the_index_clean(brain_repo):
@@ -214,15 +226,41 @@ def test_a_rejected_commit_leaves_the_index_clean(brain_repo):
     overwrote, so `git status` is dirty and `brain check --authored` reports
     a path that no longer differs from HEAD as unauthored. Mutation this
     catches: dropping the `git._unstage(root, paths)` call before `restore`
-    in `apply_batch`'s exception handler."""
+    in `apply_batch`'s exception handler.
+
+    `_tree_digest`, not `conftest.snapshot`, for the same reason as above."""
     hook = brain_repo / ".git" / "hooks" / "pre-commit"
     hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     hook.chmod(hook.stat().st_mode | 0o111)
-    before = snapshot(brain_repo)
+    before = _tree_digest(brain_repo)
     with pytest.raises(git.GitError):
         c.apply_batch(brain_repo, BATCH)
-    assert snapshot(brain_repo) == before
+    assert _tree_digest(brain_repo) == before
     assert git.run(["status", "--porcelain"], brain_repo) == ""
+
+
+def test_a_failure_after_seq_advances_restores_seq_too(brain_repo):
+    """Item 3, whole-branch review: `conftest.snapshot` walks `*.md` only, so
+    it cannot see a write to `_seq` (the committed note-id counter, §4 - not
+    markdown). Mutation confirmed by the review: adding `if rel == "_seq":
+    continue` to `git.restore`'s loop leaves the whole 414-test suite green
+    while a rolled-back batch leaves `_seq` advanced - so the next `note add`
+    after a failed batch mints a duplicate id.
+
+    `note add` writes `_seq` at perform time (`commands._note_add` via
+    `next_note_id`), so line 1 advances it; `action done acme-migration 99`
+    is the M1 write-time failure - an out-of-range selector that validates
+    fine (it is not checked until `perform` runs) and fails only there - so
+    the batch writes `_seq` and THEN fails, which is the ordering
+    `conftest.snapshot` cannot see and `_tree_digest` (hashes every file,
+    `.md` or not) can."""
+    before = _tree_digest(brain_repo)
+    with pytest.raises(BatchError):
+        c.apply_batch(
+            brain_repo,
+            "note add note -- x\naction done acme-migration 99\n",
+        )
+    assert _tree_digest(brain_repo) == before
 
 
 def test_the_committed_paths_are_the_union_of_every_line_not_just_the_last(brain_repo):

@@ -14,6 +14,7 @@ CLAUDE.md says to "build toward", pinned end to end so it cannot regress.
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,49 @@ def test_a15_a_second_apply_refuses_while_the_lock_is_held(brain_repo):
     assert snapshot(brain_repo) == before
     combined = done.stderr + done.stdout
     assert "lock" in combined.lower()
+    # R6.1 asks for one clear line, not a traceback. `cli.py` only reaches
+    # its "brain: ..." formatting for a `BrainError`/`OSError` - if `LockBusy`
+    # stopped being a `BrainError` this would still contain "lock" (the class
+    # name is in the traceback) while failing exactly the way R6.1 forbids,
+    # so the two checks below are load-bearing, not redundant with the one
+    # above.
+    assert done.stderr.startswith("brain: ")
+    assert "Traceback" not in done.stderr
+
+
+def test_a15_two_real_processes_race_for_the_lock(brain_repo):
+    """A15's own two load-bearing clauses, pinned against two REAL `brain
+    apply` processes - not one process holding `lock.held` in-test while a
+    second is invoked (the test above), which only proves the refusal path
+    in isolation from any actual contention and cannot see "one succeeds" or
+    "the tree holds exactly one batch's changes", since its own tree holds
+    zero either way. Two-*process* contention for one lock file (R11.7) is
+    the one part of A15 that cannot be expressed below the process boundary.
+
+    The reviewer confirmed this behaviour is correct by racing two real
+    processes, so this pins it rather than discovering it."""
+    before = _commit_count(brain_repo)
+    results = {}
+
+    def run(name):
+        results[name] = _apply(brain_repo, FIVE_GOOD)
+
+    t1 = threading.Thread(target=run, args=("a",))
+    t2 = threading.Thread(target=run, args=("b",))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    codes = [results["a"].returncode, results["b"].returncode]
+    assert codes.count(0) == 1, ("exactly one apply must succeed", results)
+    loser = results["a"] if results["a"].returncode != 0 else results["b"]
+    combined = (loser.stderr + loser.stdout).lower()
+    assert "lock" in combined and "pid" in combined, "the refusal must name the holder"
+    assert _commit_count(brain_repo) == before + 1, (
+        "the tree must hold exactly one batch's changes, not zero and not both"
+    )
+    assert git.run(["status", "--porcelain"], brain_repo) == ""
 
 
 def test_a18_forward_reference_applies(brain_repo):

@@ -11,6 +11,7 @@ catch `brain` reaching for an operation the spec forbids.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Sequence
@@ -118,9 +119,23 @@ def _require_brain_paths(root, paths) -> None:
         )
 
 
+# The subject carries the user's words on the single-verb path, and
+# `brain_commits` parses history with \x1f/\x1e as delimiters - so a control
+# character in a note or a field value would make every later `undo` either
+# crash or silently target the wrong commit (S1). R11.4 forbids amend, so a
+# poisoned subject can never be repaired: sanitise on the way in. (R4.6.1
+# governs FILE content, which is untouched here - this is metadata about the
+# write, not the note or field value on disk.)
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _subject(message: str) -> str:
+    return _CONTROL.sub(" ", message).strip() or "brain: write"
+
+
 def _trailers(message: str, source: str, notes=None, undo_of=None) -> str:
     """R11.3: a legible subject, then machine-readable trailers."""
-    lines = [message.rstrip(), "", "Brain-Source: " + source]
+    lines = [_subject(message), "", "Brain-Source: " + source]
     if notes:
         lines.append("Brain-Notes: " + ", ".join(notes))
     if undo_of:
