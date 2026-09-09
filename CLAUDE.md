@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Status: milestone 3a done
+## Status: milestone 3b done
 
 `brain/model.py` (the `Doc` class), `brain/entities.py` (the four entity types
 plus notes), `brain/_yaml.py` (front-matter parsing), `brain/git.py` (commit,
@@ -10,12 +10,18 @@ checkpoint/restore, undo, `log`/`diff`, the R11.4 guard) and `brain/lock.py`
 (the single-writer lock of R11.7) exist and are tested. `brain/root.py` (root
 discovery and `brain init`), `brain/grammar.py` (the R6.4 line grammar),
 `brain/resolve.py` (reference resolution, R6.2), `brain/commands.py` (the verb
-registry) and `brain/cli.py` (the argparse front door) now also exist:
-`brain init`, `brain log`, `brain status set` and `brain note add` all work
-from a terminal. Milestone 3 continues in 3b (the remaining verbs) and 3c
-(`brain apply`). `index.py`, `tui.py`, `AGENTS.md` + `process inbox`, agendas,
-and `tidy`/`review`/`rewrite` are unbuilt. The repository also holds a
-decision-complete design and the screens to build against:
+registry) and `brain/cli.py` (the argparse front door) now also exist, and
+every verb in §6.1 works from a terminal except `apply`, `context`, `search`,
+`build`, the agenda verbs (`agenda material`, `agenda set`, `minutes add`,
+`met`), `check --fix` and `rewrite`. That is: `init`, `note add`, `note list`,
+`note show`, `note flag`, `note drop`, `log`, `action add`, `action done`,
+`action due`, `decision add`, `question add`, `status set`, `health set`,
+`field set`, `new`, `link`, `raise`, `request add`, `request list`,
+`request done`, `undo` and `check --authored`. Milestone 3 continues in 3c
+(`brain apply`, `--dry-run`, and the concurrent-writer test A15). `index.py`,
+`tui.py`, `AGENTS.md` + `process inbox`, agendas, and `tidy`/`review`/`rewrite`
+are unbuilt. The repository also holds a decision-complete design and the
+screens to build against:
 
 - `BRAIN-SPEC.md` — requirements and solution design. Where a choice was made it
   is written as a requirement (`R<n>`), not an option. Read it end to end before
@@ -45,7 +51,12 @@ python -m pytest tests/test_doc_tasks.py::test_toggle_task_changes_exactly_one_l
 python -m pytest tests/test_stdlib_only.py -v        # the R3.3 seam
 
 .venv/bin/python -m brain init ~/mybrain
-.venv/bin/python -m brain --root ~/mybrain note add meeting -- scrappy notes here
+.venv/bin/python -m brain --root ~/mybrain new project -- Acme portal rebuild
+.venv/bin/python -m brain --root ~/mybrain new stakeholder -- Ann Peeters
+.venv/bin/python -m brain --root ~/mybrain action add acme-portal-rebuild -- Draft the kickoff deck
+.venv/bin/python -m brain --root ~/mybrain action done acme-portal-rebuild 1
+.venv/bin/python -m brain --root ~/mybrain raise ann-peeters --ref acme-portal-rebuild -- Budget impact of the delay
+.venv/bin/python -m brain --root ~/mybrain check --authored
 ```
 
 `tests/conftest.py` provides `brain_tree` (a writable copy of the fixture

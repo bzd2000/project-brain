@@ -71,9 +71,15 @@ def main(argv=None) -> int:
             return 0
 
         where = root.find_root(args.root)
+        # `check` has one mode in 3b, so `--authored` is a spelling of it rather
+        # than a flag. Bare flags do not exist in the grammar (R6.0), and inventing
+        # them for one call site would weaken the rule that catches
+        # `--owner --due <date>`. Milestone 8's `--fix` is a second mode and will
+        # need a real answer.
+        rest = [a for a in args.rest if a != "--authored"]
         parsed = grammar.parse_line(_line_from_argv(
-            [a for i, a in enumerate(args.rest)
-             if not (a == "-f" or (i and args.rest[i - 1] == "-f"))]
+            [a for i, a in enumerate(rest)
+             if not (a == "-f" or (i and rest[i - 1] == "-f"))]
         ))
         if parsed is None:
             return 0

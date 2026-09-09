@@ -8,7 +8,7 @@ an invariant the rest of the system assumes.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
@@ -16,8 +16,16 @@ from . import git, lock
 from .entities import HEALTHS, NOTE_TYPES, STATUSES, load_notes
 from .errors import GrammarError, UnknownReference, VerbError
 from .grammar import split_flags
-from .model import Doc, render_action
-from .resolve import resolve, resolve_action
+from .model import (
+    BOARD_SECTIONS,
+    PROGRAM_SECTIONS,
+    PROJECT_SECTIONS,
+    STAKEHOLDER_SECTIONS,
+    Doc,
+    parse_action,
+    render_action,
+)
+from .resolve import normalise, resolve, resolve_action
 
 
 class Result(NamedTuple):
@@ -385,6 +393,171 @@ def _note_drop(root, positional, flags, text):
         raise UnknownReference("no note {!r} in the inbox".format(note_id))
     rewrite_inbox(root, kept)
     return Result("dropped {}".format(note_id), ("inbox.md",))
+
+
+# R4.2.1 and §4.3-§4.5: what a new file of each kind starts as. The sections
+# are created empty and in order, because `ensure_section` needs somewhere to
+# put a section and `brain check` reports one that is missing.
+NEW_ENTITY = {
+    "project": ("projects", "project", PROJECT_SECTIONS,
+                {"status": "idea", "health": "green"}),
+    "program": ("programs", "program", PROGRAM_SECTIONS, {"status": "active"}),
+    "stakeholder": ("stakeholders", "stakeholder", STAKEHOLDER_SECTIONS, {}),
+    "board": ("boards", "board", BOARD_SECTIONS, {}),
+}
+
+
+def _slug(title: str) -> str:
+    return normalise(title)
+
+
+@verb("new", needs_text=True, arity=(1, 1))
+def _new(root, positional, flags, text):
+    kind = positional[0]
+    if kind not in NEW_ENTITY:
+        raise VerbError(
+            "{!r} is not an entity kind. One of: {}".format(
+                kind, ", ".join(sorted(NEW_ENTITY))
+            )
+        )
+    directory, title_field, sections, defaults = NEW_ENTITY[kind]
+    slug = _slug(text)
+    if not slug:
+        raise VerbError("{!r} has no letters or digits to make a slug from".format(text))
+    target = Path(root) / directory / (slug + ".md")
+    if target.exists():
+        raise VerbError(
+            "{} already exists at {}. Pick another name, or edit that one.".format(
+                slug, target
+            )
+        )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("---\n---\n\n", encoding="utf-8")
+    doc = Doc(target)
+    doc.set_field(title_field, text)
+    for key, value in defaults.items():
+        doc.set_field(key, value)
+    doc.touch()
+    for name in sections:
+        doc.ensure_section(name, sections)
+    doc.save()
+    return Result(
+        "created {}/{}".format(directory, slug),
+        ["{}/{}.md".format(directory, slug)],
+    )
+
+
+@verb("link", arity=(1, 1), allowed_flags=("program",))
+def _link(root, positional, flags, text):
+    """R4.1: membership is declared on the child. A project belongs to at most
+    one program, and programs never list their projects."""
+    if "program" not in flags:
+        raise VerbError("`link` needs --program <program>")
+    program = resolve(root, flags["program"], kinds=("program",))
+    project, doc, rel = _project_and_doc(root, positional[0])
+    doc.set_field("program", program.slug)
+    doc.touch()
+    doc.save()
+    return Result("{} is in {}".format(project.slug, program.slug), [rel])
+
+
+@verb("raise", needs_text=True, arity=(1, 1), allowed_flags=("ref",))
+def _raise(root, positional, flags, text):
+    """R4.4.2: `## Pending` accumulates between meetings, and is what agenda
+    generation consumes."""
+    party = resolve(root, positional[0], kinds=("stakeholder", "board"))
+    rel = Path(party.path).relative_to(Path(root)).as_posix()
+    line = "- {} - {}".format(date.today().isoformat(), text)
+    if "ref" in flags:
+        project = resolve(root, flags["ref"], kinds=("project",))
+        line += "  #{}".format(project.slug)
+    party.doc.add_bullet("Pending", line, newest_first=False)
+    party.doc.touch()
+    party.doc.save()
+    return Result("raised with {}".format(party.slug), [rel])
+
+
+def _requests(root):
+    """R4.7: `- [ ] text` / `- [x] YYYY-MM-DD text`."""
+    path = Path(root) / "_request.md"
+    if not path.exists():
+        return []
+    out = []
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").split("\n")):
+        task = parse_action(lineno, line)
+        if task is not None:
+            out.append(task)
+    return out
+
+
+@verb("request", "add", needs_text=True, arity=(0, 0))
+def _request_add(root, positional, flags, text):
+    """R4.7.2: duplicate pending requests collapse rather than accumulating."""
+    path = Path(root) / "_request.md"
+    for task in _requests(root):
+        if not task.done and task.text == text:
+            return Result("already queued: {}".format(text), [])
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    path.write_text(existing + "- [ ] " + text + "\n", encoding="utf-8")
+    return Result("queued: {}".format(text), ["_request.md"])
+
+
+@verb("request", "list", writes=False, arity=(0, 0))
+def _request_list(root, positional, flags, text):
+    tasks = _requests(root)
+    return Result(
+        "{} request(s)".format(len(tasks)) if tasks else "nothing queued",
+        [],
+        [{"n": i + 1, "text": t.text, "done": t.done} for i, t in enumerate(tasks)],
+    )
+
+
+@verb("request", "done", arity=(1, 1))
+def _request_done(root, positional, flags, text):
+    tasks = _requests(root)
+    try:
+        index = int(positional[0])
+    except ValueError:
+        raise VerbError("`request done` takes a number from `brain request list`")
+    if not 1 <= index <= len(tasks):
+        raise UnknownReference(
+            "there is no request {} ({} queued)".format(index, len(tasks))
+        )
+    task = tasks[index - 1]
+    path = Path(root) / "_request.md"
+    lines = path.read_text(encoding="utf-8").split("\n")
+    lines[task.lineno] = "- [x] {} {}".format(date.today().isoformat(), task.text)
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return Result("done: {}".format(task.text), ["_request.md"])
+
+
+@verb("undo", arity=(0, 0))
+def _undo(root, positional, flags, text):
+    """R11.5. `execute` must not commit on top of this - `undo` makes its own
+    commit, so it returns no paths."""
+    sha = git.undo(root)
+    if sha is None:
+        return Result("nothing to undo")
+    return Result("undid {}".format(sha[:7]))
+
+
+@verb("check", writes=False, arity=(0, 0), allowed_flags=())
+def _check(root, positional, flags, text):
+    """R3.2/R11.6: report any file whose last change did not come through
+    `brain`, so a violation is visible rather than silent."""
+    offenders = git.unauthored(root)
+    return Result(
+        "all {} file(s) authored by brain".format(len(git.brain_paths(root)))
+        if not offenders
+        else "{} file(s) not written by brain: {}".format(
+            len(offenders), ", ".join(offenders)
+        ),
+        [],
+        offenders,
+    )
 
 
 def execute(root, parsed, source: str = "cli") -> Result:
