@@ -62,6 +62,33 @@ def test_dry_run_names_each_line_it_would_run(brain_repo):
     assert "log" in joined and "action add" in joined and "decision add" in joined
 
 
+def test_dry_run_includes_a_resolved_flag_reference(brain_repo):
+    """Fix round 2, item 4. `raise <party> --ref <project>` is §8.1's own
+    canonical batch line - `validate_batch` already resolves `--ref`, but
+    the preview used to show only the primary target (`raise -> arch-board`)
+    and silently drop it, so a batch that got `--ref` wrong got no preview
+    of the mistake. Mutation this catches: reverting `_dry_run_effect` to
+    ignore `plan.resolved_flags` - the assertion below then fails because
+    `--ref acme-migration` never appears in the output."""
+    result = c.apply_batch(
+        brain_repo,
+        "raise arch-board --ref acme-migration -- sign-off needed\n",
+        dry_run=True,
+    )
+    assert result.data == ["line 1: raise -> arch-board (--ref acme-migration)"]
+
+
+def test_dry_run_includes_the_value_for_a_value_choices_verb(brain_repo):
+    """Fix round 2, item 4: `status set q4-budget active` used to preview as
+    bare `status set -> q4-budget`, which hides WHAT the batch would set it
+    to. Mutation this catches: dropping the `value_choices` branch in
+    `_dry_run_effect`."""
+    result = c.apply_batch(
+        brain_repo, "status set q4-budget active\n", dry_run=True
+    )
+    assert result.data == ["line 1: status set -> q4-budget (active)"]
+
+
 def test_a_failure_part_way_through_the_writes_restores(brain_repo, monkeypatch):
     """R6.5's checkpoint. Validation passes, then the third line blows up
     mid-write - the tree must come back, not sit half-applied."""

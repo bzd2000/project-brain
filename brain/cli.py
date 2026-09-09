@@ -105,12 +105,26 @@ def main(argv=None) -> int:
                 # newlines would silently normalise a CRLF batch file before
                 # the grammar ever sees it. `grammar.parse_line` already
                 # strips a trailing `\r` off of every line regardless of
-                # where it came from, so a CRLF file behaves exactly like
-                # CRLF arriving on stdin (R5.2, C5) without needing that
-                # translation done here too. A missing file surfaces as a
-                # bare `OSError`, which `main`'s own handler below already
-                # turns into a one-line refusal naming the path.
-                text = Path(tail[1]).read_bytes().decode("utf-8")
+                # where it came from, so THIS file parses correctly without a
+                # second newline-translation layer (R5.2, C5). That is NOT
+                # the same claim as "identical to stdin" (fix round 2
+                # correction): `read_stdin_text` decodes with the platform's
+                # default encoding, not UTF-8, so the same non-UTF-8 bytes
+                # crash differently later (inside `Doc.save`) depending on
+                # which door they came through - a pre-existing gap this fix
+                # does not close. A missing file surfaces as a bare
+                # `OSError`, which `main`'s own handler below already turns
+                # into a one-line refusal naming the path; a non-UTF-8 file
+                # is refused here the same way, by name, rather than
+                # reaching the user as a traceback (fix round 2, Windows's
+                # Notepad defaults to cp1252, and C5 makes Windows primary).
+                try:
+                    text = Path(tail[1]).read_bytes().decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise VerbError(
+                        "{} is not valid UTF-8 ({}). Save the batch file as "
+                        "UTF-8 and try again.".format(tail[1], exc)
+                    )
             else:
                 raise VerbError(
                     "`apply` takes its batch as `-f <path>`, `-f -`, or "

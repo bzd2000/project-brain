@@ -714,6 +714,16 @@ class Plan(NamedTuple):
     # with no reference, or a `Plan` built by plain `validate` outside a
     # batch, which never touches this field at all.
     resolved: object = None
+    # `{flag_name: what it resolved to}` for every `flag_refs` site
+    # `validate_batch` resolved - `link --program <program>`, `raise --ref
+    # <project>`. `None` (not `{}`, a mutable `NamedTuple` default - the
+    # same reason `Verb.flag_refs` above is `None`) when the verb has none,
+    # or the flag was not given. Fix round 2, item 4: without this,
+    # `--dry-run` silently dropped `--ref`/`--program` from its preview even
+    # though `validate_batch` had already resolved them - the §8.1 canonical
+    # batch's own `raise arch-board --ref acme-migration -- ...` line is
+    # exactly the shape a wrong `--ref` would have gone unpreviewed on.
+    resolved_flags: Optional[Dict[str, object]] = None
 
 
 def validate(parsed) -> Optional[Plan]:
@@ -830,13 +840,18 @@ def _numbered_lines(text: str):
 
 
 def _reference_sites(plan: "Plan"):
-    """Where `plan` names an entity, as `(ref, kinds)` pairs - what a batch
-    must resolve before writing any of it (R6.5.1)."""
+    """Where `plan` names an entity, as `(ref, kinds, flag_name)` triples -
+    what a batch must resolve before writing any of it (R6.5.1). `flag_name`
+    is `None` for `positional[0]`'s reference (the PRIMARY target) and the
+    flag's own name (`"ref"`, `"program"`) for a `flag_refs` site, so a
+    caller that wants to tell the two apart - `--dry-run`'s preview, which
+    must not drop `--ref`/`--program` silently (fix round 2, item 4) - does
+    not have to guess from position alone."""
     if plan.verb.ref_kinds is not None:
-        yield plan.positional[0], plan.verb.ref_kinds
+        yield plan.positional[0], plan.verb.ref_kinds, None
     for name, kinds in (plan.verb.flag_refs or {}).items():
         if name in plan.flags:
-            yield plan.flags[name], kinds
+            yield plan.flags[name], kinds, name
 
 
 def _projected_slug(plan: "Plan"):
@@ -1010,11 +1025,12 @@ def validate_batch(root, text: str) -> List[Tuple[int, "Plan"]]:
                 )
             projected[slug] = (lineno, kind, title)
 
-        # `_reference_sites` yields `positional[0]`'s reference first (when
-        # the verb has one), then any flag references - so index 0 is always
-        # the PRIMARY target. Captured onto the plan so `--dry-run` (L5) can
-        # name it without `_resolve_against` walking the tree a second time.
-        for index, (ref, kinds) in enumerate(_reference_sites(plan)):
+        # `_reference_sites` tells the PRIMARY target (`flag_name is None`)
+        # apart from a flag reference (`flag_name` is that flag's name).
+        # Both are captured onto the plan so `--dry-run` (L5, and item 4's
+        # flag-reference fix) can name them without `_resolve_against`
+        # walking the tree a second time.
+        for ref, kinds, flag_name in _reference_sites(plan):
             try:
                 found = _resolve_against(root, ref, kinds, projected)
             except AmbiguousReference as exc:
@@ -1028,36 +1044,73 @@ def validate_batch(root, text: str) -> List[Tuple[int, "Plan"]]:
                     "{!r} matches nothing yet - line {} creates it. Move "
                     "that line above this one.".format(ref, creator),
                 )
-            if index == 0:
+            if flag_name is None:
                 plan = plan._replace(resolved=found)
+            else:
+                resolved_flags = dict(plan.resolved_flags or {})
+                resolved_flags[flag_name] = found
+                plan = plan._replace(resolved_flags=resolved_flags)
 
         plans.append((lineno, plan))
     return plans
 
 
+def _dry_run_target(entity) -> str:
+    """One resolved entity's slug for `--dry-run`, annotated when it is a
+    stand-in for a `new` line elsewhere in this batch rather than something
+    already on disk (mirrors `resolve._describe`, which annotates the same
+    way for an ambiguity message)."""
+    pending = getattr(entity, "pending_line", None)
+    if pending is not None:
+        return "{} (created on line {})".format(entity.slug, pending)
+    return entity.slug
+
+
 def _dry_run_effect(plan: "Plan") -> str:
-    """What `--dry-run` names for one line (fix round 1, L5): the verb and
-    the target `validate_batch` already resolved it to, distinguishing a
-    line that CREATES an entity from one that references something that
-    already exists or that an earlier line of the same batch will create.
+    """What `--dry-run` names for one line (fix round 1, L5; extended in fix
+    round 2, item 4): the verb, the PRIMARY target `validate_batch` already
+    resolved it to, any `--flag` reference it also resolved (`link
+    --program`, `raise --ref`), and an enumerated value being set (`status
+    set`, `health set`) - distinguishing a line that CREATES an entity from
+    one that references something that already exists or that an earlier
+    line of the same batch will create.
+
+    A flag reference used to be silently dropped from the preview even
+    though `validate_batch` had already resolved it - the §8.1 canonical
+    batch's own `raise arch-board --ref acme-migration -- ...` line is
+    exactly the shape that hid a wrong `--ref` from the user. `new`'s own
+    `value_choices` (its entity kind) is already named by the "(creates)"
+    branch, so that branch returns before the enumerated-value logic below
+    would repeat it.
 
     Never the user's free text (R4.6.1's principle, applied to a batch's own
     preview): it is already on their screen, and this only ever names brain's
-    own syntax - a verb and a slug, not prose.
+    own syntax - a verb, a slug, an enumerated value, a flag name - not prose.
     """
     label = " ".join(plan.verb.name)
     projection = _projected_slug(plan)
     if projection is not None:
         slug, kind, _title = projection
         return "{} {} -> {} (creates)".format(label, kind, slug)
+
     if plan.resolved is not None:
-        pending = getattr(plan.resolved, "pending_line", None)
-        if pending is not None:
-            return "{} -> {} (created on line {})".format(
-                label, plan.resolved.slug, pending
-            )
-        return "{} -> {}".format(label, plan.resolved.slug)
-    return label
+        target = "{} -> {}".format(label, _dry_run_target(plan.resolved))
+    else:
+        target = label
+
+    extras = []
+    if plan.verb.value_choices is not None:
+        index, _allowed = plan.verb.value_choices
+        if index < len(plan.positional):
+            extras.append(plan.positional[index])
+    for name in sorted(plan.resolved_flags or {}):
+        extras.append(
+            "--{} {}".format(name, _dry_run_target(plan.resolved_flags[name]))
+        )
+
+    if extras:
+        return "{} ({})".format(target, ", ".join(extras))
+    return target
 
 
 def apply_batch(root, text: str, dry_run: bool = False,

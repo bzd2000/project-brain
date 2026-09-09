@@ -291,10 +291,17 @@ def test_a_verb_that_commits_on_its_own_declares_batchable_false():
     cannot share that envelope and must declare `batchable=False`. This
     reads every verb's source rather than trusting a fixed list, the way
     `test_a_verb_that_resolves_positional_zero_declares_it` does for
-    `ref_kinds` above - a new self-committing verb added later fails here
-    even if nobody remembers to flag it, rather than silently producing two
-    commits from one `brain apply`, or a batch `undo` a checkpoint cannot
-    roll back (M2's live bugs).
+    `ref_kinds` above - a new verb whose OWN BODY calls `git.commit`/
+    `git.undo` directly fails here even if nobody remembers to flag it.
+
+    NOT transitive (fix round 2, item 3 - the earlier wording overclaimed
+    this): the walk inspects one verb's own source only, via
+    `ast.parse(inspect.getsource(verb.run))`. A verb that committed through a
+    helper function of its own, or via `from .git import commit` bound to a
+    bare `commit(...)` call rather than `git.commit(...)`, would NOT be
+    caught. No such verb exists today - every write goes through `git.` -
+    but this test is a guard against the direct case only, not a general
+    proof that no verb moves HEAD.
     """
     for name, verb in c.VERBS.items():
         tree = ast.parse(inspect.getsource(verb.run).lstrip())

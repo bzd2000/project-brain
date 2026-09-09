@@ -222,3 +222,18 @@ def test_apply_dash_f_missing_file_names_the_path(brain_repo, capsys):
     missing = str(brain_repo / "does-not-exist.txt")
     assert _cli("--root", brain_repo, "apply", "-f", missing) != 0
     assert missing in capsys.readouterr().err
+
+
+def test_apply_dash_f_non_utf8_file_is_refused_not_a_traceback(brain_repo, tmp_path, capsys):
+    """Fix round 2, item 1: `UnicodeDecodeError` is a `ValueError`, which
+    `main`'s `except (BrainError, OSError)` does not catch - a batch file
+    saved as cp1252 (Windows Notepad's ANSI default; C5 makes Windows the
+    primary platform) used to crash with a raw traceback out of a flag §6.1
+    spells out as "one short line ... exits non-zero", not a stack trace."""
+    batch_file = tmp_path / "batch.txt"
+    batch_file.write_bytes("log acme-migration -- caf’s".encode("cp1252"))
+    assert _cli("--root", brain_repo, "apply", "-f", str(batch_file)) != 0
+    err = capsys.readouterr().err
+    assert "brain:" in err
+    assert str(batch_file) in err
+    assert "UTF-8" in err

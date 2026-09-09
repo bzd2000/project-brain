@@ -9,6 +9,8 @@ import shutil
 
 import pytest
 
+from conftest import snapshot
+
 from brain import commands as c
 from brain import git, grammar
 from brain.commands import GrammarError, VerbError
@@ -137,3 +139,24 @@ def test_a_bad_value_is_reported_before_the_git_repo_check(brain_repo):
         c.execute(brain_repo, grammar.parse_line("status set acme-migration banana"))
     assert "banana" in str(excinfo.value)
     assert "git" not in str(excinfo.value)
+
+
+def test_a_keyboard_interrupt_between_the_write_and_the_commit_restores(
+    brain_repo, monkeypatch
+):
+    """Fix round 2, item 2. `apply_batch`'s `except BaseException` (fix round
+    1, M3) has a test; `execute`'s identical `except BaseException` at the
+    same spot did not - mutating it back to `except Exception` left the full
+    suite green at 402. `perform` writes for real here (so there is
+    something on disk to lose), then `git.commit` - the gap M3 is about -
+    raises `KeyboardInterrupt`, which must still trigger `execute`'s
+    checkpoint restore."""
+    before = snapshot(brain_repo)
+
+    def exploding_commit(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(c.git, "commit", exploding_commit)
+    with pytest.raises(KeyboardInterrupt):
+        c.execute(brain_repo, grammar.parse_line("log acme-migration -- a line"))
+    assert snapshot(brain_repo) == before
