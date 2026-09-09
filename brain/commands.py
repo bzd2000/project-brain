@@ -49,6 +49,20 @@ class Verb(NamedTuple):
     arity: Tuple[int, int]
     allowed_flags: Tuple[str, ...]
     optional_text: bool
+    # Where this verb's entity references live, so a batch can be validated
+    # without running it (R6.5.1). `ref_kinds` is None when positional[0] is
+    # not an entity reference - a note id, an action selector, or a kind name.
+    # An empty tuple means "any kind", matching `resolve(root, ref)` with no
+    # `kinds` argument.
+    ref_kinds: Optional[Tuple[str, ...]] = None
+    # Maps a flag name to the kinds its value may name; None (not {}, a
+    # mutable NamedTuple default) when the verb has no reference-valued
+    # flags. Readers use `(verb.flag_refs or {})`.
+    flag_refs: Optional[Dict[str, Tuple[str, ...]]] = None
+    # A positional whose legal values are known statically, as (index, values).
+    # `status set` and `health set` check this in their own bodies too; that is
+    # defence in depth, and duplicates a constant reference rather than logic.
+    value_choices: Optional[Tuple[int, Tuple[str, ...]]] = None
 
 
 VERBS: Dict[Tuple[str, ...], Verb] = {}
@@ -56,7 +70,10 @@ VERBS: Dict[Tuple[str, ...], Verb] = {}
 
 def verb(*name, needs_text: bool = False, writes: bool = True,
          arity: Tuple[int, int] = (0, 0), allowed_flags: Tuple[str, ...] = (),
-         optional_text: bool = False):
+         optional_text: bool = False,
+         ref_kinds: Optional[Tuple[str, ...]] = None,
+         flag_refs: Optional[Dict[str, Tuple[str, ...]]] = None,
+         value_choices: Optional[Tuple[int, Tuple[str, ...]]] = None):
     """Register a verb.
 
     `arity` is (min, max) positionals AFTER the verb's own words, and
@@ -68,7 +85,8 @@ def verb(*name, needs_text: bool = False, writes: bool = True,
         VERBS[tuple(name)] = Verb(
             name=tuple(name), run=func, needs_text=needs_text, writes=writes,
             arity=arity, allowed_flags=tuple(allowed_flags),
-            optional_text=optional_text,
+            optional_text=optional_text, ref_kinds=ref_kinds,
+            flag_refs=flag_refs, value_choices=value_choices,
         )
         return func
     return register
@@ -106,7 +124,7 @@ def next_note_id(root) -> Tuple[str, int]:
     return "n{}".format(nxt), nxt
 
 
-@verb("log", needs_text=True, arity=(1, 1))
+@verb("log", needs_text=True, arity=(1, 1), ref_kinds=("project",))
 def _log(root, positional, flags, text):
     project = resolve(root, positional[0], kinds=("project",))
     doc = project.doc
@@ -117,7 +135,8 @@ def _log(root, positional, flags, text):
     return Result("logged to {}".format(project.slug), (rel,))
 
 
-@verb("status", "set", arity=(2, 2))
+@verb("status", "set", arity=(2, 2), ref_kinds=("project",),
+      value_choices=(1, STATUSES))
 def _status_set(root, positional, flags, text):
     ref, value = positional[0], positional[1]
     if value not in STATUSES:
@@ -146,7 +165,7 @@ def _project_and_doc(root, ref):
 
 
 @verb("action", "add", needs_text=True, arity=(1, 1),
-      allowed_flags=("owner", "due"))
+      allowed_flags=("owner", "due"), ref_kinds=("project",))
 def _action_add(root, positional, flags, text):
     project, doc, rel = _project_and_doc(root, positional[0])
     doc.add_action(text, owner=flags.get("owner"), due=flags.get("due"))
@@ -155,7 +174,7 @@ def _action_add(root, positional, flags, text):
     return Result("added an action to {}".format(project.slug), (rel,))
 
 
-@verb("action", "done", arity=(1, 2), optional_text=True)
+@verb("action", "done", arity=(1, 2), optional_text=True, ref_kinds=("project",))
 def _action_done(root, positional, flags, text):
     """R6.2: a 1-based index into the OPEN actions, or a unique substring."""
     project, doc, rel = _project_and_doc(root, positional[0])
@@ -171,7 +190,8 @@ def _action_done(root, positional, flags, text):
     return Result("ticked {} in {}".format(task.text, project.slug), (rel,))
 
 
-@verb("action", "due", arity=(1, 2), allowed_flags=("to",), optional_text=True)
+@verb("action", "due", arity=(1, 2), allowed_flags=("to",), optional_text=True,
+      ref_kinds=("project",))
 def _action_due(root, positional, flags, text):
     if "to" not in flags:
         raise VerbError("`action due` needs --to <date>")
@@ -191,7 +211,7 @@ def _action_due(root, positional, flags, text):
     )
 
 
-@verb("decision", "add", needs_text=True, arity=(1, 1))
+@verb("decision", "add", needs_text=True, arity=(1, 1), ref_kinds=("project",))
 def _decision_add(root, positional, flags, text):
     project, doc, rel = _project_and_doc(root, positional[0])
     doc.add_decision(text)
@@ -200,7 +220,7 @@ def _decision_add(root, positional, flags, text):
     return Result("recorded a decision on {}".format(project.slug), (rel,))
 
 
-@verb("question", "add", needs_text=True, arity=(1, 1))
+@verb("question", "add", needs_text=True, arity=(1, 1), ref_kinds=("project",))
 def _question_add(root, positional, flags, text):
     project, doc, rel = _project_and_doc(root, positional[0])
     doc.add_question(text)
@@ -209,7 +229,8 @@ def _question_add(root, positional, flags, text):
     return Result("added a question to {}".format(project.slug), (rel,))
 
 
-@verb("health", "set", arity=(2, 2))
+@verb("health", "set", arity=(2, 2), ref_kinds=("project",),
+      value_choices=(1, HEALTHS))
 def _health_set(root, positional, flags, text):
     value = positional[1]
     if value not in HEALTHS:
@@ -223,7 +244,7 @@ def _health_set(root, positional, flags, text):
     return Result("{} is now {}".format(project.slug, value), (rel,))
 
 
-@verb("field", "set", needs_text=True, arity=(2, 2))
+@verb("field", "set", needs_text=True, arity=(2, 2), ref_kinds=())
 def _field_set(root, positional, flags, text):
     key = positional[1]
     if key in GUARDED_FIELDS:
@@ -446,7 +467,8 @@ def _new(root, positional, flags, text):
     )
 
 
-@verb("link", arity=(1, 1), allowed_flags=("program",))
+@verb("link", arity=(1, 1), allowed_flags=("program",),
+      ref_kinds=("project",), flag_refs={"program": ("program",)})
 def _link(root, positional, flags, text):
     """R4.1: membership is declared on the child. A project belongs to at most
     one program, and programs never list their projects."""
@@ -460,7 +482,8 @@ def _link(root, positional, flags, text):
     return Result("{} is in {}".format(project.slug, program.slug), (rel,))
 
 
-@verb("raise", needs_text=True, arity=(1, 1), allowed_flags=("ref",))
+@verb("raise", needs_text=True, arity=(1, 1), allowed_flags=("ref",),
+      ref_kinds=("stakeholder", "board"), flag_refs={"ref": ("project",)})
 def _raise(root, positional, flags, text):
     """R4.4.2: `## Pending` accumulates between meetings, and is what agenda
     generation consumes."""
