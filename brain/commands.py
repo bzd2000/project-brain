@@ -140,8 +140,11 @@ _VALUE_CHOICE_NOUN: Dict[Tuple[str, ...], str] = {
 def _value_choice_error(name: Tuple[str, ...], value: str,
                          allowed: Tuple[str, ...]) -> VerbError:
     noun = _VALUE_CHOICE_NOUN.get(name, name[0])
+    article = "an" if noun[:1].lower() in "aeiou" else "a"
     return VerbError(
-        "{!r} is not a {}. One of: {}".format(value, noun, ", ".join(allowed))
+        "{!r} is not {} {}. One of: {}".format(
+            value, article, noun, ", ".join(allowed)
+        )
     )
 
 
