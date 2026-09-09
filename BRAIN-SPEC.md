@@ -425,6 +425,22 @@ truncated summary. Target under 8 KB for 40 entities.
 **R4.8.1** `brain context` prints a still smaller projection for the agent — see
 §6.3. This is the file that keeps processing cheap.
 
+**R4.8.2 JSON until it demonstrably is not enough.** At the size this design
+targets, a linear scan of every entity file takes about half a millisecond;
+five hundred entities take five. A cache would have to be kept correct against
+an agent writing from the other pane (C4), which means invalidation, which means
+a search that is silently stale — a wrong answer with nothing to signal it, and
+the failure mode this design works hardest to avoid.
+
+If it ever does outgrow that, **SQLite with FTS5 is the intended replacement**
+— it is in the standard library, so C1 and R3.3 are unaffected. Two things
+would trigger it: `brain search` needing full text over note bodies and
+history rather than titles and sections, or a brain past a few thousand
+entities. C3 is what makes the swap safe: the index is derived and disposable,
+so it can change shape without touching a single note. Before reaching for it,
+spend the cheaper wins first — answer from `_index.json` alone where the query
+allows, and skip unchanged files by mtime.
+
 ---
 
 ## 5. `brain/model.py` — surgical editing
@@ -691,6 +707,17 @@ to what you actually wrote. Nothing paraphrased is presented as your phrasing.
 **R8.4** Processing a full inbox is **one `brain context` call plus one
 `brain apply`** — two shell invocations, two round trips. No entity file is read.
 A day of thirty notes, one inbox pass, and two agendas is four or five model calls.
+
+**R8.4.1 Search is outside the token budget, deliberately.** `brain search`
+(R6.7) is a human's verb and the TUI's `/`; no agent job calls it, and making it
+faster saves no tokens, because tokens are spent on what crosses into the prompt
+and never on what it costs us to find locally. Recorded here so that search
+performance is not later mistaken for a cost optimisation. The levers that do
+move this bill are the density of `brain context` and the length of
+`AGENTS.md`. If the agent is reaching for entity files often enough that
+lookup cost matters, the digest is inadequate — fix that, because a cheaper way
+to pull more text into the prompt is the collapse R4.8.1 warns about, not a
+remedy for it.
 
 ### 8.4 Escape hatch
 
