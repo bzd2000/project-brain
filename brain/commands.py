@@ -20,6 +20,19 @@ from .model import Doc
 from .resolve import resolve
 
 
+class Result(NamedTuple):
+    """What a verb returns.
+
+    `message` is R6.1's single line. `paths` is what `execute` commits, empty
+    for a read verb. `data` is the machine-readable answer `--json` prints, and
+    is None for a write verb - a write's answer is one line, and inventing a
+    JSON shape for it would be a second contract to keep in step.
+    """
+    message: str
+    paths: Tuple[str, ...] = ()
+    data: object = None
+
+
 class Verb(NamedTuple):
     name: Tuple[str, ...]
     run: Callable
@@ -27,13 +40,15 @@ class Verb(NamedTuple):
     writes: bool
     arity: Tuple[int, int]
     allowed_flags: Tuple[str, ...]
+    optional_text: bool
 
 
 VERBS: Dict[Tuple[str, ...], Verb] = {}
 
 
 def verb(*name, needs_text: bool = False, writes: bool = True,
-         arity: Tuple[int, int] = (0, 0), allowed_flags: Tuple[str, ...] = ()):
+         arity: Tuple[int, int] = (0, 0), allowed_flags: Tuple[str, ...] = (),
+         optional_text: bool = False):
     """Register a verb.
 
     `arity` is (min, max) positionals AFTER the verb's own words, and
@@ -45,6 +60,7 @@ def verb(*name, needs_text: bool = False, writes: bool = True,
         VERBS[tuple(name)] = Verb(
             name=tuple(name), run=func, needs_text=needs_text, writes=writes,
             arity=arity, allowed_flags=tuple(allowed_flags),
+            optional_text=optional_text,
         )
         return func
     return register
@@ -90,7 +106,7 @@ def _log(root, positional, flags, text):
     doc.touch()
     doc.save()
     rel = Path(project.path).relative_to(Path(root)).as_posix()
-    return "logged to {}".format(project.slug), [rel]
+    return Result("logged to {}".format(project.slug), (rel,))
 
 
 @verb("status", "set", arity=(2, 2))
@@ -106,7 +122,7 @@ def _status_set(root, positional, flags, text):
     doc.touch()
     doc.save()
     rel = Path(project.path).relative_to(Path(root)).as_posix()
-    return "{} is now {}".format(project.slug, value), [rel]
+    return Result("{} is now {}".format(project.slug, value), (rel,))
 
 
 @verb("note", "add", needs_text=True, arity=(0, 1), allowed_flags=("tag",))
@@ -151,13 +167,35 @@ def _note_add(root, positional, flags, text):
         block += eol
     inbox.write_bytes(existing + block)
     (Path(root) / "_seq").write_text("{}\n".format(number), encoding="utf-8")
-    return "captured {}".format(note_id), ["inbox.md", "_seq"]
+    return Result("captured {}".format(note_id), ("inbox.md", "_seq"))
 
 
-def execute(root, parsed, source: str = "cli") -> str:
-    """Run one parsed line. Returns R6.1's single result line."""
+@verb("note", "list", writes=False, allowed_flags=("type",))
+def _note_list(root, positional, flags, text):
+    """R4.6: every unprocessed note. `--type` narrows; `--unprocessed` is not a
+    flag because every note in inbox.md is unprocessed by definition (R4.6.4)."""
+    wanted = flags.get("type")
+    if wanted and wanted not in NOTE_TYPES:
+        raise VerbError(
+            "{!r} is not a note type. One of: {}".format(wanted, ", ".join(NOTE_TYPES))
+        )
+    notes = [n for n in load_notes(Path(root) / "inbox.md")
+             if wanted is None or n.type == wanted]
+    data = [
+        {"id": n.id, "captured": n.captured, "type": n.type, "tags": n.tags,
+         "body": n.body, "problems": n.problems}
+        for n in notes
+    ]
+    return Result(
+        "{} unprocessed note(s)".format(len(notes)) if notes else "inbox is empty",
+        [], data,
+    )
+
+
+def execute(root, parsed, source: str = "cli") -> Result:
+    """Run one parsed line. Returns a `Result`."""
     if parsed is None:
-        return ""
+        return Result("")
     positional, flags = split_flags(parsed.tokens)
     found, rest = find_verb(positional)
 
@@ -187,13 +225,13 @@ def execute(root, parsed, source: str = "cli") -> str:
             "{!r}: `{}` takes free text, which must follow a ` -- ` separator "
             "(R6.4a)".format(parsed.raw, " ".join(found.name))
         )
-    if parsed.text is not None and not found.needs_text:
+    if parsed.text is not None and not (found.needs_text or found.optional_text):
         raise GrammarError(
             "{!r}: `{}` takes no free text".format(parsed.raw, " ".join(found.name))
         )
 
     if not found.writes:
-        return found.run(root, rest, flags, parsed.text)[0]
+        return found.run(root, rest, flags, parsed.text)
 
     git.require_repo(root)
     with lock.held(root):
@@ -204,9 +242,9 @@ def execute(root, parsed, source: str = "cli") -> str:
         # same failure and deserves the same answer.
         checkpoint = git.checkpoint(root, git.brain_paths(root), prune=True)
         try:
-            message, paths = found.run(root, rest, flags, parsed.text)
-            git.commit(root, paths, "brain: " + message, source=source)
+            result = found.run(root, rest, flags, parsed.text)
+            git.commit(root, result.paths, "brain: " + result.message, source=source)
         except Exception:
             git.restore(root, checkpoint)
             raise
-    return message
+    return result

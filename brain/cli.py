@@ -7,6 +7,7 @@ rejoined into a line and handed to the same grammar `brain apply` uses.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from . import commands, grammar, root
@@ -28,6 +29,16 @@ def _line_from_argv(rest) -> str:
     return " ".join(rest)
 
 
+def read_stdin_text() -> str:
+    """Read a note body from stdin, byte for byte (R4.6.1).
+
+    `-f -` exists because argv arrives already tokenised (R6.4c): a body with
+    blank lines, leading spaces or newlines cannot survive the trip. Nothing
+    here strips or reflows what it reads.
+    """
+    return sys.stdin.read()
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="brain",
@@ -35,6 +46,10 @@ def main(argv=None) -> int:
                     "writes (R3.1).",
     )
     parser.add_argument("--root", help="the brain to act on (R4.0)")
+    parser.add_argument(
+        "--json", action="store_true",
+        help="machine-readable output, on read verbs only (R6.1)",
+    )
     parser.add_argument("rest", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
 
@@ -56,12 +71,32 @@ def main(argv=None) -> int:
             return 0
 
         where = root.find_root(args.root)
-        parsed = grammar.parse_line(_line_from_argv(args.rest))
+        parsed = grammar.parse_line(_line_from_argv(
+            [a for i, a in enumerate(args.rest)
+             if not (a == "-f" or (i and args.rest[i - 1] == "-f"))]
+        ))
         if parsed is None:
             return 0
+        if "-f" in args.rest:
+            cut = args.rest.index("-f")
+            if cut + 1 >= len(args.rest) or args.rest[cut + 1] != "-":
+                raise VerbError("-f takes `-`, meaning standard input")
+            if parsed.text is not None:
+                raise VerbError(
+                    "give a body with `-f -` or after ` -- `, not both"
+                )
+            parsed = parsed._replace(text=read_stdin_text())
         result = commands.execute(where, parsed, source="cli")
-        if result:
-            sys.stdout.write(result + "\n")
+        if args.json:
+            if result.data is None:
+                raise VerbError(
+                    "--json is for read verbs; `{}` answers in one line".format(
+                        " ".join(args.rest[:2])
+                    )
+                )
+            sys.stdout.write(json.dumps(result.data, indent=2) + "\n")
+        elif result.message:
+            sys.stdout.write(result.message + "\n")
         return 0
     except (BrainError, OSError) as exc:
         # Two families, not a blanket `except Exception`: R6.1 asks for a clear

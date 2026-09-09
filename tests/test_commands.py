@@ -3,28 +3,10 @@ import pytest
 from conftest import snapshot, assert_only_changed
 from brain import commands as c
 from brain import grammar as gr
-from brain import root as r
 from brain import git as g
 from brain.entities import Project, load_notes
 from brain.errors import GrammarError, VerbError
 from brain.model import Doc
-
-
-@pytest.fixture
-def brain_repo(tmp_path):
-    """A brain root that is also a git repo, seeded with the §4 fixtures."""
-    import shutil
-
-    from conftest import FIXTURES
-
-    root = r.init(tmp_path / "b")
-    seeded = []
-    for kind in ("programs", "projects", "stakeholders", "boards"):
-        for item in sorted((FIXTURES / "brain" / kind).glob("*.md")):
-            shutil.copy(item, root / kind / item.name)
-            seeded.append("{}/{}".format(kind, item.name))
-    g.commit(root, seeded, "brain: seed fixtures", source="cli")
-    return root
 
 
 def _run(root, line):
@@ -32,8 +14,8 @@ def _run(root, line):
 
 
 def test_log_appends_newest_first_and_commits(brain_repo):
-    out = _run(brain_repo, "log acme-migration -- Codes published at last")
-    assert "acme-migration" in out
+    result = _run(brain_repo, "log acme-migration -- Codes published at last")
+    assert "acme-migration" in result.message
     body = Project(brain_repo / "projects" / "acme-migration.md").doc.section_lines("Log")
     assert body[0] == "- Codes published at last"
     assert g.authored(brain_repo, "projects/acme-migration.md")
