@@ -460,13 +460,24 @@ def _find_existing_kind(root, slug: str) -> Optional[str]:
     directories - not just the one the caller has in mind. A slug that exists
     under two kinds makes `resolve(root, slug)` permanently ambiguous for any
     caller that does not pass `kinds`, which is a trap the user cannot see
-    coming (R6.2) - so `new` and `validate_batch`'s `_exists_on_disk` share
-    this ONE check rather than each drawing the boundary differently (F6).
+    coming (R6.2) - so `new` and `validate_batch` share this ONE check rather
+    than each drawing the boundary differently (F6).
     """
     for kind, (directory, _title_field, _sections, _defaults) in NEW_ENTITY.items():
         if (Path(root) / directory / (slug + ".md")).exists():
             return kind
     return None
+
+
+def _already_exists_message(slug: str, kind: str) -> str:
+    """The wording BOTH `_new` (at PERFORM time) and `validate_batch` (at
+    validation time) use for a slug collision, so the two paths cannot drift
+    apart the way L4 found them still doing after F6 closed the same gap in
+    the PREDICATE: validation said "ann already exists", `_new` said "ann
+    already exists as a stakeholder..." - true statements about the same
+    refusal, worded differently because each path built its own sentence."""
+    return "{} already exists as a {}. Pick another name, or edit that " \
+        "one.".format(slug, kind)
 
 
 @verb("new", needs_text=True, arity=(1, 1), value_choices=(0, _NEW_KINDS))
@@ -480,10 +491,7 @@ def _new(root, positional, flags, text):
         raise VerbError("{!r} has no letters or digits to make a slug from".format(text))
     existing_kind = _find_existing_kind(root, slug)
     if existing_kind is not None:
-        raise VerbError(
-            "{} already exists as a {}. Pick another name, or edit that "
-            "one.".format(slug, existing_kind)
-        )
+        raise VerbError(_already_exists_message(slug, existing_kind))
     target = Path(root) / directory / (slug + ".md")
 
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -820,14 +828,6 @@ def _projected_slug(plan: "Plan"):
     return slug, kind, plan.text
 
 
-def _exists_on_disk(root, slug: str) -> bool:
-    """True when `slug` already names a file in any of the four entity
-    directories - the same check `_new` makes, through the same helper
-    (`_find_existing_kind`), so validation and the verb can never disagree
-    about what counts as a collision (F6)."""
-    return _find_existing_kind(root, slug) is not None
-
-
 class _ProjectedEntity(NamedTuple):
     """A stand-in for the entity a `new` line in this batch will create - just
     enough surface for `resolve_among`'s four passes to treat it exactly like
@@ -864,7 +864,7 @@ def _resolve_against(root, ref: str, kinds, projected):
     resolve_among(candidates, ref)
 
 
-def _line_creating(text: str, after_lineno: int, ref: str, kinds):
+def _line_creating(root, text: str, after_lineno: int, ref: str, kinds):
     """The first line AFTER `after_lineno` whose `new` would create a slug
     `ref` resolves to, or `None`.
 
@@ -876,6 +876,11 @@ def _line_creating(text: str, after_lineno: int, ref: str, kinds):
     skipped here, because this is a diagnostic aid to the real error, not a
     second validation pass - the ordered walk in `validate_batch` remains the
     only thing that decides whether the batch is valid.
+
+    A projected slug already on disk is skipped (M3): under F6's strict
+    cross-kind rule that line cannot actually create anything - it fails its
+    OWN collision check - so pointing the user at it ("move that line above
+    this one") would send them toward a batch that still does not validate.
     """
     for lineno, line in _numbered_lines(text):
         if lineno <= after_lineno:
@@ -890,6 +895,8 @@ def _line_creating(text: str, after_lineno: int, ref: str, kinds):
             continue
         slug, kind, title = projection
         if kinds and kind not in kinds:
+            continue
+        if _find_existing_kind(root, slug) is not None:
             continue
         stub = _ProjectedEntity(slug=slug, title=title, kind=kind,
                                  pending_line=lineno)
@@ -944,9 +951,11 @@ def validate_batch(root, text: str) -> List[Tuple[int, "Plan"]]:
                         slug, projected[slug][0]
                     ),
                 )
-            if _exists_on_disk(root, slug):
+            existing_kind = _find_existing_kind(root, slug)
+            if existing_kind is not None:
                 raise BatchError(
-                    lineno, parsed.raw, "{} already exists".format(slug)
+                    lineno, parsed.raw,
+                    _already_exists_message(slug, existing_kind),
                 )
             projected[slug] = (lineno, kind, title)
 
@@ -956,7 +965,7 @@ def validate_batch(root, text: str) -> List[Tuple[int, "Plan"]]:
             except AmbiguousReference as exc:
                 raise BatchError(lineno, parsed.raw, str(exc))
             except UnknownReference as exc:
-                creator = _line_creating(text, lineno, ref, kinds)
+                creator = _line_creating(root, text, lineno, ref, kinds)
                 if creator is None:
                     raise BatchError(lineno, parsed.raw, str(exc))
                 raise BatchError(

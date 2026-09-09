@@ -4,12 +4,33 @@ may create an entity and reference it on a LATER line.
 The walk is ordered, so a reference that precedes its `new` line is caught here
 rather than failing mid-write and leaning on the checkpoint (A18).
 """
+import hashlib
+
 import pytest
 
 from conftest import snapshot
 
 from brain import commands as c
 from brain.commands import BatchError
+
+
+def _tree_digest(root):
+    """Every file's path paired with a hash of its CONTENT, `.git/` excluded.
+
+    A path-only listing (what this test compared before, and what `conftest.
+    snapshot` compares - frozen, and rightly so) cannot see a write to a file
+    that already exists: `_seq` is created by `brain init` before the test
+    body runs, so a stray `_seq` write from inside `validate_batch` changed
+    no path, only content, and both the old sorted-name-list assertion here
+    and `snapshot`'s `*.md`-only walk missed it (M2). Hashing content closes
+    both gaps at once - it fails on ANY byte changing, in ANY file, `.md` or
+    not, new or pre-existing.
+    """
+    return {
+        p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in root.rglob("*")
+        if p.is_file() and ".git" not in p.parts
+    }
 
 
 FORWARD = """\
@@ -77,10 +98,19 @@ def test_validate_batch_neither_writes_nor_locks(brain_repo, monkeypatch):
     is written - including for a batch rejected on its LAST line, which is the
     case a naive implementation gets wrong.
 
-    `snapshot` only walks `*.md` (frozen conftest), so it cannot see a lock
-    file or a `_seq` write - a version of `validate_batch` that took the lock
-    and wrote `_seq` stayed green against the old `*.md`-only snapshot check
-    (F4). These monkeypatches make the write/lock paths fail loudly instead.
+    Two independent checks, either of which should fail on its own (M2: the
+    first ROUND of this fix wrapped a `_seq`-write mutation in `with
+    lock.held(root):`, so the lock monkeypatch below was what actually went
+    red - the write itself, un-locked, passed a NAME-only comparison because
+    `_seq` already exists and only its content changed):
+
+    - `_tree_digest` hashes every file's CONTENT, so a write to a
+      pre-existing file (`_seq`) is not invisible the way a path-only
+      listing (or `snapshot`, frozen and `*.md`-only) makes it.
+    - `lock.held`/`git.commit`/`git.checkpoint`/`git.restore` are
+      monkeypatched to raise, so validation reaching for ANY of them fails
+      loudly rather than merely leaving evidence for the digest to notice
+      after the fact.
     """
     def refuse(*args, **kwargs):
         raise AssertionError("validate_batch reached the write path")
@@ -90,15 +120,11 @@ def test_validate_batch_neither_writes_nor_locks(brain_repo, monkeypatch):
     for name in ("commit", "checkpoint", "restore"):
         monkeypatch.setattr(c.git, name, refuse)
 
-    before = sorted(p.relative_to(brain_repo).as_posix()
-                     for p in brain_repo.rglob("*")
-                     if p.is_file() and ".git" not in p.parts)
+    before = _tree_digest(brain_repo)
     text = "log acme-migration -- fine\nstatus set acme-migration\n"
     with pytest.raises(BatchError):
         c.validate_batch(brain_repo, text)
-    after = sorted(p.relative_to(brain_repo).as_posix()
-                    for p in brain_repo.rglob("*")
-                    if p.is_file() and ".git" not in p.parts)
+    after = _tree_digest(brain_repo)
     assert after == before
 
 
@@ -216,3 +242,60 @@ def test_a_new_with_no_slug_in_its_text_is_refused_at_validation(brain_repo):
         c.validate_batch(brain_repo, "new project -- ---\n")
     assert excinfo.value.lineno == 1
     assert "no letters or digits" in str(excinfo.value)
+
+
+def test_a_flag_reference_normalising_to_empty_is_refused_at_validation(brain_repo):
+    """M1: `resolve_among`'s empty-after-normalise guard used to live only in
+    `resolve`, so a caller that builds its own candidate list and calls
+    `resolve_among` directly - `_resolve_against` - reached the unguarded
+    `e.slug.startswith("")` pass, which matches every candidate. `.`
+    normalises to the empty string; before the fix this batch validated
+    clean and only failed at the WRITE, with a different exception
+    (`UnknownReference` from the empty-reference guard, not caught the same
+    way a real "matches nothing" is).
+
+    Red if the guard is only in `resolve()`: `resolve_among` then treats
+    `wanted = ""` as a prefix match against EVERY candidate (`startswith("")`
+    is always `True`). With only one program on disk (`cloud-migration`) and
+    none projected under `kinds=("program",)`, that is a UNIQUE match, not
+    even an ambiguity - `"."` silently resolves to `cloud-migration` and the
+    batch validates clean. Verified: removing the guard makes this test fail
+    with `DID NOT RAISE`, not a different exception.
+    """
+    text = "new project -- Zed run\nlink zed-run --program .\n"
+    with pytest.raises(BatchError) as excinfo:
+        c.validate_batch(brain_repo, text)
+    assert excinfo.value.lineno == 2
+    assert "no letters or digits" in str(excinfo.value)
+
+
+def test_line_creating_does_not_recommend_a_slug_already_on_disk(brain_repo):
+    """M3: `ann` is the fixture stakeholder's slug. `new project -- Ann` on
+    line 2 cannot create anything - it collides with the STAKEHOLDER under
+    F6's strict cross-kind rule - so `_line_creating` must not tell the user
+    to "move that line above this one": doing so sends them toward a batch
+    that still refuses to validate, for a different reason, one line later.
+
+    Red if `_line_creating` does not check the projected slug against disk:
+    the message would then say "line 2 creates it" instead of falling back to
+    the plain "matches nothing" `UnknownReference`.
+    """
+    text = "log ann -- x\nnew project -- Ann\n"
+    with pytest.raises(BatchError) as excinfo:
+        c.validate_batch(brain_repo, text)
+    assert excinfo.value.lineno == 1
+    message = str(excinfo.value)
+    assert "line 2" not in message
+    assert "matches nothing" in message
+
+
+def test_a_new_colliding_with_disk_names_the_colliding_kind(brain_repo):
+    """L4: validation and `_new` must not just agree on WHETHER a slug
+    collides (F6) but on what they SAY about it - `_find_existing_kind`'s
+    result was being thrown away by the old `_exists_on_disk` boolean, so
+    validation said "ann already exists" while `_new` said "ann already
+    exists as a stakeholder...". Same wording now, both paths, via
+    `_already_exists_message`."""
+    with pytest.raises(BatchError) as excinfo:
+        c.validate_batch(brain_repo, "new project -- Ann\n")
+    assert "ann already exists as a stakeholder" in str(excinfo.value)

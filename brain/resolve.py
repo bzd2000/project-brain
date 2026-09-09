@@ -74,6 +74,21 @@ def resolve_among(entities, ref: str):
     after the fact.
     """
     wanted = normalise(ref)
+    if not wanted:
+        # Every pass would otherwise match everything - `startswith("")` is
+        # True for every slug - and the user would be told their reference is
+        # ambiguous among the entire brain. An empty-after-normalise reference
+        # (punctuation-only, non-ASCII-only, or literally empty) is a
+        # different mistake from an ambiguous one, and deserves to be told
+        # apart (M1: this guard used to live only in `resolve`, so a caller
+        # that builds its own candidate list and calls `resolve_among`
+        # directly - `apply`'s `_resolve_against`/`_line_creating` - reached
+        # `startswith("")` unguarded; `new project -- Zed run` then `link
+        # zed-run --program .` validated and failed at the write instead).
+        raise UnknownReference(
+            "{!r} is not a reference to anything: it has no letters or digits "
+            "in it. Name a slug or a title.".format(ref)
+        )
 
     found = _one([e for e in entities if e.slug == ref], ref, "slug")
     if found is not None:
@@ -99,17 +114,9 @@ def resolve_among(entities, ref: str):
 
 
 def resolve(root, ref: str, kinds=None):
-    """Resolve `ref` to one entity from the tree, or raise (R6.2)."""
-    wanted = normalise(ref)
-    if not wanted:
-        # Every pass would otherwise match everything - `startswith("")` is True
-        # for every slug - and the user would be told their reference is
-        # ambiguous among the entire brain. An empty reference is a different
-        # mistake from an ambiguous one, and deserves to be told apart.
-        raise UnknownReference(
-            "{!r} is not a reference to anything: it has no letters or digits "
-            "in it. Name a slug or a title.".format(ref)
-        )
+    """Resolve `ref` to one entity from the tree, or raise (R6.2). The
+    empty-after-normalise guard lives in `resolve_among` now, so every caller
+    gets it, not just this one."""
     return resolve_among(_candidates(root, kinds), ref)
 
 
