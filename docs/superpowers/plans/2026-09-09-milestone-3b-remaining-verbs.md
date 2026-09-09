@@ -817,7 +817,7 @@ def _action_add(root, positional, flags, text):
     doc.add_action(text, owner=flags.get("owner"), due=flags.get("due"))
     doc.touch()
     doc.save()
-    return Result("added an action to {}".format(project.slug), [rel])
+    return Result("added an action to {}".format(project.slug), (rel,))
 
 
 @verb("action", "done", arity=(1, 2), optional_text=True)
@@ -833,7 +833,7 @@ def _action_done(root, positional, flags, text):
     doc.toggle_task(task.lineno)
     doc.touch()
     doc.save()
-    return Result("ticked {} in {}".format(task.text, project.slug), [rel])
+    return Result("ticked {} in {}".format(task.text, project.slug), (rel,))
 
 
 @verb("action", "due", arity=(1, 2), allowed_flags=("to",), optional_text=True)
@@ -862,7 +862,7 @@ def _decision_add(root, positional, flags, text):
     doc.add_decision(text)
     doc.touch()
     doc.save()
-    return Result("recorded a decision on {}".format(project.slug), [rel])
+    return Result("recorded a decision on {}".format(project.slug), (rel,))
 
 
 @verb("question", "add", needs_text=True, arity=(1, 1))
@@ -871,7 +871,7 @@ def _question_add(root, positional, flags, text):
     doc.add_question(text)
     doc.touch()
     doc.save()
-    return Result("added a question to {}".format(project.slug), [rel])
+    return Result("added a question to {}".format(project.slug), (rel,))
 
 
 @verb("health", "set", arity=(2, 2))
@@ -885,7 +885,7 @@ def _health_set(root, positional, flags, text):
     doc.set_field("health", value)
     doc.touch()
     doc.save()
-    return Result("{} is now {}".format(project.slug, value), [rel])
+    return Result("{} is now {}".format(project.slug, value), (rel,))
 
 
 @verb("field", "set", needs_text=True, arity=(2, 2))
@@ -902,7 +902,7 @@ def _field_set(root, positional, flags, text):
     entity.doc.set_field(key, text)
     entity.doc.touch()
     entity.doc.save()
-    return Result("{} {} is now {}".format(entity.slug, key, text), [rel])
+    return Result("{} {} is now {}".format(entity.slug, key, text), (rel,))
 ```
 
 Add `HEALTHS` to the `.entities` import and `render_action` and `resolve_action`
@@ -1164,7 +1164,7 @@ def _link(root, positional, flags, text):
     doc.set_field("program", program.slug)
     doc.touch()
     doc.save()
-    return Result("{} is in {}".format(project.slug, program.slug), [rel])
+    return Result("{} is in {}".format(project.slug, program.slug), (rel,))
 
 
 @verb("raise", needs_text=True, arity=(1, 1), allowed_flags=("ref",))
@@ -1180,7 +1180,7 @@ def _raise(root, positional, flags, text):
     party.doc.add_bullet("Pending", line, newest_first=False)
     party.doc.touch()
     party.doc.save()
-    return Result("raised with {}".format(party.slug), [rel])
+    return Result("raised with {}".format(party.slug), (rel,))
 
 
 def _requests(root):
