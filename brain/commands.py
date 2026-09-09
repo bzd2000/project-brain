@@ -251,8 +251,15 @@ def _note_flag(root, positional, flags, text):
     marked = []
     for note in notes:
         if note.id == note_id:
-            body = [l for l in note.body if not l.lstrip().startswith("> ?")]
+            body = list(note.body)
             while body and not body[-1].strip():
+                body.pop()
+            # Replace only the marker WE appended, which is always the last
+            # line. Filtering every `> ?` line would delete one the user wrote,
+            # including one inside a fenced block that `load_notes` goes out of
+            # its way to keep - R4.6.1 and A13 say no path rewrites a body, and
+            # `> ?` being our notation does not make it ours wherever it appears.
+            if body and body[-1].lstrip().startswith("> ?"):
                 body.pop()
             note = note._replace(body=body + ["> ? " + text])
         marked.append(note)

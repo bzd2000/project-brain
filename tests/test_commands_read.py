@@ -130,6 +130,33 @@ def _content(note):
     return body
 
 
+def test_note_flag_does_not_touch_a_body_line_that_looks_like_a_flag(brain_repo):
+    """R4.6.1/A13: `> ?` is brain's notation, but the user may have typed it —
+    in prose, or inside a fenced block `load_notes` is careful to preserve.
+    Only the marker brain itself appended may be replaced."""
+    (brain_repo / "inbox.md").write_text(
+        "## n1 · 2026-09-07 09:00 · note ·\n"
+        "quoting the reply:\n"
+        "> ? is this a flag, or my words\n"
+        "and a fence:\n"
+        "```\n"
+        "> ? inside a fence\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    c.git.commit(brain_repo, ["inbox.md"], "brain: seed", source="cli")
+    _run(brain_repo, "note flag n1 -- could not place this")
+    body = load_notes(brain_repo / "inbox.md")[0].body
+    assert "> ? is this a flag, or my words" in body
+    assert "> ? inside a fence" in body
+    assert body[-1] == "> ? could not place this"
+    _run(brain_repo, "note flag n1 -- second reason")
+    body = load_notes(brain_repo / "inbox.md")[0].body
+    assert body[-1] == "> ? second reason"
+    assert "> ? could not place this" not in body
+    assert "> ? is this a flag, or my words" in body
+
+
 def test_note_drop_removes_only_that_note(brain_repo):
     """R4.6.4: processing deletes the note; git holds the history."""
     for n in ("one", "two", "three"):
