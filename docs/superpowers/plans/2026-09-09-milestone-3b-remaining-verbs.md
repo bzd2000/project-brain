@@ -208,10 +208,15 @@ give `verb()` a matching `optional_text: bool = False` parameter passed through
 to the `Verb(...)` it builds, and change `execute`'s forbid-text check from
 `not found.needs_text` to `not (found.needs_text or found.optional_text)`.
 
-Change each of the three existing verbs to return `Result(...)` instead of a
-tuple: `_log` returns `Result("logged to {}".format(project.slug), [rel])`,
-`_status_set` returns `Result("{} is now {}".format(project.slug, value), [rel])`,
-and `_note_add` returns `Result("captured {}".format(note_id), ["inbox.md", "_seq"])`.
+Change each of the three existing verbs to return `Result(...)`. **`paths` is a
+tuple** — a `NamedTuple` stores what it is given without coercing, so a list
+literal here would fail the tuple equality the tests assert:
+
+- `_log` → `Result("logged to {}".format(project.slug), (rel,))`
+- `_status_set` → `Result("{} is now {}".format(project.slug, value), (rel,))`
+- `_note_add` → `Result("captured {}".format(note_id), ("inbox.md", "_seq"))`
+
+Note the trailing comma in the single-element tuples: `(rel)` is just `rel`.
 
 Then `execute`:
 
