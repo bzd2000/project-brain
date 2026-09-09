@@ -9,6 +9,9 @@ description = "A markdown knowledge base for projects, people and the bodies you
 requires-python = ">=3.9"
 dependencies = []
 
+[project.scripts]
+brain = "brain.cli:main"
+
 [project.optional-dependencies]
 # C1: vetted and pinned exactly. textual is added at milestone 5, not before.
 yaml = ["PyYAML==6.0.2"]

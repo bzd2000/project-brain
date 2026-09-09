@@ -15,8 +15,10 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Sequence
 
+from .errors import BrainError
 
-class GitError(Exception):
+
+class GitError(BrainError):
     """A git invocation failed, or the tree is not in a state we may write to."""
 
 
@@ -67,7 +69,25 @@ def require_repo(root) -> None:
 
 # R11.2: the only paths this tool will ever stage.
 BRAIN_DIRS = ("programs", "projects", "stakeholders", "boards")
-BRAIN_FILES = ("inbox.md", "_request.md", "_seq")
+# R11.2's allowlist. `.gitattributes` and `.gitignore` are here because
+# `brain init` creates them (R6.9) and R5.4 requires the first to exist; they
+# are the tool's own files, not the user's.
+BRAIN_FILES = (
+    "inbox.md", "_request.md", "_seq", ".gitattributes", ".gitignore",
+)
+
+
+def brain_paths(root) -> List[str]:
+    """Every brain path present in the tree, relative and POSIX."""
+    root = Path(root)
+    found = []
+    for name in BRAIN_FILES:
+        if (root / name).exists():
+            found.append(name)
+    for directory in BRAIN_DIRS:
+        for target in sorted((root / directory).glob("*.md")):
+            found.append(target.relative_to(root).as_posix())
+    return found
 
 
 def is_brain_path(root, path) -> bool:
@@ -149,14 +169,20 @@ def commit(root, paths, message: str, source: str = "cli",
 class Checkpoint(NamedTuple):
     head: Optional[str]
     files: Dict[str, Optional[bytes]]
+    prune: bool = False
 
 
-def checkpoint(root, paths) -> Checkpoint:
+def checkpoint(root, paths, prune: bool = False) -> Checkpoint:
     """Capture the exact bytes of `paths` before a batch writes to them.
 
     R6.5 needs a rollback for a failure BETWEEN two file writes, where nothing
     was committed and a HEAD sha therefore describes nothing useful. A file that
     does not exist yet is recorded as None so `restore` can delete it again.
+
+    `prune` is opt-in (see `restore`): only a whole-brain checkpoint may delete
+    a file created since it was taken. A partial checkpoint - `undo`'s, over
+    one commit's touched paths - must never prune, or it would delete the rest
+    of the brain.
     """
     root = Path(root)
     _require_brain_paths(root, paths)
@@ -168,7 +194,7 @@ def checkpoint(root, paths) -> Checkpoint:
         # so malformed input surfaces through restore's error report rather than
         # as a bare traceback out of the capture step.
         files[Path(path).as_posix()] = target.read_bytes() if target.is_file() else None
-    return Checkpoint(head=head(root), files=files)
+    return Checkpoint(head=head(root), files=files, prune=prune)
 
 
 def restore(root, cp: Checkpoint) -> None:
@@ -193,6 +219,16 @@ def restore(root, cp: Checkpoint) -> None:
             target.write_bytes(data)
         except OSError as exc:
             problems.append("{}: {}".format(rel, exc))
+    if cp.prune:
+        # A file created since the checkpoint is part of the change being rolled
+        # back. Only whole-brain checkpoints may do this: `undo` checkpoints one
+        # commit's paths, and pruning there would delete everything else.
+        for rel in brain_paths(root):
+            if rel not in cp.files:
+                try:
+                    (root / rel).unlink()
+                except OSError as exc:
+                    problems.append("{}: {}".format(rel, exc))
     if problems:
         raise GitError(
             "rollback incomplete, the tree is part-restored: {}".format(
@@ -376,13 +412,7 @@ def authored(root, path) -> bool:
 def unauthored(root) -> List[str]:
     """Every brain path whose current content did not come through `brain`."""
     root = Path(root)
-    candidates = set()
-    for name in BRAIN_FILES:
-        if (root / name).exists():
-            candidates.add(name)
-    for directory in BRAIN_DIRS:
-        for target in (root / directory).glob("*.md"):
-            candidates.add(target.relative_to(root).as_posix())
+    candidates = set(brain_paths(root))
     # Everything git still tracks, too. A file deleted by hand is gone from the
     # disk walk, and a hand-deletion is exactly the unauthored change R3.2 wants
     # made visible - an offender must not escape the report by ceasing to exist.
