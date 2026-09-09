@@ -1065,6 +1065,19 @@ def test_duplicate_pending_requests_collapse(brain_repo):
     assert len(_run(brain_repo, "request list").data) == 1
 
 
+def test_a_done_request_keeps_its_text_and_exposes_its_date(brain_repo):
+    """R4.7 stamps the date onto the line, but the date is not part of the
+    request. `request list` must show one shape for a thing, not two."""
+    from datetime import date
+
+    _run(brain_repo, "request add -- process inbox")
+    _run(brain_repo, "request done 1")
+    entry = _run(brain_repo, "request list").data[0]
+    assert entry["text"] == "process inbox"
+    assert entry["done"] is True
+    assert entry["done_on"] == date.today().isoformat()
+
+
 def test_undo_reverses_the_last_write(brain_repo):
     """A6: undo after a write verb restores the tree."""
     path = brain_repo / "projects" / "acme-migration.md"
@@ -1152,7 +1165,7 @@ def _new(root, positional, flags, text):
     doc.save()
     return Result(
         "created {}/{}".format(directory, slug),
-        ["{}/{}.md".format(directory, slug)],
+        ("{}/{}.md".format(directory, slug),),
     )
 
 
@@ -1186,16 +1199,39 @@ def _raise(root, positional, flags, text):
     return Result("raised with {}".format(party.slug), (rel,))
 
 
+class Request(NamedTuple):
+    lineno: int
+    text: str
+    done: bool
+    done_on: Optional[str]
+
+
+# R4.7 stamps the completion date onto the line: `- [x] 2026-09-06 rollup …`.
+DONE_STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2})\s+(.*)$")
+
+
 def _requests(root):
-    """R4.7: `- [ ] text` / `- [x] YYYY-MM-DD text`."""
+    """R4.7: `- [ ] text` / `- [x] YYYY-MM-DD text`.
+
+    The date stamp is part of the FILE's format, not part of the request. Split
+    it out here, or a done request's text differs from the pending text it was
+    written as and `request list` shows two shapes for one thing - which also
+    breaks R4.7.2's collapse, since stamped text never matches a retype.
+    """
     path = Path(root) / "_request.md"
     if not path.exists():
         return []
     out = []
     for lineno, line in enumerate(path.read_text(encoding="utf-8").split("\n")):
         task = parse_action(lineno, line)
-        if task is not None:
-            out.append(task)
+        if task is None:
+            continue
+        text, done_on = task.text, None
+        if task.done:
+            stamped = DONE_STAMP.match(text)
+            if stamped:
+                done_on, text = stamped.group(1), stamped.group(2)
+        out.append(Request(lineno=lineno, text=text, done=task.done, done_on=done_on))
     return out
 
 
@@ -1205,12 +1241,12 @@ def _request_add(root, positional, flags, text):
     path = Path(root) / "_request.md"
     for task in _requests(root):
         if not task.done and task.text == text:
-            return Result("already queued: {}".format(text), [])
+            return Result("already queued: {}".format(text))
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     if existing and not existing.endswith("\n"):
         existing += "\n"
     path.write_text(existing + "- [ ] " + text + "\n", encoding="utf-8")
-    return Result("queued: {}".format(text), ["_request.md"])
+    return Result("queued: {}".format(text), ("_request.md",))
 
 
 @verb("request", "list", writes=False, arity=(0, 0))
@@ -1219,7 +1255,8 @@ def _request_list(root, positional, flags, text):
     return Result(
         "{} request(s)".format(len(tasks)) if tasks else "nothing queued",
         [],
-        [{"n": i + 1, "text": t.text, "done": t.done} for i, t in enumerate(tasks)],
+        [{"n": i + 1, "text": t.text, "done": t.done, "done_on": t.done_on}
+         for i, t in enumerate(tasks)],
     )
 
 
@@ -1239,7 +1276,7 @@ def _request_done(root, positional, flags, text):
     lines = path.read_text(encoding="utf-8").split("\n")
     lines[task.lineno] = "- [x] {} {}".format(date.today().isoformat(), task.text)
     path.write_text("\n".join(lines), encoding="utf-8")
-    return Result("done: {}".format(task.text), ["_request.md"])
+    return Result("done: {}".format(task.text), ("_request.md",))
 
 
 @verb("undo", arity=(0, 0))
@@ -1304,14 +1341,14 @@ def test_check_authored_is_accepted_from_the_command_line(tmp_path, capsys):
 
 Put it in `tests/test_commands_entities.py`, importing `main` from `brain.cli`.
 
-Add the imports these need: `date` from `datetime` (already there),
+Add the imports these need: `re`, `Optional`, `date` from `datetime` (already there),
 `normalise` from `.resolve`, `parse_action` from `.model`, and the four
 `*_SECTIONS` constants from `.model`.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_commands_entities.py -v`
-Expected: 17 passed.
+Expected: 18 passed.
 
 - [ ] **Step 5: Update `CLAUDE.md`**
 
@@ -1324,7 +1361,7 @@ short session showing `new`, `action add`, `action done`, `raise` and
 - [ ] **Step 6: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 274 passed.
+Expected: 275 passed.
 
 - [ ] **Step 7: Commit**
 
@@ -1349,7 +1386,7 @@ brain, which is what R3.2 asks for and what makes the rule enforceable."
 ## Milestone 3b done — stop here
 
 ```bash
-.venv/bin/python -m pytest -q          # 274 passed
+.venv/bin/python -m pytest -q          # 275 passed
 brain --root /tmp/demo new project -- Something new
 brain --root /tmp/demo check --authored
 ```
