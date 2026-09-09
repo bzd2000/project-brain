@@ -72,6 +72,41 @@ def main(argv=None) -> int:
 
         where = root.find_root(args.root)
 
+        if args.rest[0] == "apply":
+            # `apply`'s input is a whole document read from stdin, not one
+            # line of argv, so it is handled here rather than falling through
+            # to the grammar path below, which assumes exactly that (R6.4).
+            tail = args.rest[1:]
+            want_json = args.json or "--json" in tail
+            if want_json:
+                # Before anything runs, same as every other write verb: a
+                # refusal that arrived after `apply_batch` had already
+                # committed would tell a caller the batch failed when it had
+                # in fact been applied, and a script that retries on exit 1
+                # would apply it twice. `apply` never reaches `find_verb`, so
+                # the generic `--json`-on-a-write-verb refusal below never
+                # sees it - this is that same refusal, spelled out here.
+                raise VerbError(
+                    "--json is for read verbs; `apply` answers in one line"
+                )
+            dry_run = "--dry-run" in tail
+            tail = [a for a in tail if a != "--dry-run"]
+            # `-f -` and no `-f` at all both mean "read the batch from
+            # stdin" (R6.4c); `-f` never takes anything but `-` anywhere in
+            # this CLI (`note add -f -` is the same rule).
+            if tail and tail != ["-f", "-"]:
+                raise VerbError(
+                    "`apply` takes its batch from stdin, spelled with no "
+                    "argument or `-f -`, plus an optional --dry-run"
+                )
+            text = read_stdin_text()
+            result = commands.apply_batch(where, text, dry_run=dry_run, source="cli")
+            if dry_run:
+                for line in result.data:
+                    sys.stdout.write(line + "\n")
+            sys.stdout.write(result.message + "\n")
+            return 0
+
         # Everything right of the first bare `--` is the user's free text
         # (R6.4). Filtering the whole of argv deletes words out of a note
         # body, which is exactly what R4.6.1 forbids - so split first, and

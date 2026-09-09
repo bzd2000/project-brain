@@ -976,3 +976,71 @@ def validate_batch(root, text: str) -> List[Tuple[int, "Plan"]]:
 
         plans.append((lineno, plan))
     return plans
+
+
+def apply_batch(root, text: str, dry_run: bool = False,
+                 source: str = "cli") -> Result:
+    """Run a whole batch as ONE commit (R6.5, R6.6).
+
+    `validate_batch` runs to completion first, so a bad line is caught before
+    anything is written and needs no checkpoint to undo - "validated in full,
+    then applied, then committed" (R6.5), in that order. One envelope wraps
+    all N writes rather than N commits of one line each: the user typed one
+    batch, and `undo` (R11.5) must be able to revert it as the one thing it
+    was (R6.6) - N commits would make `undo` revert one line at a time
+    instead.
+
+    `--dry-run` returns after validation, before the lock (R11.7) is even
+    taken: nothing on disk changes, so there is nothing to check out of and
+    nothing to hold the lock against.
+
+    A reference that resolved fine at validation time can still fail at
+    write time - `validate_batch` only proves what R6.5.1 makes knowable
+    statically; a slug's identity is only fixed once its file exists. Such a
+    failure is wrapped into a `BatchError` naming its line, because R6.5
+    promises the offending line is reported no matter which phase caught it.
+    Anything else - a bug in `perform`, not a bad line - propagates
+    unwrapped rather than being dressed up as one (A2's checkpoint restore
+    below still runs for it either way).
+    """
+    plans = validate_batch(root, text)
+    if dry_run:
+        return Result(
+            "{} line(s), nothing written".format(len(plans)),
+            (),
+            ["line {}: {}".format(lineno, plan.raw) for lineno, plan in plans],
+        )
+    if not plans:
+        return Result("nothing to do", (), [])
+
+    git.require_repo(root)
+    with lock.held(root):
+        # A2: checkpoint before the first write, so a failure between two
+        # writes - nothing committed, so no HEAD sha describes it - restores
+        # the tree instead of leaving it half-applied.
+        checkpoint = git.checkpoint(root, git.brain_paths(root), prune=True)
+        try:
+            paths: List[str] = []
+            messages: List[str] = []
+            for lineno, plan in plans:
+                try:
+                    result = perform(root, plan)
+                except BatchError:
+                    raise
+                except (VerbError, GrammarError, OSError) as exc:
+                    raise BatchError(lineno, plan.raw, str(exc))
+                messages.append(result.message)
+                for path in result.paths:
+                    if path not in paths:
+                        paths.append(path)
+            git.commit(
+                root, tuple(paths),
+                "brain: {} change(s) in one batch".format(len(plans)),
+                source=source, notes=messages,
+            )
+        except Exception:
+            git.restore(root, checkpoint)
+            raise
+    return Result(
+        "applied {} line(s)".format(len(plans)), tuple(paths), messages
+    )
