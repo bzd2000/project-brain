@@ -137,7 +137,17 @@ def _trailers(message: str, source: str, notes=None, undo_of=None) -> str:
     """R11.3: a legible subject, then machine-readable trailers."""
     lines = [_subject(message), "", "Brain-Source: " + source]
     if notes:
-        lines.append("Brain-Notes: " + ", ".join(notes))
+        # A trailer VALUE must stay on one line: a newline inside it ends the
+        # trailer block, and git then reports no `Brain-Source` at all - so the
+        # commit becomes invisible to `undo` and to `check --authored` (R11.5,
+        # R11.6). No verb can produce a newline in a message today, because a
+        # command is one line (R6.4) - but that is an invariant nothing enforced,
+        # and this project's whole defect history is unenforced invariants
+        # eventually being violated. `Brain-Notes` carries the user's prose on
+        # the batch path, so it gets the same treatment as the subject.
+        lines.append(
+            "Brain-Notes: " + ", ".join(_CONTROL.sub(" ", n) for n in notes)
+        )
     if undo_of:
         lines.append("Brain-Undo: " + undo_of)
     return "\n".join(lines) + "\n"

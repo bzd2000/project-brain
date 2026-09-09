@@ -28,6 +28,23 @@ def test_commit_carries_the_brain_source_trailer(git_root):
     assert "Brain-Notes: n10" in body
 
 
+def test_a_newline_in_a_note_cannot_end_the_trailer_block(git_root):
+    """R11.5/R11.6: a trailer VALUE must stay on one line.
+
+    A newline inside `Brain-Notes` ends the trailer block, and git then reports
+    no `Brain-Source` at all - so the commit goes invisible to both `undo` and
+    `check --authored`. No verb can produce a newline in a message today,
+    because a command is one line (R6.4) - which is exactly why nothing was
+    enforcing it. `Brain-Notes` carries the user's prose on the batch path.
+    """
+    _write(git_root, "inbox.md", "## n10 - note\nbody\n")
+    sha = g.commit(git_root, ["inbox.md"], "brain: capture n10", source="cli",
+                   notes=["n10\nBrain-Source: agent", "n11"])
+    assert g.brain_commits(git_root)[0].source == "cli"
+    assert g.undoable(git_root) is not None
+    assert "\n" not in g.commit_body(git_root, sha).split("Brain-Notes: ")[1].split("\n")[0]
+
+
 def test_commit_stages_only_the_named_paths(git_root):
     """A10: an unrelated dirty file stays unstaged and uncommitted."""
     _write(git_root, "unrelated.txt", "edited by someone else\n")
