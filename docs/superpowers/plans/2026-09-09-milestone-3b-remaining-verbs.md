@@ -456,6 +456,21 @@ def test_note_drop_preserves_the_other_bodies_byte_for_byte(brain_repo):
     assert load_notes(brain_repo / "inbox.md")[0].body == ["keep   this    spacing"]
 
 
+def test_rewrite_inbox_round_trips_the_fixture_byte_for_byte(brain_repo):
+    """§4.6 puts a blank line between notes. Rewriting must reproduce the file
+    it read, or `note drop` silently reformats the whole inbox on first use —
+    a change to every note in it, to remove one."""
+    import shutil
+
+    from conftest import FIXTURES
+    from brain.commands import rewrite_inbox
+
+    shutil.copy(FIXTURES / "brain" / "inbox.md", brain_repo / "inbox.md")
+    before = (brain_repo / "inbox.md").read_bytes()
+    rewrite_inbox(brain_repo, load_notes(brain_repo / "inbox.md"))
+    assert (brain_repo / "inbox.md").read_bytes() == before
+
+
 def test_dropping_the_last_note_leaves_an_empty_inbox(brain_repo):
     _run(brain_repo, "note add note -- only one")
     _run(brain_repo, "note drop n1")
@@ -561,12 +576,12 @@ Add `UnknownReference` to the imports from `.errors`.
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_commands_read.py -v`
-Expected: 13 passed.
+Expected: 14 passed.
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 241 passed.
+Expected: 242 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -853,7 +868,7 @@ Expected: 14 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 255 passed.
+Expected: 256 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1258,7 +1273,7 @@ short session showing `new`, `action add`, `action done`, `raise` and
 - [ ] **Step 6: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 272 passed.
+Expected: 273 passed.
 
 - [ ] **Step 7: Commit**
 
@@ -1283,7 +1298,7 @@ brain, which is what R3.2 asks for and what makes the rule enforceable."
 ## Milestone 3b done — stop here
 
 ```bash
-.venv/bin/python -m pytest -q          # 272 passed
+.venv/bin/python -m pytest -q          # 273 passed
 brain --root /tmp/demo new project -- Something new
 brain --root /tmp/demo check --authored
 ```
