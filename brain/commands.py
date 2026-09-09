@@ -15,7 +15,13 @@ from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from . import git, grammar, lock
 from .entities import HEALTHS, NOTE_TYPES, STATUSES, load_notes
-from .errors import AmbiguousReference, GrammarError, UnknownReference, VerbError
+from .errors import (
+    AmbiguousReference,
+    BrainError,
+    GrammarError,
+    UnknownReference,
+    VerbError,
+)
 from .grammar import split_flags
 from .model import (
     BOARD_SECTIONS,
@@ -63,6 +69,15 @@ class Verb(NamedTuple):
     # `status set` and `health set` check this in their own bodies too; that is
     # defence in depth, and duplicates a constant reference rather than logic.
     value_choices: Optional[Tuple[int, Tuple[str, ...]]] = None
+    # A verb that makes its OWN commit (bypassing `execute`/`apply_batch`'s one
+    # envelope) cannot appear inside a batch: R6.5 promises one commit for the
+    # whole batch, and a checkpoint restores FILES, never history, so a line
+    # that already moved HEAD cannot be rolled back along with the rest
+    # (fix round 1, M2). Audited every verb body for a `git.commit`/`git.undo`
+    # call of its own: only `undo` (via `git.undo`) has one. Every other verb
+    # writes files and lets its caller commit, so `True` is safe as the
+    # default rather than something each declaration has to opt into.
+    batchable: bool = True
 
 
 VERBS: Dict[Tuple[str, ...], Verb] = {}
@@ -73,7 +88,8 @@ def verb(*name, needs_text: bool = False, writes: bool = True,
          optional_text: bool = False,
          ref_kinds: Optional[Tuple[str, ...]] = None,
          flag_refs: Optional[Dict[str, Tuple[str, ...]]] = None,
-         value_choices: Optional[Tuple[int, Tuple[str, ...]]] = None):
+         value_choices: Optional[Tuple[int, Tuple[str, ...]]] = None,
+         batchable: bool = True):
     """Register a verb.
 
     `arity` is (min, max) positionals AFTER the verb's own words, and
@@ -87,6 +103,7 @@ def verb(*name, needs_text: bool = False, writes: bool = True,
             arity=arity, allowed_flags=tuple(allowed_flags),
             optional_text=optional_text, ref_kinds=ref_kinds,
             flag_refs=flag_refs, value_choices=value_choices,
+            batchable=batchable,
         )
         return func
     return register
@@ -647,10 +664,13 @@ def _request_done(root, positional, flags, text):
     return Result("done: {}".format(task.text), ("_request.md",))
 
 
-@verb("undo", arity=(0, 0))
+@verb("undo", arity=(0, 0), batchable=False)
 def _undo(root, positional, flags, text):
     """R11.5. `execute` must not commit on top of this - `undo` makes its own
-    commit, so it returns no paths."""
+    commit, so it returns no paths. `batchable=False`: `apply_batch` commits
+    once for the whole batch (R6.5), and `undo` already committed on its own
+    by the time that commit would run - two commits from one invocation, and
+    a checkpoint that cannot undo the second one (fix round 1, M2)."""
     sha = git.undo(root)
     if sha is None:
         return Result("nothing to undo")
@@ -686,6 +706,14 @@ class Plan(NamedTuple):
     flags: Dict[str, str]
     text: Optional[str]
     raw: str
+    # What `positional[0]` resolved to, when `verb.ref_kinds is not None` -
+    # filled in by `validate_batch`, which already runs this resolution to
+    # validate the line (R6.5.1), so `--dry-run` can name the target without
+    # `apply_batch` resolving it a second time (fix round 1, L5). `None` for
+    # a `new` line (nothing to resolve yet - see `_projected_slug`), a verb
+    # with no reference, or a `Plan` built by plain `validate` outside a
+    # batch, which never touches this field at all.
+    resolved: object = None
 
 
 def validate(parsed) -> Optional[Plan]:
@@ -770,7 +798,12 @@ def execute(root, parsed, source: str = "cli") -> Result:
         try:
             result = perform(root, plan)
             git.commit(root, result.paths, "brain: " + result.message, source=source)
-        except Exception:
+        except BaseException:
+            # BaseException, not Exception (fix round 1, M3): a Ctrl-C
+            # between the write and the commit must restore the checkpoint
+            # too, or the tree is left half-applied with no signal - exactly
+            # what R6.5's checkpoint exists to prevent, whatever interrupted
+            # it.
             git.restore(root, checkpoint)
             raise
     return result
@@ -853,6 +886,11 @@ def _resolve_against(root, ref: str, kinds, projected):
     together: a slug already on disk and a slug this batch is about to create
     are candidates of equal standing, in the same list, in the same order a
     plain `resolve` against the tree alone would use.
+
+    Returns what it resolved to (a real `Entity` or a `_ProjectedEntity`
+    stand-in), so a caller that already needs the answer - `validate_batch`,
+    for `--dry-run`'s benefit (fix round 1, L5) - does not have to resolve
+    the same reference a second time.
     """
     candidates = list(_candidates(root, kinds))
     for slug, (lineno, kind, title) in projected.items():
@@ -861,7 +899,7 @@ def _resolve_against(root, ref: str, kinds, projected):
                 _ProjectedEntity(slug=slug, title=title, kind=kind,
                                   pending_line=lineno)
             )
-    resolve_among(candidates, ref)
+    return resolve_among(candidates, ref)
 
 
 def _line_creating(root, text: str, after_lineno: int, ref: str, kinds):
@@ -938,6 +976,19 @@ def validate_batch(root, text: str) -> List[Tuple[int, "Plan"]]:
         if plan is None:
             continue
 
+        if not plan.verb.batchable:
+            # M2, fix round 1: a verb that commits on its own (`undo`) cannot
+            # share the batch's one envelope - R6.5 promises one commit, and
+            # a checkpoint restores files, never history, so a self-committed
+            # line could not be rolled back along with the rest. Refused
+            # here, before any write, like every other batch violation.
+            raise BatchError(
+                lineno, parsed.raw,
+                "`{}` makes its own commit and cannot be inside a batch "
+                "(R6.5 promises one commit for the whole batch). Run it on "
+                "its own.".format(" ".join(plan.verb.name)),
+            )
+
         try:
             projection = _projected_slug(plan)
         except VerbError as exc:
@@ -959,9 +1010,13 @@ def validate_batch(root, text: str) -> List[Tuple[int, "Plan"]]:
                 )
             projected[slug] = (lineno, kind, title)
 
-        for ref, kinds in _reference_sites(plan):
+        # `_reference_sites` yields `positional[0]`'s reference first (when
+        # the verb has one), then any flag references - so index 0 is always
+        # the PRIMARY target. Captured onto the plan so `--dry-run` (L5) can
+        # name it without `_resolve_against` walking the tree a second time.
+        for index, (ref, kinds) in enumerate(_reference_sites(plan)):
             try:
-                _resolve_against(root, ref, kinds, projected)
+                found = _resolve_against(root, ref, kinds, projected)
             except AmbiguousReference as exc:
                 raise BatchError(lineno, parsed.raw, str(exc))
             except UnknownReference as exc:
@@ -973,9 +1028,36 @@ def validate_batch(root, text: str) -> List[Tuple[int, "Plan"]]:
                     "{!r} matches nothing yet - line {} creates it. Move "
                     "that line above this one.".format(ref, creator),
                 )
+            if index == 0:
+                plan = plan._replace(resolved=found)
 
         plans.append((lineno, plan))
     return plans
+
+
+def _dry_run_effect(plan: "Plan") -> str:
+    """What `--dry-run` names for one line (fix round 1, L5): the verb and
+    the target `validate_batch` already resolved it to, distinguishing a
+    line that CREATES an entity from one that references something that
+    already exists or that an earlier line of the same batch will create.
+
+    Never the user's free text (R4.6.1's principle, applied to a batch's own
+    preview): it is already on their screen, and this only ever names brain's
+    own syntax - a verb and a slug, not prose.
+    """
+    label = " ".join(plan.verb.name)
+    projection = _projected_slug(plan)
+    if projection is not None:
+        slug, kind, _title = projection
+        return "{} {} -> {} (creates)".format(label, kind, slug)
+    if plan.resolved is not None:
+        pending = getattr(plan.resolved, "pending_line", None)
+        if pending is not None:
+            return "{} -> {} (created on line {})".format(
+                label, plan.resolved.slug, pending
+            )
+        return "{} -> {}".format(label, plan.resolved.slug)
+    return label
 
 
 def apply_batch(root, text: str, dry_run: bool = False,
@@ -995,39 +1077,55 @@ def apply_batch(root, text: str, dry_run: bool = False,
     nothing to hold the lock against.
 
     A reference that resolved fine at validation time can still fail at
-    write time - `validate_batch` only proves what R6.5.1 makes knowable
-    statically; a slug's identity is only fixed once its file exists. Such a
+    write time - action selectors (`action done`/`action due`'s index-or-
+    substring) resolve only in `perform`, never in `validate_batch` - and
+    `validate_batch` only proves what R6.5.1 makes knowable statically in any
+    case; a slug's identity is only fixed once its file exists. Such a
     failure is wrapped into a `BatchError` naming its line, because R6.5
     promises the offending line is reported no matter which phase caught it.
-    Anything else - a bug in `perform`, not a bad line - propagates
-    unwrapped rather than being dressed up as one (A2's checkpoint restore
-    below still runs for it either way).
+    `BrainError` is the catch, not `VerbError` (fix round 1, M1): reference
+    errors (`UnknownReference`, `AmbiguousReference`) and `GitError` are
+    `BrainError`'s SIBLINGS under it, not `VerbError`'s, and are exactly what
+    a write-time failure realistically raises. Anything else - a bug in
+    `perform`, not a bad line - propagates unwrapped rather than being
+    dressed up as one; the checkpoint restore below runs for it regardless,
+    because it catches `BaseException` (fix round 1, M3), not merely
+    `Exception` - a Ctrl-C between two writes gets the same rollback as any
+    other interruption.
     """
     plans = validate_batch(root, text)
+    # R11.1a/A17: `apply` is a write verb outside a batch's early returns too
+    # - even a comment-only batch that ends up writing nothing must still
+    # refuse outside a repository, the same as every other write verb (fix
+    # round 1, L6). Checked before EITHER early return below, not just the
+    # empty-batch one, since `--dry-run` is still a mode of a write verb.
+    git.require_repo(root)
     if dry_run:
         return Result(
             "{} line(s), nothing written".format(len(plans)),
             (),
-            ["line {}: {}".format(lineno, plan.raw) for lineno, plan in plans],
+            [
+                "line {}: {}".format(lineno, _dry_run_effect(plan))
+                for lineno, plan in plans
+            ],
         )
     if not plans:
         return Result("nothing to do", (), [])
 
-    git.require_repo(root)
     with lock.held(root):
         # A2: checkpoint before the first write, so a failure between two
         # writes - nothing committed, so no HEAD sha describes it - restores
         # the tree instead of leaving it half-applied.
         checkpoint = git.checkpoint(root, git.brain_paths(root), prune=True)
+        paths: List[str] = []
         try:
-            paths: List[str] = []
             messages: List[str] = []
             for lineno, plan in plans:
                 try:
                     result = perform(root, plan)
                 except BatchError:
                     raise
-                except (VerbError, GrammarError, OSError) as exc:
+                except (BrainError, OSError) as exc:
                     raise BatchError(lineno, plan.raw, str(exc))
                 messages.append(result.message)
                 for path in result.paths:
@@ -1038,7 +1136,19 @@ def apply_batch(root, text: str, dry_run: bool = False,
                 "brain: {} change(s) in one batch".format(len(plans)),
                 source=source, notes=messages,
             )
-        except Exception:
+        except BaseException:
+            # `git.commit` stages every path in `paths` before it can fail
+            # (a rejecting pre-commit hook, say), and `git.restore` only ever
+            # puts file CONTENT back - it never touches the index. Left
+            # alone, a failed commit leaves those paths staged against
+            # content `restore` just overwrote, so `brain check --authored`
+            # reports a path that no longer differs from HEAD as changed
+            # (fix round 1, M4). `git.undo` unstages in the analogous spot;
+            # this is the same fix for the batch path. Safe to call with
+            # nothing staged yet - `git reset -- <paths>` on unstaged paths
+            # is a no-op - so it runs unconditionally rather than only after
+            # `git.commit` was reached.
+            git._unstage(root, paths)
             git.restore(root, checkpoint)
             raise
     return Result(

@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from . import commands, grammar, root
 from .errors import BrainError, VerbError
@@ -91,15 +92,30 @@ def main(argv=None) -> int:
                 )
             dry_run = "--dry-run" in tail
             tail = [a for a in tail if a != "--dry-run"]
-            # `-f -` and no `-f` at all both mean "read the batch from
-            # stdin" (R6.4c); `-f` never takes anything but `-` anywhere in
-            # this CLI (`note add -f -` is the same rule).
-            if tail and tail != ["-f", "-"]:
+            # No `-f` and `-f -` both mean "read the batch from stdin"
+            # (R6.4c); `-f <path>` reads that file instead - §6.1 spells
+            # `brain apply [-f file|-]` and R6.4 says `apply` "reads commands
+            # from a file or stdin" (fix round 1, L4/L7).
+            if not tail:
+                text = read_stdin_text()
+            elif len(tail) == 2 and tail[0] == "-f" and tail[1] == "-":
+                text = read_stdin_text()
+            elif len(tail) == 2 and tail[0] == "-f":
+                # Bytes, then decode - not `Path.read_text`, whose universal
+                # newlines would silently normalise a CRLF batch file before
+                # the grammar ever sees it. `grammar.parse_line` already
+                # strips a trailing `\r` off of every line regardless of
+                # where it came from, so a CRLF file behaves exactly like
+                # CRLF arriving on stdin (R5.2, C5) without needing that
+                # translation done here too. A missing file surfaces as a
+                # bare `OSError`, which `main`'s own handler below already
+                # turns into a one-line refusal naming the path.
+                text = Path(tail[1]).read_bytes().decode("utf-8")
+            else:
                 raise VerbError(
-                    "`apply` takes its batch from stdin, spelled with no "
-                    "argument or `-f -`, plus an optional --dry-run"
+                    "`apply` takes its batch as `-f <path>`, `-f -`, or "
+                    "nothing (stdin), plus an optional --dry-run"
                 )
-            text = read_stdin_text()
             result = commands.apply_batch(where, text, dry_run=dry_run, source="cli")
             if dry_run:
                 for line in result.data:

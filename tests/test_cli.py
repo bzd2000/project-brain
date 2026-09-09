@@ -157,7 +157,11 @@ def test_apply_dry_run_writes_nothing_and_prints_each_line(brain_repo, monkeypat
     monkeypatch.setattr("sys.stdin", io.StringIO(_APPLY_BATCH))
     assert _cli("--root", brain_repo, "apply", "--dry-run") == 0
     out = capsys.readouterr().out
-    assert "log acme-migration" in out
+    # L5: names the verb and the RESOLVED target, not an echo of the raw
+    # line - "Steering call from the CLI" is the user's free text and must
+    # not appear in the preview at all.
+    assert "log -> acme-migration" in out
+    assert "Steering call from the CLI" not in out
     assert "nothing written" in out
     assert g.head(brain_repo) == before
     assert "Steering call from the CLI" not in (
@@ -190,3 +194,31 @@ def test_apply_a_bad_line_exits_non_zero_naming_the_line(brain_repo, monkeypatch
     assert _cli("--root", brain_repo, "apply") != 0
     err = capsys.readouterr().err
     assert "line 1" in err
+
+
+# --- `apply -f <path>` (fix round 1, L4/L7: §6.1's `[-f file|-]`, R6.4) ---
+
+
+def test_apply_dash_f_reads_a_real_file(brain_repo, tmp_path):
+    batch_file = tmp_path / "batch.txt"
+    batch_file.write_text(_APPLY_BATCH, encoding="utf-8")
+    assert _cli("--root", brain_repo, "apply", "-f", str(batch_file)) == 0
+    body = (brain_repo / "projects" / "acme-migration.md").read_text(encoding="utf-8")
+    assert "Steering call from the CLI" in body
+
+
+def test_apply_dash_f_file_with_crlf_applies_like_stdin_crlf_would(brain_repo, tmp_path):
+    """L4/L7: a CRLF batch FILE (C5, Windows) must produce the same result as
+    CRLF arriving on stdin - it is read as bytes and decoded rather than
+    through a text-mode open that would silently normalise it first."""
+    batch_file = tmp_path / "batch.txt"
+    batch_file.write_bytes(_APPLY_BATCH.replace("\n", "\r\n").encode("utf-8"))
+    assert _cli("--root", brain_repo, "apply", "-f", str(batch_file)) == 0
+    body = (brain_repo / "projects" / "acme-migration.md").read_text(encoding="utf-8")
+    assert "Steering call from the CLI" in body
+
+
+def test_apply_dash_f_missing_file_names_the_path(brain_repo, capsys):
+    missing = str(brain_repo / "does-not-exist.txt")
+    assert _cli("--root", brain_repo, "apply", "-f", missing) != 0
+    assert missing in capsys.readouterr().err

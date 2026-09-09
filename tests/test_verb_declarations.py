@@ -282,3 +282,39 @@ def test_every_flag_reference_in_the_body_is_declared(name):
         "{}: body resolves flags {!r} through `resolve`, decorator declares "
         "flag_refs for {!r}".format(" ".join(name), resolved, declared)
     )
+
+
+def test_a_verb_that_commits_on_its_own_declares_batchable_false():
+    """M2, fix round 1: `apply_batch` commits once for the whole batch
+    (R6.5), and its checkpoint restores files, never history - so a verb
+    whose OWN body reaches `git.commit` or `git.undo` (which itself commits)
+    cannot share that envelope and must declare `batchable=False`. This
+    reads every verb's source rather than trusting a fixed list, the way
+    `test_a_verb_that_resolves_positional_zero_declares_it` does for
+    `ref_kinds` above - a new self-committing verb added later fails here
+    even if nobody remembers to flag it, rather than silently producing two
+    commits from one `brain apply`, or a batch `undo` a checkpoint cannot
+    roll back (M2's live bugs).
+    """
+    for name, verb in c.VERBS.items():
+        tree = ast.parse(inspect.getsource(verb.run).lstrip())
+        commits_itself = any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("commit", "undo")
+            and getattr(node.func.value, "id", None) == "git"
+            for node in ast.walk(tree)
+        )
+        assert commits_itself == (not verb.batchable), (
+            "{}: body calls git.commit/git.undo={}, declares batchable={}".format(
+                " ".join(name), commits_itself, verb.batchable
+            )
+        )
+
+
+def test_only_undo_is_declared_non_batchable():
+    """The audit's current, expected conclusion, spelled out as data so a
+    reviewer (or a future change) can see the claim without re-deriving it
+    from the AST walk above."""
+    non_batchable = {name for name, v in c.VERBS.items() if not v.batchable}
+    assert non_batchable == {("undo",)}
