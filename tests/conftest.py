@@ -172,6 +172,24 @@ def git_calls(log: Path):
     return [line.split("\x00") for line in log.read_text(encoding="utf-8").splitlines()]
 
 
+@pytest.fixture
+def brain_repo(tmp_path):
+    """A brain root that is also a git repo, seeded with the §4 fixtures."""
+    import shutil
+
+    from brain import git as g
+    from brain import root as r
+
+    root = r.init(tmp_path / "b")
+    seeded = []
+    for kind in ("programs", "projects", "stakeholders", "boards"):
+        for item in sorted((FIXTURES / "brain" / kind).glob("*.md")):
+            shutil.copy(item, root / kind / item.name)
+            seeded.append("{}/{}".format(kind, item.name))
+    g.commit(root, seeded, "brain: seed fixtures", source="cli")
+    return root
+
+
 @pytest.fixture(autouse=True)
 def _git_identity(monkeypatch):
     """`brain init` makes repos that have no user configured, and committing

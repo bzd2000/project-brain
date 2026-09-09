@@ -41,6 +41,38 @@ def test_free_text_survives_argv(tmp_path, capsys):
     )
 
 
+def test_free_text_containing_a_flag_word_is_untouched(tmp_path):
+    """R4.6.1: a body is the user's words. Filtering argv globally deletes one."""
+    from brain import root as r
+    from brain.entities import load_notes
+
+    root = r.init(tmp_path / "b")
+    assert _cli("--root", root, "note", "add", "note", "--",
+                "the doc was --authored by sam") == 0
+    assert load_notes(root / "inbox.md")[0].body == ["the doc was --authored by sam"]
+
+
+def test_free_text_may_contain_dash_f(tmp_path):
+    from brain import root as r
+    from brain.entities import load_notes
+
+    root = r.init(tmp_path / "b")
+    assert _cli("--root", root, "note", "add", "note", "--",
+                "please see -f - the attachment") == 0
+    assert load_notes(root / "inbox.md")[0].body == ["please see -f - the attachment"]
+
+
+def test_json_works_after_the_verb(tmp_path, capsys):
+    """Milestone 5's TUI and any agent will write it postfix."""
+    import json as _json
+
+    from brain import root as r
+
+    root = r.init(tmp_path / "b")
+    assert _cli("--root", root, "note", "list", "--json") == 0
+    assert _json.loads(capsys.readouterr().out) == []
+
+
 def test_an_error_exits_non_zero_with_the_reason_on_stderr(tmp_path, capsys):
     """R6.1."""
     root = r.init(tmp_path / "b")

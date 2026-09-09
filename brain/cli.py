@@ -7,6 +7,7 @@ rejoined into a line and handed to the same grammar `brain apply` uses.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from . import commands, grammar, root
@@ -28,6 +29,16 @@ def _line_from_argv(rest) -> str:
     return " ".join(rest)
 
 
+def read_stdin_text() -> str:
+    """Read a note body from stdin, byte for byte (R4.6.1).
+
+    `-f -` exists because argv arrives already tokenised (R6.4c): a body with
+    blank lines, leading spaces or newlines cannot survive the trip. Nothing
+    here strips or reflows what it reads.
+    """
+    return sys.stdin.read()
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="brain",
@@ -35,6 +46,10 @@ def main(argv=None) -> int:
                     "writes (R3.1).",
     )
     parser.add_argument("--root", help="the brain to act on (R4.0)")
+    parser.add_argument(
+        "--json", action="store_true",
+        help="machine-readable output, on read verbs only (R6.1)",
+    )
     parser.add_argument("rest", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
 
@@ -56,12 +71,62 @@ def main(argv=None) -> int:
             return 0
 
         where = root.find_root(args.root)
-        parsed = grammar.parse_line(_line_from_argv(args.rest))
+
+        # Everything right of the first bare `--` is the user's free text
+        # (R6.4). Filtering the whole of argv deletes words out of a note
+        # body, which is exactly what R4.6.1 forbids - so split first, and
+        # only ever touch the left.
+        cut = args.rest.index("--") if "--" in args.rest else len(args.rest)
+        left, text_part = args.rest[:cut], args.rest[cut:]
+
+        # `check` has one mode in 3b, so `--authored` is a spelling of it
+        # rather than a flag. Milestone 8's `--fix` is a second mode and
+        # needs a real one.
+        left = [a for a in left if a != "--authored"]
+
+        # `--json` after the verb, which is where the TUI and an agent will
+        # write it - argparse's REMAINDER swallows it before `--json` above
+        # ever sees it once a positional has started.
+        want_json = args.json or "--json" in left
+        left = [a for a in left if a != "--json"]
+
+        from_stdin = False
+        if "-f" in left:
+            cut_f = left.index("-f")
+            if cut_f + 1 >= len(left) or left[cut_f + 1] != "-":
+                raise VerbError("-f takes `-`, meaning standard input")
+            left = left[:cut_f] + left[cut_f + 2:]
+            from_stdin = True
+
+        parsed = grammar.parse_line(_line_from_argv(left + text_part))
         if parsed is None:
             return 0
+        if from_stdin:
+            if parsed.text is not None:
+                raise VerbError(
+                    "give a body with `-f -` or after ` -- `, not both"
+                )
+            parsed = parsed._replace(text=read_stdin_text())
+
+        if want_json:
+            # Before execute, not after. A refusal that arrives once the write
+            # has happened tells a caller the operation failed when it
+            # succeeded - and a script that retries on exit 1 captures the note
+            # twice. `find_verb` answers this without running anything.
+            positional, _ = grammar.split_flags(parsed.tokens)
+            found, _rest = commands.find_verb(positional)
+            if found.writes:
+                raise VerbError(
+                    "--json is for read verbs; `{}` answers in one line".format(
+                        " ".join(found.name)
+                    )
+                )
+
         result = commands.execute(where, parsed, source="cli")
-        if result:
-            sys.stdout.write(result + "\n")
+        if want_json:
+            sys.stdout.write(json.dumps(result.data, indent=2) + "\n")
+        elif result.message:
+            sys.stdout.write(result.message + "\n")
         return 0
     except (BrainError, OSError) as exc:
         # Two families, not a blanket `except Exception`: R6.1 asks for a clear

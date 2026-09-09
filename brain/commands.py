@@ -8,16 +8,37 @@ an invariant the rest of the system assumes.
 """
 from __future__ import annotations
 
-from datetime import datetime
+import re
+from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from . import git, lock
-from .entities import NOTE_TYPES, STATUSES, load_notes
-from .errors import GrammarError, VerbError
+from .entities import HEALTHS, NOTE_TYPES, STATUSES, load_notes
+from .errors import GrammarError, UnknownReference, VerbError
 from .grammar import split_flags
-from .model import Doc
-from .resolve import resolve
+from .model import (
+    BOARD_SECTIONS,
+    PROGRAM_SECTIONS,
+    PROJECT_SECTIONS,
+    STAKEHOLDER_SECTIONS,
+    Doc,
+    render_action,
+)
+from .resolve import normalise, resolve, resolve_action
+
+
+class Result(NamedTuple):
+    """What a verb returns.
+
+    `message` is R6.1's single line. `paths` is what `execute` commits, empty
+    for a read verb. `data` is the machine-readable answer `--json` prints, and
+    is None for a write verb - a write's answer is one line, and inventing a
+    JSON shape for it would be a second contract to keep in step.
+    """
+    message: str
+    paths: Tuple[str, ...] = ()
+    data: object = None
 
 
 class Verb(NamedTuple):
@@ -27,13 +48,15 @@ class Verb(NamedTuple):
     writes: bool
     arity: Tuple[int, int]
     allowed_flags: Tuple[str, ...]
+    optional_text: bool
 
 
 VERBS: Dict[Tuple[str, ...], Verb] = {}
 
 
 def verb(*name, needs_text: bool = False, writes: bool = True,
-         arity: Tuple[int, int] = (0, 0), allowed_flags: Tuple[str, ...] = ()):
+         arity: Tuple[int, int] = (0, 0), allowed_flags: Tuple[str, ...] = (),
+         optional_text: bool = False):
     """Register a verb.
 
     `arity` is (min, max) positionals AFTER the verb's own words, and
@@ -45,6 +68,7 @@ def verb(*name, needs_text: bool = False, writes: bool = True,
         VERBS[tuple(name)] = Verb(
             name=tuple(name), run=func, needs_text=needs_text, writes=writes,
             arity=arity, allowed_flags=tuple(allowed_flags),
+            optional_text=optional_text,
         )
         return func
     return register
@@ -90,7 +114,7 @@ def _log(root, positional, flags, text):
     doc.touch()
     doc.save()
     rel = Path(project.path).relative_to(Path(root)).as_posix()
-    return "logged to {}".format(project.slug), [rel]
+    return Result("logged to {}".format(project.slug), (rel,))
 
 
 @verb("status", "set", arity=(2, 2))
@@ -106,7 +130,114 @@ def _status_set(root, positional, flags, text):
     doc.touch()
     doc.save()
     rel = Path(project.path).relative_to(Path(root)).as_posix()
-    return "{} is now {}".format(project.slug, value), [rel]
+    return Result("{} is now {}".format(project.slug, value), (rel,))
+
+
+# Fields with a verb of their own. `field set` refuses them because those verbs
+# validate the value, and a second door with no lock on it is worse than no
+# second door.
+GUARDED_FIELDS = {"status": "status set", "health": "health set"}
+
+
+def _project_and_doc(root, ref):
+    project = resolve(root, ref, kinds=("project",))
+    rel = Path(project.path).relative_to(Path(root)).as_posix()
+    return project, project.doc, rel
+
+
+@verb("action", "add", needs_text=True, arity=(1, 1),
+      allowed_flags=("owner", "due"))
+def _action_add(root, positional, flags, text):
+    project, doc, rel = _project_and_doc(root, positional[0])
+    doc.add_action(text, owner=flags.get("owner"), due=flags.get("due"))
+    doc.touch()
+    doc.save()
+    return Result("added an action to {}".format(project.slug), (rel,))
+
+
+@verb("action", "done", arity=(1, 2), optional_text=True)
+def _action_done(root, positional, flags, text):
+    """R6.2: a 1-based index into the OPEN actions, or a unique substring."""
+    project, doc, rel = _project_and_doc(root, positional[0])
+    selector = positional[1] if len(positional) > 1 else text
+    if selector is None:
+        raise VerbError(
+            "`action done` needs an action: an index, or ` -- some words`"
+        )
+    task = resolve_action(project, selector)
+    doc.toggle_task(task.lineno)
+    doc.touch()
+    doc.save()
+    return Result("ticked {} in {}".format(task.text, project.slug), (rel,))
+
+
+@verb("action", "due", arity=(1, 2), allowed_flags=("to",), optional_text=True)
+def _action_due(root, positional, flags, text):
+    if "to" not in flags:
+        raise VerbError("`action due` needs --to <date>")
+    project, doc, rel = _project_and_doc(root, positional[0])
+    selector = positional[1] if len(positional) > 1 else text
+    if selector is None:
+        raise VerbError("`action due` needs an action: an index, or ` -- words`")
+    task = resolve_action(project, selector)
+    doc.lines[task.lineno] = render_action(
+        task.text, task.owner, flags["to"], done=task.done,
+        indent=task.indent, mark=task.mark,
+    )
+    doc.touch()
+    doc.save()
+    return Result(
+        "{} is now due {}".format(task.text, flags["to"]), (rel,)
+    )
+
+
+@verb("decision", "add", needs_text=True, arity=(1, 1))
+def _decision_add(root, positional, flags, text):
+    project, doc, rel = _project_and_doc(root, positional[0])
+    doc.add_decision(text)
+    doc.touch()
+    doc.save()
+    return Result("recorded a decision on {}".format(project.slug), (rel,))
+
+
+@verb("question", "add", needs_text=True, arity=(1, 1))
+def _question_add(root, positional, flags, text):
+    project, doc, rel = _project_and_doc(root, positional[0])
+    doc.add_question(text)
+    doc.touch()
+    doc.save()
+    return Result("added a question to {}".format(project.slug), (rel,))
+
+
+@verb("health", "set", arity=(2, 2))
+def _health_set(root, positional, flags, text):
+    value = positional[1]
+    if value not in HEALTHS:
+        raise VerbError(
+            "{!r} is not a health. One of: {}".format(value, ", ".join(HEALTHS))
+        )
+    project, doc, rel = _project_and_doc(root, positional[0])
+    doc.set_field("health", value)
+    doc.touch()
+    doc.save()
+    return Result("{} is now {}".format(project.slug, value), (rel,))
+
+
+@verb("field", "set", needs_text=True, arity=(2, 2))
+def _field_set(root, positional, flags, text):
+    key = positional[1]
+    if key in GUARDED_FIELDS:
+        raise VerbError(
+            "use `brain {} …` for {!r}: it validates the value".format(
+                GUARDED_FIELDS[key], key
+            )
+        )
+    entity = resolve(root, positional[0])
+    rel = Path(entity.path).relative_to(Path(root)).as_posix()
+    entity.doc.set_field(key, text)
+    entity.doc.touch()
+    entity.doc.save()
+    return Result("{} {} is now {}".format(entity.slug, key, text), (rel,))
 
 
 @verb("note", "add", needs_text=True, arity=(0, 1), allowed_flags=("tag",))
@@ -140,8 +271,7 @@ def _note_add(root, positional, flags, text):
     # contain them. Tidying the user's words is exactly what R4.6.1 forbids.
     inbox = Path(root) / "inbox.md"
     existing = inbox.read_bytes() if inbox.exists() else b""
-    crlf = existing.count(b"\r\n")
-    eol = b"\r\n" if crlf > existing.count(b"\n") - crlf else b"\n"
+    eol = _eol_of(existing)
     if existing and not existing.endswith(eol):
         existing += eol
     if existing:
@@ -151,13 +281,336 @@ def _note_add(root, positional, flags, text):
         block += eol
     inbox.write_bytes(existing + block)
     (Path(root) / "_seq").write_text("{}\n".format(number), encoding="utf-8")
-    return "captured {}".format(note_id), ["inbox.md", "_seq"]
+    return Result("captured {}".format(note_id), ("inbox.md", "_seq"))
 
 
-def execute(root, parsed, source: str = "cli") -> str:
-    """Run one parsed line. Returns R6.1's single result line."""
+@verb("note", "list", writes=False, allowed_flags=("type",))
+def _note_list(root, positional, flags, text):
+    """R4.6: every unprocessed note. `--type` narrows; `--unprocessed` is not a
+    flag because every note in inbox.md is unprocessed by definition (R4.6.4)."""
+    wanted = flags.get("type")
+    if wanted and wanted not in NOTE_TYPES:
+        raise VerbError(
+            "{!r} is not a note type. One of: {}".format(wanted, ", ".join(NOTE_TYPES))
+        )
+    notes = [n for n in load_notes(Path(root) / "inbox.md")
+             if wanted is None or n.type == wanted]
+    data = [
+        {"id": n.id, "captured": n.captured, "type": n.type, "tags": n.tags,
+         "body": n.body, "problems": n.problems}
+        for n in notes
+    ]
+    return Result(
+        "{} unprocessed note(s)".format(len(notes)) if notes else "inbox is empty",
+        [], data,
+    )
+
+
+def _find_note(root, note_id):
+    for note in load_notes(Path(root) / "inbox.md"):
+        if note.id == note_id:
+            return note
+    raise UnknownReference(
+        "no note {!r} in the inbox. `brain note list` shows what is there.".format(
+            note_id
+        )
+    )
+
+
+def rewrite_inbox(root, notes) -> None:
+    """Write `notes` back as the whole inbox, bodies untouched.
+
+    Bytes, not text, and the file's own line endings (R5.2). Every body goes
+    back exactly as it was read: R4.6.1 says a note body is the user's words,
+    and A13 asserts no path anywhere rewrites one - including the path that
+    removes a different note.
+    """
+    inbox = Path(root) / "inbox.md"
+    existing = inbox.read_bytes() if inbox.exists() else b""
+    eol = _eol_of(existing)
+
+    blocks = []
+    for note in notes:
+        body = list(note.body)
+        while body and not body[-1].strip():
+            body.pop()
+        lines = [note.header] + body
+        blocks.append(eol.join(line.encode("utf-8") for line in lines))
+    inbox.write_bytes((eol + eol).join(blocks) + (eol if blocks else b""))
+
+
+@verb("note", "show", writes=False, arity=(1, 1))
+def _note_show(root, positional, flags, text):
+    note = _find_note(root, positional[0])
+    return Result(
+        "{} · {} · {}".format(note.id, note.captured, note.type),
+        [],
+        {"id": note.id, "captured": note.captured, "type": note.type,
+         "tags": note.tags, "body": note.body, "problems": note.problems},
+    )
+
+
+@verb("note", "flag", needs_text=True, arity=(1, 1))
+def _note_flag(root, positional, flags, text):
+    """R4.6.4 / R7.1.5: a note the agent could not place stays, with the reason.
+
+    The reason replaces any earlier one rather than accumulating - a re-run
+    should leave one explanation, not a pile of them.
+    """
+    note_id = positional[0]
+    notes = load_notes(Path(root) / "inbox.md")
+    if not any(n.id == note_id for n in notes):
+        raise UnknownReference("no note {!r} in the inbox".format(note_id))
+    marked = []
+    for note in notes:
+        if note.id == note_id:
+            body = list(note.body)
+            while body and not body[-1].strip():
+                body.pop()
+            # Replace only the marker WE appended, which is always the last
+            # line. Filtering every `> ?` line would delete one the user wrote,
+            # including one inside a fenced block that `load_notes` goes out of
+            # its way to keep - R4.6.1 and A13 say no path rewrites a body, and
+            # `> ?` being our notation does not make it ours wherever it appears.
+            if body and body[-1].lstrip().startswith("> ?"):
+                body.pop()
+            note = note._replace(body=body + ["> ? " + text])
+        marked.append(note)
+    rewrite_inbox(root, marked)
+    return Result("flagged {}".format(note_id), ("inbox.md",))
+
+
+@verb("note", "drop", arity=(1, 1))
+def _note_drop(root, positional, flags, text):
+    """R4.6.4: processing deletes the note. Git holds the history, and the
+    commit message records what it became."""
+    note_id = positional[0]
+    notes = load_notes(Path(root) / "inbox.md")
+    kept = [n for n in notes if n.id != note_id]
+    if len(kept) == len(notes):
+        raise UnknownReference("no note {!r} in the inbox".format(note_id))
+    rewrite_inbox(root, kept)
+    return Result("dropped {}".format(note_id), ("inbox.md",))
+
+
+# R4.2.1 and §4.3-§4.5: what a new file of each kind starts as. The sections
+# are created empty and in order, because `ensure_section` needs somewhere to
+# put a section and `brain check` reports one that is missing.
+NEW_ENTITY = {
+    "project": ("projects", "project", PROJECT_SECTIONS,
+                {"status": "idea", "health": "green"}),
+    "program": ("programs", "program", PROGRAM_SECTIONS, {"status": "active"}),
+    "stakeholder": ("stakeholders", "stakeholder", STAKEHOLDER_SECTIONS, {}),
+    "board": ("boards", "board", BOARD_SECTIONS, {}),
+}
+
+
+def _slug(title: str) -> str:
+    return normalise(title)
+
+
+@verb("new", needs_text=True, arity=(1, 1))
+def _new(root, positional, flags, text):
+    kind = positional[0]
+    if kind not in NEW_ENTITY:
+        raise VerbError(
+            "{!r} is not an entity kind. One of: {}".format(
+                kind, ", ".join(sorted(NEW_ENTITY))
+            )
+        )
+    directory, title_field, sections, defaults = NEW_ENTITY[kind]
+    slug = _slug(text)
+    if not slug:
+        raise VerbError("{!r} has no letters or digits to make a slug from".format(text))
+    target = Path(root) / directory / (slug + ".md")
+    if target.exists():
+        raise VerbError(
+            "{} already exists at {}. Pick another name, or edit that one.".format(
+                slug, target
+            )
+        )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("---\n---\n\n", encoding="utf-8")
+    doc = Doc(target)
+    doc.set_field(title_field, text)
+    for key, value in defaults.items():
+        doc.set_field(key, value)
+    doc.touch()
+    for name in sections:
+        doc.ensure_section(name, sections)
+    doc.save()
+    return Result(
+        "created {}/{}".format(directory, slug),
+        ("{}/{}.md".format(directory, slug),),
+    )
+
+
+@verb("link", arity=(1, 1), allowed_flags=("program",))
+def _link(root, positional, flags, text):
+    """R4.1: membership is declared on the child. A project belongs to at most
+    one program, and programs never list their projects."""
+    if "program" not in flags:
+        raise VerbError("`link` needs --program <program>")
+    program = resolve(root, flags["program"], kinds=("program",))
+    project, doc, rel = _project_and_doc(root, positional[0])
+    doc.set_field("program", program.slug)
+    doc.touch()
+    doc.save()
+    return Result("{} is in {}".format(project.slug, program.slug), (rel,))
+
+
+@verb("raise", needs_text=True, arity=(1, 1), allowed_flags=("ref",))
+def _raise(root, positional, flags, text):
+    """R4.4.2: `## Pending` accumulates between meetings, and is what agenda
+    generation consumes."""
+    party = resolve(root, positional[0], kinds=("stakeholder", "board"))
+    rel = Path(party.path).relative_to(Path(root)).as_posix()
+    line = "- {} - {}".format(date.today().isoformat(), text)
+    if "ref" in flags:
+        project = resolve(root, flags["ref"], kinds=("project",))
+        line += "  #{}".format(project.slug)
+    party.doc.add_bullet("Pending", line, newest_first=False)
+    party.doc.touch()
+    party.doc.save()
+    return Result("raised with {}".format(party.slug), (rel,))
+
+
+class Request(NamedTuple):
+    lineno: int
+    text: str
+    done: bool
+    done_on: Optional[str]
+
+
+# R4.7 stamps the completion date onto the line: `- [x] 2026-09-06 rollup …`.
+DONE_STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2})\s+(.*)$")
+
+# §4.7's own format, and nothing more. Requests are NOT actions: they have no
+# owner and no due date, so parsing them with `parse_action` strips `  @who`
+# and `  due:…` spans that are simply the user's words (R4.6.1's principle,
+# applied to the one other file a user types into).
+REQUEST_LINE = re.compile(r"^\s*- \[([ xX])\] (.*)$")
+
+
+def _eol_of(data: bytes) -> bytes:
+    """The dominant line ending of a file we are about to rewrite (R5.2)."""
+    crlf = data.count(b"\r\n")
+    return b"\r\n" if crlf > data.count(b"\n") - crlf else b"\n"
+
+
+def _requests(root):
+    """R4.7: `- [ ] text` / `- [x] YYYY-MM-DD text`.
+
+    The date stamp is part of the FILE's format, not part of the request. Split
+    it out here, or a done request's text differs from the pending text it was
+    written as and `request list` shows two shapes for one thing - which also
+    breaks R4.7.2's collapse, since stamped text never matches a retype.
+    """
+    path = Path(root) / "_request.md"
+    if not path.exists():
+        return []
+    # Normalise CRLF before splitting, so a line's index and text are the same
+    # regardless of the file's own line ending (R5.2) - the write side puts
+    # `_eol_of`'s ending back rather than baking one in here.
+    text = path.read_bytes().decode("utf-8").replace("\r\n", "\n")
+    out = []
+    for lineno, line in enumerate(text.split("\n")):
+        match = REQUEST_LINE.match(line)
+        if match is None:
+            continue
+        done = match.group(1).lower() == "x"
+        body, done_on = match.group(2), None
+        if done:
+            stamped = DONE_STAMP.match(body)
+            if stamped:
+                done_on, body = stamped.group(1), stamped.group(2)
+        out.append(Request(lineno=lineno, text=body, done=done, done_on=done_on))
+    return out
+
+
+@verb("request", "add", needs_text=True, arity=(0, 0))
+def _request_add(root, positional, flags, text):
+    """R4.7.2: duplicate pending requests collapse rather than accumulating."""
+    path = Path(root) / "_request.md"
+    for task in _requests(root):
+        if not task.done and task.text == text:
+            return Result("already queued: {}".format(text))
+    existing = path.read_bytes() if path.exists() else b""
+    eol = _eol_of(existing)
+    if existing and not existing.endswith(eol):
+        existing += eol
+    line = ("- [ ] " + text).encode("utf-8") + eol
+    path.write_bytes(existing + line)
+    return Result("queued: {}".format(text), ("_request.md",))
+
+
+@verb("request", "list", writes=False, arity=(0, 0))
+def _request_list(root, positional, flags, text):
+    tasks = _requests(root)
+    return Result(
+        "{} request(s)".format(len(tasks)) if tasks else "nothing queued",
+        [],
+        [{"n": i + 1, "text": t.text, "done": t.done, "done_on": t.done_on}
+         for i, t in enumerate(tasks)],
+    )
+
+
+@verb("request", "done", arity=(1, 1))
+def _request_done(root, positional, flags, text):
+    tasks = _requests(root)
+    try:
+        index = int(positional[0])
+    except ValueError:
+        raise VerbError("`request done` takes a number from `brain request list`")
+    if not 1 <= index <= len(tasks):
+        raise UnknownReference(
+            "there is no request {} ({} queued)".format(index, len(tasks))
+        )
+    task = tasks[index - 1]
+    if task.done:
+        raise VerbError(
+            "request {} is already done ({})".format(index, task.done_on or "undated")
+        )
+    path = Path(root) / "_request.md"
+    raw = path.read_bytes()
+    eol = _eol_of(raw)
+    lines = raw.decode("utf-8").replace("\r\n", "\n").split("\n")
+    lines[task.lineno] = "- [x] {} {}".format(date.today().isoformat(), task.text)
+    path.write_bytes(eol.join(line.encode("utf-8") for line in lines))
+    return Result("done: {}".format(task.text), ("_request.md",))
+
+
+@verb("undo", arity=(0, 0))
+def _undo(root, positional, flags, text):
+    """R11.5. `execute` must not commit on top of this - `undo` makes its own
+    commit, so it returns no paths."""
+    sha = git.undo(root)
+    if sha is None:
+        return Result("nothing to undo")
+    return Result("undid {}".format(sha[:7]))
+
+
+@verb("check", writes=False, arity=(0, 0), allowed_flags=())
+def _check(root, positional, flags, text):
+    """R3.2/R11.6: report any file whose last change did not come through
+    `brain`, so a violation is visible rather than silent."""
+    offenders = git.unauthored(root)
+    return Result(
+        "all {} file(s) authored by brain".format(len(git.brain_paths(root)))
+        if not offenders
+        else "{} file(s) not written by brain: {}".format(
+            len(offenders), ", ".join(offenders)
+        ),
+        [],
+        offenders,
+    )
+
+
+def execute(root, parsed, source: str = "cli") -> Result:
+    """Run one parsed line. Returns a `Result`."""
     if parsed is None:
-        return ""
+        return Result("")
     positional, flags = split_flags(parsed.tokens)
     found, rest = find_verb(positional)
 
@@ -187,13 +640,13 @@ def execute(root, parsed, source: str = "cli") -> str:
             "{!r}: `{}` takes free text, which must follow a ` -- ` separator "
             "(R6.4a)".format(parsed.raw, " ".join(found.name))
         )
-    if parsed.text is not None and not found.needs_text:
+    if parsed.text is not None and not (found.needs_text or found.optional_text):
         raise GrammarError(
             "{!r}: `{}` takes no free text".format(parsed.raw, " ".join(found.name))
         )
 
     if not found.writes:
-        return found.run(root, rest, flags, parsed.text)[0]
+        return found.run(root, rest, flags, parsed.text)
 
     git.require_repo(root)
     with lock.held(root):
@@ -204,9 +657,9 @@ def execute(root, parsed, source: str = "cli") -> str:
         # same failure and deserves the same answer.
         checkpoint = git.checkpoint(root, git.brain_paths(root), prune=True)
         try:
-            message, paths = found.run(root, rest, flags, parsed.text)
-            git.commit(root, paths, "brain: " + message, source=source)
+            result = found.run(root, rest, flags, parsed.text)
+            git.commit(root, result.paths, "brain: " + result.message, source=source)
         except Exception:
             git.restore(root, checkpoint)
             raise
-    return message
+    return result
