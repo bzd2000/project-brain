@@ -124,6 +124,26 @@ def next_note_id(root) -> Tuple[str, int]:
     return "n{}".format(nxt), nxt
 
 
+# The noun each `value_choices` check names in its error message, keyed by
+# verb name. `validate` and a verb's own defence-in-depth raise both build
+# their message through `_value_choice_error` (below), so the two can never
+# drift apart - the user-visible message does not change depending on which
+# layer catches a bad value.
+_VALUE_CHOICE_NOUN: Dict[Tuple[str, ...], str] = {
+    ("status", "set"): "status",
+    ("health", "set"): "health",
+    ("note", "add"): "note type",
+}
+
+
+def _value_choice_error(name: Tuple[str, ...], value: str,
+                         allowed: Tuple[str, ...]) -> VerbError:
+    noun = _VALUE_CHOICE_NOUN.get(name, name[0])
+    return VerbError(
+        "{!r} is not a {}. One of: {}".format(value, noun, ", ".join(allowed))
+    )
+
+
 @verb("log", needs_text=True, arity=(1, 1), ref_kinds=("project",))
 def _log(root, positional, flags, text):
     project = resolve(root, positional[0], kinds=("project",))
@@ -140,9 +160,7 @@ def _log(root, positional, flags, text):
 def _status_set(root, positional, flags, text):
     ref, value = positional[0], positional[1]
     if value not in STATUSES:
-        raise VerbError(
-            "{!r} is not a status. One of: {}".format(value, ", ".join(STATUSES))
-        )
+        raise _value_choice_error(("status", "set"), value, STATUSES)
     project = resolve(root, ref, kinds=("project",))
     doc = project.doc
     doc.set_field("status", value)
@@ -234,9 +252,7 @@ def _question_add(root, positional, flags, text):
 def _health_set(root, positional, flags, text):
     value = positional[1]
     if value not in HEALTHS:
-        raise VerbError(
-            "{!r} is not a health. One of: {}".format(value, ", ".join(HEALTHS))
-        )
+        raise _value_choice_error(("health", "set"), value, HEALTHS)
     project, doc, rel = _project_and_doc(root, positional[0])
     doc.set_field("health", value)
     doc.touch()
@@ -261,7 +277,8 @@ def _field_set(root, positional, flags, text):
     return Result("{} {} is now {}".format(entity.slug, key, text), (rel,))
 
 
-@verb("note", "add", needs_text=True, arity=(0, 1), allowed_flags=("tag",))
+@verb("note", "add", needs_text=True, arity=(0, 1), allowed_flags=("tag",),
+      value_choices=(0, NOTE_TYPES))
 def _note_add(root, positional, flags, text):
     """R4.6.1: the header is machine-written; the body is the user's words.
 
@@ -270,11 +287,7 @@ def _note_add(root, positional, flags, text):
     """
     note_type = positional[0] if positional else "note"
     if note_type not in NOTE_TYPES:
-        raise VerbError(
-            "{!r} is not a note type. One of: {}".format(
-                note_type, ", ".join(NOTE_TYPES)
-            )
-        )
+        raise _value_choice_error(("note", "add"), note_type, NOTE_TYPES)
     tags = [t for t in flags.get("tag", "").split() if t]
     note_id, number = next_note_id(root)
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -685,18 +698,16 @@ def validate(parsed) -> Optional[Plan]:
             "{!r}: `{}` takes no free text".format(parsed.raw, " ".join(found.name))
         )
 
-    # A batch must be able to report a bad `status`/`health` value from
-    # `--dry-run` alone, without running anything - so the check that used to
-    # live only inside `_status_set`/`_health_set` (which still keep their
-    # own copy as defence in depth) is repeated here, at validation time.
+    # A batch must be able to report a bad `status`/`health`/note-type value
+    # from `--dry-run` alone, without running anything - so the check that
+    # used to live only inside the verb bodies (which still keep their own
+    # copy as defence in depth) is repeated here, at validation time. Both
+    # sides build the message through `_value_choice_error`, so they can
+    # never disagree on wording.
     if found.value_choices is not None:
         index, allowed = found.value_choices
         if index < len(rest) and rest[index] not in allowed:
-            raise VerbError(
-                "{!r} is not a {}. One of: {}".format(
-                    rest[index], found.name[0], ", ".join(allowed)
-                )
-            )
+            raise _value_choice_error(found.name, rest[index], allowed)
 
     return Plan(found, rest, flags, parsed.text, parsed.raw)
 
