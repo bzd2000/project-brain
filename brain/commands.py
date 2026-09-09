@@ -630,10 +630,27 @@ def _check(root, positional, flags, text):
     )
 
 
-def execute(root, parsed, source: str = "cli") -> Result:
-    """Run one parsed line. Returns a `Result`."""
+class Plan(NamedTuple):
+    """One parsed, validated line, ready to run.
+
+    Producing a `Plan` touches no disk and takes no lock (R6.5.1): a batch
+    validates every line before writing any of them, which is only possible
+    if validation is a pure function of the parsed line and the `VERBS`
+    registry.
+    """
+    verb: Verb
+    positional: List[str]
+    flags: Dict[str, str]
+    text: Optional[str]
+    raw: str
+
+
+def validate(parsed) -> Optional[Plan]:
+    """Check one parsed line against its verb's declaration. Pure - no disk,
+    no lock. Raises `VerbError` / `GrammarError` on a bad line; returns
+    `None` for `parsed is None` (a blank or comment line, R6.4)."""
     if parsed is None:
-        return Result("")
+        return None
     positional, flags = split_flags(parsed.tokens)
     found, rest = find_verb(positional)
 
@@ -668,8 +685,38 @@ def execute(root, parsed, source: str = "cli") -> Result:
             "{!r}: `{}` takes no free text".format(parsed.raw, " ".join(found.name))
         )
 
-    if not found.writes:
-        return found.run(root, rest, flags, parsed.text)
+    # A batch must be able to report a bad `status`/`health` value from
+    # `--dry-run` alone, without running anything - so the check that used to
+    # live only inside `_status_set`/`_health_set` (which still keep their
+    # own copy as defence in depth) is repeated here, at validation time.
+    if found.value_choices is not None:
+        index, allowed = found.value_choices
+        if index < len(rest) and rest[index] not in allowed:
+            raise VerbError(
+                "{!r} is not a {}. One of: {}".format(
+                    rest[index], found.name[0], ", ".join(allowed)
+                )
+            )
+
+    return Plan(found, rest, flags, parsed.text, parsed.raw)
+
+
+def perform(root, plan: "Plan") -> Result:
+    """Run one validated line. Writes files; does not commit or lock.
+
+    The caller owns the git envelope, because a batch has ONE envelope for N
+    lines (R6.5) and a single verb has one for one.
+    """
+    return plan.verb.run(root, plan.positional, plan.flags, plan.text)
+
+
+def execute(root, parsed, source: str = "cli") -> Result:
+    """Run one parsed line. Returns a `Result`."""
+    plan = validate(parsed)
+    if plan is None:
+        return Result("")
+    if not plan.verb.writes:
+        return perform(root, plan)
 
     git.require_repo(root)
     with lock.held(root):
@@ -680,7 +727,7 @@ def execute(root, parsed, source: str = "cli") -> Result:
         # same failure and deserves the same answer.
         checkpoint = git.checkpoint(root, git.brain_paths(root), prune=True)
         try:
-            result = found.run(root, rest, flags, parsed.text)
+            result = perform(root, plan)
             git.commit(root, result.paths, "brain: " + result.message, source=source)
         except Exception:
             git.restore(root, checkpoint)
