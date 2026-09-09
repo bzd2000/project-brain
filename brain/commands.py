@@ -14,7 +14,7 @@ from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from . import git, lock
 from .entities import NOTE_TYPES, STATUSES, load_notes
-from .errors import GrammarError, VerbError
+from .errors import GrammarError, UnknownReference, VerbError
 from .grammar import split_flags
 from .model import Doc
 from .resolve import resolve
@@ -190,6 +190,87 @@ def _note_list(root, positional, flags, text):
         "{} unprocessed note(s)".format(len(notes)) if notes else "inbox is empty",
         [], data,
     )
+
+
+def _find_note(root, note_id):
+    for note in load_notes(Path(root) / "inbox.md"):
+        if note.id == note_id:
+            return note
+    raise UnknownReference(
+        "no note {!r} in the inbox. `brain note list` shows what is there.".format(
+            note_id
+        )
+    )
+
+
+def rewrite_inbox(root, notes) -> None:
+    """Write `notes` back as the whole inbox, bodies untouched.
+
+    Bytes, not text, and the file's own line endings (R5.2). Every body goes
+    back exactly as it was read: R4.6.1 says a note body is the user's words,
+    and A13 asserts no path anywhere rewrites one - including the path that
+    removes a different note.
+    """
+    inbox = Path(root) / "inbox.md"
+    existing = inbox.read_bytes() if inbox.exists() else b""
+    crlf = existing.count(b"\r\n")
+    eol = b"\r\n" if crlf > existing.count(b"\n") - crlf else b"\n"
+
+    blocks = []
+    for note in notes:
+        body = list(note.body)
+        while body and not body[-1].strip():
+            body.pop()
+        lines = [note.header] + body
+        blocks.append(eol.join(line.encode("utf-8") for line in lines))
+    inbox.write_bytes(eol.join(blocks) + (eol if blocks else b""))
+
+
+@verb("note", "show", writes=False, arity=(1, 1))
+def _note_show(root, positional, flags, text):
+    note = _find_note(root, positional[0])
+    return Result(
+        "{} · {} · {}".format(note.id, note.captured, note.type),
+        [],
+        {"id": note.id, "captured": note.captured, "type": note.type,
+         "tags": note.tags, "body": note.body, "problems": note.problems},
+    )
+
+
+@verb("note", "flag", needs_text=True, arity=(1, 1))
+def _note_flag(root, positional, flags, text):
+    """R4.6.4 / R7.1.5: a note the agent could not place stays, with the reason.
+
+    The reason replaces any earlier one rather than accumulating - a re-run
+    should leave one explanation, not a pile of them.
+    """
+    note_id = positional[0]
+    notes = load_notes(Path(root) / "inbox.md")
+    if not any(n.id == note_id for n in notes):
+        raise UnknownReference("no note {!r} in the inbox".format(note_id))
+    marked = []
+    for note in notes:
+        if note.id == note_id:
+            body = [l for l in note.body if not l.lstrip().startswith("> ?")]
+            while body and not body[-1].strip():
+                body.pop()
+            note = note._replace(body=body + ["> ? " + text])
+        marked.append(note)
+    rewrite_inbox(root, marked)
+    return Result("flagged {}".format(note_id), ("inbox.md",))
+
+
+@verb("note", "drop", arity=(1, 1))
+def _note_drop(root, positional, flags, text):
+    """R4.6.4: processing deletes the note. Git holds the history, and the
+    commit message records what it became."""
+    note_id = positional[0]
+    notes = load_notes(Path(root) / "inbox.md")
+    kept = [n for n in notes if n.id != note_id]
+    if len(kept) == len(notes):
+        raise UnknownReference("no note {!r} in the inbox".format(note_id))
+    rewrite_inbox(root, kept)
+    return Result("dropped {}".format(note_id), ("inbox.md",))
 
 
 def execute(root, parsed, source: str = "cli") -> Result:

@@ -5,6 +5,8 @@ import pytest
 from brain import commands as c
 from brain import grammar as gr
 from brain.cli import main
+from brain.entities import load_notes
+from brain.errors import UnknownReference
 
 
 def _run(root, line):
@@ -81,3 +83,60 @@ def test_dash_f_and_free_text_together_is_an_error(tmp_path, capsys):
     root = r.init(tmp_path / "b")
     assert main(["--root", str(root), "note", "add", "note", "-f", "-", "--", "x"]) != 0
     assert "both" in capsys.readouterr().err
+
+
+def test_note_show_returns_one_note(brain_repo):
+    _run(brain_repo, "note add meeting --tag @acme -- the body")
+    result = _run(brain_repo, "note show n1")
+    assert result.data["id"] == "n1"
+    assert result.data["body"] == ["the body"]
+
+
+def test_note_show_on_a_missing_id_is_an_error(brain_repo):
+    with pytest.raises(c.UnknownReference):
+        _run(brain_repo, "note show n99")
+
+
+def test_note_flag_records_the_reason_and_keeps_the_body(brain_repo):
+    """R4.6.4: a note the agent could not place stays, with an indented `> ?`
+    line explaining why, so a bad run loses nothing and can be re-run."""
+    _run(brain_repo, "note add note -- ambiguous, could be either project")
+    _run(brain_repo, "note flag n1 -- two projects match 'acme'")
+    text = (brain_repo / "inbox.md").read_text(encoding="utf-8")
+    assert "ambiguous, could be either project" in text
+    assert "> ? two projects match 'acme'" in text
+    assert len(load_notes(brain_repo / "inbox.md")) == 1
+
+
+def test_note_flag_twice_replaces_the_reason(brain_repo):
+    _run(brain_repo, "note add note -- body")
+    _run(brain_repo, "note flag n1 -- first reason")
+    _run(brain_repo, "note flag n1 -- second reason")
+    text = (brain_repo / "inbox.md").read_text(encoding="utf-8")
+    assert "second reason" in text and "first reason" not in text
+
+
+def test_note_drop_removes_only_that_note(brain_repo):
+    """R4.6.4: processing deletes the note; git holds the history."""
+    for n in ("one", "two", "three"):
+        _run(brain_repo, "note add note -- body {}".format(n))
+    _run(brain_repo, "note drop n2")
+    remaining = load_notes(brain_repo / "inbox.md")
+    assert [n.id for n in remaining] == ["n1", "n3"]
+    assert remaining[0].body == ["body one"]
+    assert remaining[1].body == ["body three"]
+
+
+def test_note_drop_preserves_the_other_bodies_byte_for_byte(brain_repo):
+    """A13's shape: no path anywhere rewrites a note body."""
+    _run(brain_repo, "note add note -- keep   this    spacing")
+    _run(brain_repo, "note add note -- drop me")
+    _run(brain_repo, "note drop n2")
+    assert load_notes(brain_repo / "inbox.md")[0].body == ["keep   this    spacing"]
+
+
+def test_dropping_the_last_note_leaves_an_empty_inbox(brain_repo):
+    _run(brain_repo, "note add note -- only one")
+    _run(brain_repo, "note drop n1")
+    assert (brain_repo / "inbox.md").read_text(encoding="utf-8") == ""
+    assert load_notes(brain_repo / "inbox.md") == []
