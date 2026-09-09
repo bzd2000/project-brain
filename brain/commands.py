@@ -13,11 +13,11 @@ from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from . import git, lock
-from .entities import NOTE_TYPES, STATUSES, load_notes
+from .entities import HEALTHS, NOTE_TYPES, STATUSES, load_notes
 from .errors import GrammarError, UnknownReference, VerbError
 from .grammar import split_flags
-from .model import Doc
-from .resolve import resolve
+from .model import Doc, render_action
+from .resolve import resolve, resolve_action
 
 
 class Result(NamedTuple):
@@ -123,6 +123,113 @@ def _status_set(root, positional, flags, text):
     doc.save()
     rel = Path(project.path).relative_to(Path(root)).as_posix()
     return Result("{} is now {}".format(project.slug, value), (rel,))
+
+
+# Fields with a verb of their own. `field set` refuses them because those verbs
+# validate the value, and a second door with no lock on it is worse than no
+# second door.
+GUARDED_FIELDS = {"status": "status set", "health": "health set"}
+
+
+def _project_and_doc(root, ref):
+    project = resolve(root, ref, kinds=("project",))
+    rel = Path(project.path).relative_to(Path(root)).as_posix()
+    return project, project.doc, rel
+
+
+@verb("action", "add", needs_text=True, arity=(1, 1),
+      allowed_flags=("owner", "due"))
+def _action_add(root, positional, flags, text):
+    project, doc, rel = _project_and_doc(root, positional[0])
+    doc.add_action(text, owner=flags.get("owner"), due=flags.get("due"))
+    doc.touch()
+    doc.save()
+    return Result("added an action to {}".format(project.slug), (rel,))
+
+
+@verb("action", "done", arity=(1, 2), optional_text=True)
+def _action_done(root, positional, flags, text):
+    """R6.2: a 1-based index into the OPEN actions, or a unique substring."""
+    project, doc, rel = _project_and_doc(root, positional[0])
+    selector = positional[1] if len(positional) > 1 else text
+    if selector is None:
+        raise VerbError(
+            "`action done` needs an action: an index, or ` -- some words`"
+        )
+    task = resolve_action(project, selector)
+    doc.toggle_task(task.lineno)
+    doc.touch()
+    doc.save()
+    return Result("ticked {} in {}".format(task.text, project.slug), (rel,))
+
+
+@verb("action", "due", arity=(1, 2), allowed_flags=("to",), optional_text=True)
+def _action_due(root, positional, flags, text):
+    if "to" not in flags:
+        raise VerbError("`action due` needs --to <date>")
+    project, doc, rel = _project_and_doc(root, positional[0])
+    selector = positional[1] if len(positional) > 1 else text
+    if selector is None:
+        raise VerbError("`action due` needs an action: an index, or ` -- words`")
+    task = resolve_action(project, selector)
+    doc.lines[task.lineno] = render_action(
+        task.text, task.owner, flags["to"], done=task.done,
+        indent=task.indent, mark=task.mark,
+    )
+    doc.touch()
+    doc.save()
+    return Result(
+        "{} is now due {}".format(task.text, flags["to"]), (rel,)
+    )
+
+
+@verb("decision", "add", needs_text=True, arity=(1, 1))
+def _decision_add(root, positional, flags, text):
+    project, doc, rel = _project_and_doc(root, positional[0])
+    doc.add_decision(text)
+    doc.touch()
+    doc.save()
+    return Result("recorded a decision on {}".format(project.slug), (rel,))
+
+
+@verb("question", "add", needs_text=True, arity=(1, 1))
+def _question_add(root, positional, flags, text):
+    project, doc, rel = _project_and_doc(root, positional[0])
+    doc.add_question(text)
+    doc.touch()
+    doc.save()
+    return Result("added a question to {}".format(project.slug), (rel,))
+
+
+@verb("health", "set", arity=(2, 2))
+def _health_set(root, positional, flags, text):
+    value = positional[1]
+    if value not in HEALTHS:
+        raise VerbError(
+            "{!r} is not a health. One of: {}".format(value, ", ".join(HEALTHS))
+        )
+    project, doc, rel = _project_and_doc(root, positional[0])
+    doc.set_field("health", value)
+    doc.touch()
+    doc.save()
+    return Result("{} is now {}".format(project.slug, value), (rel,))
+
+
+@verb("field", "set", needs_text=True, arity=(2, 2))
+def _field_set(root, positional, flags, text):
+    key = positional[1]
+    if key in GUARDED_FIELDS:
+        raise VerbError(
+            "use `brain {} …` for {!r}: it validates the value".format(
+                GUARDED_FIELDS[key], key
+            )
+        )
+    entity = resolve(root, positional[0])
+    rel = Path(entity.path).relative_to(Path(root)).as_posix()
+    entity.doc.set_field(key, text)
+    entity.doc.touch()
+    entity.doc.save()
+    return Result("{} {} is now {}".format(entity.slug, key, text), (rel,))
 
 
 @verb("note", "add", needs_text=True, arity=(0, 1), allowed_flags=("tag",))
