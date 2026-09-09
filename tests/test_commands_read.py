@@ -116,6 +116,20 @@ def test_note_flag_twice_replaces_the_reason(brain_repo):
     assert "second reason" in text and "first reason" not in text
 
 
+def _content(note):
+    """A note's body without the blank line that separates it from the next.
+
+    `load_notes` keeps a body verbatim (R4.6.1), and §4.6 puts a blank line
+    between notes — so every note but the last reads back with a trailing "".
+    That is the file's punctuation, not the user's words, and a test about
+    content should not assert on it.
+    """
+    body = list(note.body)
+    while body and not body[-1].strip():
+        body.pop()
+    return body
+
+
 def test_note_drop_removes_only_that_note(brain_repo):
     """R4.6.4: processing deletes the note; git holds the history."""
     for n in ("one", "two", "three"):
@@ -123,8 +137,8 @@ def test_note_drop_removes_only_that_note(brain_repo):
     _run(brain_repo, "note drop n2")
     remaining = load_notes(brain_repo / "inbox.md")
     assert [n.id for n in remaining] == ["n1", "n3"]
-    assert remaining[0].body == ["body one"]
-    assert remaining[1].body == ["body three"]
+    assert _content(remaining[0]) == ["body one"]
+    assert _content(remaining[1]) == ["body three"]
 
 
 def test_note_drop_preserves_the_other_bodies_byte_for_byte(brain_repo):
