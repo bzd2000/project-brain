@@ -39,14 +39,22 @@ def test_json_output_is_valid_json(tmp_path, capsys):
     assert [n["id"] for n in payload] == ["n1"]
 
 
-def test_json_on_a_write_verb_is_refused(tmp_path, capsys):
-    """R6.1 puts `--json` on read verbs. A write verb's answer is one line;
-    accepting the flag and ignoring it would be the silent drop R6.4a forbids."""
+def test_json_on_a_write_verb_is_refused_before_it_writes(tmp_path, capsys):
+    """R6.1 puts `--json` on read verbs, and a write's answer is one line.
+
+    The refusal must arrive BEFORE the side effect. Asserting only the exit
+    code would pass while the note was captured and committed anyway - and a
+    script that retries on a non-zero exit would then capture it twice.
+    """
+    from brain import git as g
     from brain import root as r
 
     root = r.init(tmp_path / "b")
+    before = g.head(root)
     assert main(["--root", str(root), "--json", "note", "add", "note", "--", "x"]) != 0
     assert "--json" in capsys.readouterr().err
+    assert g.head(root) == before, "it committed before refusing"
+    assert (root / "inbox.md").read_text(encoding="utf-8") == "", "it wrote before refusing"
 
 
 def test_dash_f_reads_a_body_from_stdin_byte_for_byte(tmp_path, monkeypatch, capsys):

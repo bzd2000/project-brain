@@ -86,14 +86,23 @@ def main(argv=None) -> int:
                     "give a body with `-f -` or after ` -- `, not both"
                 )
             parsed = parsed._replace(text=read_stdin_text())
-        result = commands.execute(where, parsed, source="cli")
+
         if args.json:
-            if result.data is None:
+            # Before execute, not after. A refusal that arrives once the write
+            # has happened tells a caller the operation failed when it
+            # succeeded - and a script that retries on exit 1 captures the note
+            # twice. `find_verb` answers this without running anything.
+            positional, _ = grammar.split_flags(parsed.tokens)
+            found, _rest = commands.find_verb(positional)
+            if found.writes:
                 raise VerbError(
                     "--json is for read verbs; `{}` answers in one line".format(
-                        " ".join(args.rest[:2])
+                        " ".join(found.name)
                     )
                 )
+
+        result = commands.execute(where, parsed, source="cli")
+        if args.json:
             sys.stdout.write(json.dumps(result.data, indent=2) + "\n")
         elif result.message:
             sys.stdout.write(result.message + "\n")
