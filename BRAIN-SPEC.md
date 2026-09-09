@@ -129,6 +129,7 @@ under `projects/`, `stakeholders/`, `boards/`, `programs/` by hand.
 | `brain/commands.py` | The command verbs and their execution | stdlib |
 | `brain/index.py` | `_index.json`, digests, search index | stdlib |
 | `brain/git.py` | commit, checkpoint, diff, revert | stdlib |
+| `brain/lock.py` | the single-writer lock of R11.7 | stdlib |
 | `brain/cli.py` | argparse entry point — `brain …` | stdlib |
 | `brain/tui.py` | The terminal UI | **textual** |
 

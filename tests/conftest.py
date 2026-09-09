@@ -2,7 +2,10 @@
 made against every file in the tree, never just the file under test."""
 from __future__ import annotations
 
+import os
 import shutil
+import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -104,3 +107,66 @@ def broken_dir(tmp_path: Path) -> Path:
     dest = tmp_path / "broken"
     shutil.copytree(FIXTURES / "broken", dest)
     return dest
+
+
+def _git_init(root: Path) -> None:
+    """A repo with an identity, so commits do not depend on the host's config."""
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    for key, value in (("user.name", "Test"), ("user.email", "test@example.com")):
+        subprocess.run(["git", "-C", str(root), "config", key, value], check=True)
+
+
+@pytest.fixture
+def git_root(tmp_path: Path) -> Path:
+    """A real git repo holding a brain skeleton, with one commit."""
+    root = tmp_path / "brain"
+    shutil.copytree(FIXTURES / "brain", root)
+    (root / "_seq").write_text("9\n", encoding="utf-8")
+    (root / "unrelated.txt").write_text("not a brain file\n", encoding="utf-8")
+    _git_init(root)
+    # `add -- .` not `add -A`: the stub refuses -A, and relying on fixture
+    # resolution order to run this before the stub is installed is a trap.
+    subprocess.run(["git", "-C", str(root), "add", "--", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-q", "-m", "seed"], check=True
+    )
+    return root
+
+
+@pytest.fixture
+def stub_git(tmp_path: Path, monkeypatch) -> Path:
+    """Put the A10 stub ahead of the real git on PATH; yield its log file."""
+    real = shutil.which("git")
+    assert real, "these tests need a real git on PATH"
+    bindir = tmp_path / "stubbin"
+    bindir.mkdir()
+    if os.name == "nt":  # C5: Windows is the primary platform
+        target = bindir / "git.cmd"
+        target.write_text(
+            '@echo off\r\n"%BRAIN_STUB_PY%" "%~dp0stub_git.py" %*\r\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("BRAIN_STUB_PY", sys.executable)
+    else:
+        target = bindir / "git"
+        target.write_text(
+            "#!/bin/sh\nexec {} {} \"$@\"\n".format(
+                sys.executable, Path(__file__).parent / "stub_git.py"
+            ),
+            encoding="utf-8",
+        )
+        target.chmod(target.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    shutil.copy(Path(__file__).parent / "stub_git.py", bindir / "stub_git.py")
+
+    log = tmp_path / "git-invocations.log"
+    monkeypatch.setenv("BRAIN_REAL_GIT", real)
+    monkeypatch.setenv("BRAIN_GIT_LOG", str(log))
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
+    return log
+
+
+def git_calls(log: Path):
+    """Every git invocation the stub recorded, as a list of argv lists."""
+    if not log.exists():
+        return []
+    return [line.split("\x00") for line in log.read_text(encoding="utf-8").splitlines()]

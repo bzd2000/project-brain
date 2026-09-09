@@ -2,14 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Status: milestone 1 in progress
+## Status: milestone 2 done
 
 `brain/model.py` (the `Doc` class), `brain/entities.py` (the four entity types
-plus notes) and `brain/_yaml.py` (front-matter parsing) exist and are tested.
-Milestones 2–8 — `git.py`, `commands.py` + `cli.py`, `index.py`, `tui.py`,
-`AGENTS.md` + `process inbox`, agendas, and `tidy`/`review`/`rewrite` — are
-unbuilt. The repository also holds a decision-complete design and the screens
-to build against:
+plus notes), `brain/_yaml.py` (front-matter parsing), `brain/git.py` (commit,
+checkpoint/restore, undo, `log`/`diff`, the R11.4 guard) and `brain/lock.py`
+(the single-writer lock of R11.7) exist and are tested. Milestones 3–8 —
+`commands.py` + `cli.py`, `index.py`, `tui.py`, `AGENTS.md` + `process inbox`,
+agendas, and `tidy`/`review`/`rewrite` — are unbuilt. The repository also holds
+a decision-complete design and the screens to build against:
 
 - `BRAIN-SPEC.md` — requirements and solution design. Where a choice was made it
   is written as a requirement (`R<n>`), not an option. Read it end to end before
@@ -43,6 +44,12 @@ python -m pytest tests/test_stdlib_only.py -v        # the R3.3 seam
 root), `snapshot()` and `assert_only_changed()`. **Assert with
 `assert_only_changed` rather than reading the target file** — it diffs every
 file in the tree, which is what §12 step 1 and A4 require.
+
+The `git.py` tests need a real `git` on `PATH`. The `stub_git` fixture puts
+`tests/stub_git.py` ahead of it there, and it is the most valuable test asset
+in this milestone: it is the only thing that can catch `brain` reaching for an
+operation R11.4 forbids, and — because it delegates to the real git rather than
+mocking it — the tests still exercise real history.
 
 ## What is being built
 
@@ -112,6 +119,7 @@ Violating any of these silently breaks the design's economics or its trust model
 | `brain/commands.py` | The command verbs and their execution | stdlib |
 | `brain/index.py` | `_index.json`, digests, search index | stdlib |
 | `brain/git.py` | commit, checkpoint, diff, revert | stdlib |
+| `brain/lock.py` | the single-writer lock of R11.7 | stdlib |
 | `brain/cli.py` | argparse entry point | stdlib |
 | `brain/tui.py` | The terminal UI | `textual` |
 
@@ -144,9 +152,9 @@ or the nearest ancestor holding an `inbox.md` (R4.0).
 
 Each step is usable and testable before the next exists.
 
-1. `model.py` + `entities.py` — `Doc`, four entity types, tolerant loading (A4, A13)
+1. `model.py` + `entities.py` — `Doc`, four entity types, tolerant loading (A4, A13) — **done**
 2. `git.py` — commit, checkpoint, undo, the `.brain.lock` of R11.7. It comes
-   second because R11.1a makes git a precondition of every write
+   second because R11.1a makes git a precondition of every write — **done**
 3. `commands.py` + `cli.py` — every verb, the R6.4 grammar, resolution, `apply`,
    `--dry-run`; no UI
 4. `index.py` — `_index.json`, roll-ups, `brain context`, `brain search`
