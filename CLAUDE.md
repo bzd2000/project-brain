@@ -2,10 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Status: spec-only
+## Status: milestone 1 in progress
 
-There is no code yet. The repository holds a decision-complete design and the
-screens to build against:
+`brain/model.py` (the `Doc` class), `brain/entities.py` (the four entity types
+plus notes) and `brain/_yaml.py` (front-matter parsing) exist and are tested.
+Milestones 2–8 — `git.py`, `commands.py` + `cli.py`, `index.py`, `tui.py`,
+`AGENTS.md` + `process inbox`, agendas, and `tidy`/`review`/`rewrite` — are
+unbuilt. The repository also holds a decision-complete design and the screens
+to build against:
 
 - `BRAIN-SPEC.md` — requirements and solution design. Where a choice was made it
   is written as a requirement (`R<n>`), not an option. Read it end to end before
@@ -25,9 +29,20 @@ screens to build against:
 Requirement IDs (`R3.1`, `A7`, `C2`, …) are the vocabulary of this project. Cite
 them in commit messages, tests and code comments.
 
-Nothing here has been built, so there are no build, lint or test commands yet.
-When milestone 1 starts, establish them (`pytest`, stdlib-only for everything
-below `brain/tui.py`) and record them in this file.
+## Commands
+
+```bash
+pip install -e ".[yaml,dev]"     # PyYAML and pytest, both pinned (C1)
+python -m pytest                 # everything
+python -m pytest tests/test_doc_tasks.py -v          # one file
+python -m pytest tests/test_doc_tasks.py::test_toggle_task_changes_exactly_one_line -v
+python -m pytest tests/test_stdlib_only.py -v        # the R3.3 seam
+```
+
+`tests/conftest.py` provides `brain_tree` (a writable copy of the fixture
+root), `snapshot()` and `assert_only_changed()`. **Assert with
+`assert_only_changed` rather than reading the target file** — it diffs every
+file in the tree, which is what §12 step 1 and A4 require.
 
 ## What is being built
 

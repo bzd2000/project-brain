@@ -1,0 +1,4 @@
+# R5.4: never normalise line endings. tests/fixtures/broken/crlf.md exists to
+# prove R5.2 (save preserves the file's original endings) and core.autocrlf
+# would silently rewrite it on a Windows checkout - the C5 primary platform.
+*.md -text

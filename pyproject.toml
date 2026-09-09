@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brain"
+version = "0.1.0"
+description = "A markdown knowledge base for projects, people and the bodies you discuss them with"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+# C1: vetted and pinned exactly. textual is added at milestone 5, not before.
+yaml = ["PyYAML==6.0.2"]
+dev = ["pytest==8.3.3"]
+
+[tool.setuptools.packages.find]
+include = ["brain*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# Put the repo root on sys.path so `import brain` works before the package is
+# installed. pytest only inserts tests/ on its own, which is not enough.
+pythonpath = ["."]

@@ -93,6 +93,9 @@ include = ["brain*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Put the repo root on sys.path so `import brain` works before the package is
+# installed. pytest only inserts tests/ on its own, which is not enough.
+pythonpath = ["."]
 ```
 
 `.gitignore`:
@@ -357,6 +360,29 @@ def test_assert_only_changed_passes_for_the_declared_line(brain_tree):
     assert_only_changed(before, after, {"projects/acme-migration.md": {3}})
 
 
+def test_assert_only_changed_catches_a_distant_edit_behind_a_length_change(brain_tree):
+    """The hole this bound exists to close: an append that is correct in itself
+    but also rewrites an unrelated line must not pass (R5.1)."""
+    before = snapshot(brain_tree)
+    path = brain_tree / "projects" / "acme-migration.md"
+    lines = path.read_text(encoding="utf-8").split("\n")
+    lines[3] = "status: paused"                       # unrelated, far away
+    lines.insert(len(lines) - 1, "- 2026-09-08 - appended")
+    path.write_text("\n".join(lines), encoding="utf-8")
+    after = snapshot(brain_tree)
+    with pytest.raises(AssertionError):
+        assert_only_changed(before, after, {"projects/acme-migration.md": set()})
+
+
+def test_assert_only_changed_allows_a_clean_append(brain_tree):
+    before = snapshot(brain_tree)
+    path = brain_tree / "projects" / "acme-migration.md"
+    lines = path.read_text(encoding="utf-8").split("\n")
+    lines.insert(len(lines) - 1, "- 2026-09-08 - appended")
+    path.write_text("\n".join(lines), encoding="utf-8")
+    assert_only_changed(before, snapshot(brain_tree), {"projects/acme-migration.md": set()})
+
+
 def test_assert_only_changed_fails_for_an_undeclared_file(brain_tree):
     before = snapshot(brain_tree)
     (brain_tree / "inbox.md").write_text("clobbered\n", encoding="utf-8")
@@ -405,13 +431,18 @@ def snapshot(root: Path) -> dict:
     return out
 
 
-def assert_only_changed(before: dict, after: dict, expected: dict) -> None:
+def assert_only_changed(before: dict, after: dict, expected: dict,
+                        max_region: int = 6) -> None:
     """Fail unless the tree differs from `before` exactly as `expected` allows.
 
     `expected` maps a tree-relative path to the set of 0-based line indices
     permitted to differ. A file absent from `expected` must be byte-identical.
-    Added or removed lines are reported as a length change, which is a failure
-    unless the path appears in `expected`.
+
+    When a declared file changes length an index set cannot describe the edit,
+    so the check becomes: everything outside a single contiguous region must be
+    identical, and that region may span at most `max_region` lines. Without
+    that bound an append that also rewrote a distant line would pass unnoticed,
+    which is exactly the failure R5.1 exists to prevent.
     """
     assert set(before) == set(after), (
         "files were added or removed: "
@@ -430,13 +461,29 @@ def assert_only_changed(before: dict, after: dict, expected: dict) -> None:
         if allowed is None:
             problems.append(f"{path}: changed but was not expected to")
             continue
-        if len(old) != len(new):
-            continue  # a declared file may legitimately gain or lose lines
-        differing = {i for i, (a, b) in enumerate(zip(old, new)) if a != b}
-        unexpected = differing - allowed
-        if unexpected:
-            for i in sorted(unexpected):
+        if len(old) == len(new):
+            differing = {i for i, (a, b) in enumerate(zip(old, new)) if a != b}
+            for i in sorted(differing - allowed):
                 problems.append(f"{path}:{i}: changed unexpectedly\n  - {old[i]!r}\n  + {new[i]!r}")
+            continue
+        # The length changed, so bound the edit to one small contiguous region:
+        # everything before `prefix` and after `suffix` is identical already.
+        shorter = min(len(old), len(new))
+        prefix = 0
+        while prefix < shorter and old[prefix] == new[prefix]:
+            prefix += 1
+        suffix = 0
+        while (suffix < shorter - prefix
+               and old[len(old) - 1 - suffix] == new[len(new) - 1 - suffix]):
+            suffix += 1
+        removed = len(old) - prefix - suffix
+        added = len(new) - prefix - suffix
+        if max(removed, added) > max_region:
+            problems.append(
+                f"{path}: edit spans lines {prefix}..{len(new) - suffix} "
+                f"({removed} removed, {added} added, limit {max_region}) "
+                "- not a surgical edit"
+            )
     assert not problems, "surgical edit violated:\n" + "\n".join(problems)
 
 
@@ -653,10 +700,25 @@ Expected: 7 passed.
 The fallback is the branch that must survive PyYAML being withdrawn (R3.4), so exercise it explicitly. Add to `tests/test_yaml.py`:
 
 ```python
+import pytest
+
 import brain._yaml as _y
 
+NEEDS_PYYAML = pytest.mark.skipif(
+    not _y.HAVE_PYYAML,
+    reason="PyYAML absent: there is nothing to compare the fallback against",
+)
 
+
+@NEEDS_PYYAML
 def test_subset_parser_matches_pyyaml_on_the_fixtures(monkeypatch):
+    """R3.4: the two paths must agree.
+
+    The skipif is load-bearing. `reference` is computed before the monkeypatch,
+    under the ambient HAVE_PYYAML — so without the marker this test silently
+    degrades to comparing the fallback against itself and still reports a pass.
+    A PyYAML-less run must show as a skip, not as green.
+    """
     lines = [
         "project: Acme - Azure migration",
         "status: active",
@@ -669,10 +731,29 @@ def test_subset_parser_matches_pyyaml_on_the_fixtures(monkeypatch):
     fallback, problems = parse_front_matter(lines)
     assert problems == []
     assert fallback == reference
+
+
+@NEEDS_PYYAML
+def test_pyyaml_path_normalises_dates_and_scalars():
+    """The exact divergence R3.4 exists to prevent: safe_load returns
+    datetime.date for `due:`, and int/bool for the other scalars."""
+    fields, problems = parse_front_matter(["due: 2026-10-15", "count: 3", "active: true"])
+    assert problems == []
+    assert fields == {"due": "2026-10-15", "count": "3", "active": "true"}
+
+
+def test_fallback_path_normalises_identically(monkeypatch):
+    """Always runs, PyYAML present or not, and asserts the same dict as above."""
+    monkeypatch.setattr(_y, "HAVE_PYYAML", False)
+    fields, problems = parse_front_matter(["due: 2026-10-15", "count: 3", "active: true"])
+    assert problems == []
+    assert fields == {"due": "2026-10-15", "count": "3", "active": "true"}
 ```
 
 Run: `python -m pytest tests/test_yaml.py -v`
-Expected: 8 passed. If PyYAML is not installed in the environment, this test compares the fallback with itself and still passes — install the extra with `pip install -e ".[yaml,dev]"` to make it meaningful.
+Expected: 10 passed with PyYAML installed. Without it, 8 passed and 2 skipped —
+and the skip is the point: a run that cannot prove the two paths agree must say
+so rather than report green. Install the extra with `pip install -e ".[yaml,dev]"`.
 
 - [ ] **Step 6: Commit**
 
@@ -1073,6 +1154,8 @@ inside them, and a file without a trailing newline does not gain one."
 `tests/test_doc_mutate.py`:
 
 ```python
+import pytest
+
 from conftest import snapshot, assert_only_changed
 from brain.model import Doc
 
@@ -1118,6 +1201,22 @@ def test_set_field_creates_front_matter_when_absent(broken_dir):
     assert "Summary" in reloaded.sections
 
 
+def test_set_field_refuses_on_unterminated_front_matter(tmp_path):
+    """R6.2/R10.11: a write that cannot be made unambiguously is refused, not
+    guessed. `fm_range` is None both when there is no front matter and when the
+    block is unterminated; conflating them fabricates a second block and
+    silently corrupts the file."""
+    path = tmp_path / "unterminated.md"
+    path.write_text(
+        "---\nproject: Foo\nstatus: active\n\n## Log\n- entry\n", encoding="utf-8"
+    )
+    doc = Doc(path)                                  # loading is still tolerant
+    assert any("not closed" in p for p in doc.problems)
+    with pytest.raises(ValueError):
+        doc.set_field("status", "paused")
+    assert doc.lines.count("---") == 1, "a second front-matter block was fabricated"
+
+
 def test_touch_sets_updated(brain_tree):
     path = brain_tree / "projects" / "acme-migration.md"
     doc = Doc(path)
@@ -1144,9 +1243,22 @@ Add to `class Doc`:
 ```python
     # -- front-matter mutation --------------------------------------------
     def _ensure_front_matter(self) -> None:
-        """Create an empty front-matter block if the file has none."""
+        """Create an empty front-matter block if the file has none.
+
+        A file whose front matter is *opened but never closed* is refused
+        rather than repaired: where such a block ends is unknowable, so any
+        repair either swallows the body or fabricates a second block. R6.2
+        makes ambiguity an error and never a guess, and R10.11 rejects a write
+        that would break the format rather than writing it. Loading the same
+        file still never raises (R4.2.4) - only writing to it does.
+        """
         if self.fm_range is not None:
             return
+        if self.lines and self.lines[0].strip() == "---":
+            raise ValueError(
+                "{}: front matter is opened but never closed; refusing to "
+                "write. Close the block or remove the opening marker.".format(self.path)
+            )
         self.lines[0:0] = ["---", "---", ""]
         self.reindex()
 
@@ -1225,12 +1337,25 @@ def test_add_bullet_newest_first_inserts_at_the_top(brain_tree):
     assert_only_changed(before, after, {"projects/acme-migration.md": set()})
 
 
-def test_add_bullet_appends_when_not_newest_first(brain_tree):
+def test_add_bullet_appends_after_the_last_bullet_not_after_the_blank(brain_tree):
+    """The append lands flush after the last existing bullet, and the blank line
+    separating the section from the next header survives.
+
+    Asserting on `section_lines(...)[-1]` would be wrong: that is the separator
+    blank, so the assertion would pass precisely when the bullet had been
+    inserted AFTER it - leaving a gap mid-list and no blank before the next
+    `## ` header. Pin the whole body instead.
+    """
     path = brain_tree / "projects" / "acme-migration.md"
     doc = Doc(path)
     doc.add_bullet("Next actions", "- [ ] Book the change window", newest_first=False)
     doc.save()
-    assert Doc(path).section_lines("Next actions")[-1] == "- [ ] Book the change window"
+    assert Doc(path).section_lines("Next actions") == [
+        "- [ ] Confirm the DNS cutover window with Sara  @sara  due:2026-09-11",
+        "- [x] Migrate the reporting service",
+        "- [ ] Book the change window",
+        "",
+    ]
 
 
 def test_add_bullet_into_an_empty_section(brain_tree):
@@ -1425,7 +1550,7 @@ untouched."
 
 ```python
 from conftest import snapshot, assert_only_changed
-from brain.model import Doc, render_action
+from brain.model import Doc, parse_action, render_action
 
 
 def test_render_action_matches_the_spec_form(brain_tree):
@@ -1501,13 +1626,59 @@ def test_add_log_and_add_decision_are_newest_first(brain_tree):
 
 
 def test_add_question_appends(brain_tree):
+    """Pins the whole body for the same reason as the add_bullet append test:
+    `[-1]` is the separator blank, so that assertion would pass only if the
+    question had been inserted after it."""
     path = brain_tree / "projects" / "acme-migration.md"
     doc = Doc(path)
     doc.add_question("Who signs off the rollback plan?")
     doc.save()
-    assert Doc(path).section_lines("Open questions")[-1] == (
-        "- Who signs off the rollback plan?"
+    assert Doc(path).section_lines("Open questions") == [
+        "- Who owns the legacy VPN after cutover?",
+        "- Who signs off the rollback plan?",
+        "",
+    ]
+
+
+def test_metadata_stripping_does_not_eat_repeated_text(brain_tree):
+    """A description may legitimately repeat the exact `  @owner` substring.
+    Removing every copy rather than the matched span deletes the user's words,
+    and edit_task/toggle_task would then write that truncation back to disk."""
+    doc = Doc(brain_tree / "projects" / "acme-migration.md")
+    line = "- [ ] Email  @sara about  @sara  due:2026-09-11"
+    task = parse_action(0, line)
+    assert task.text == "Email  @sara about"
+    assert task.owner == "sara"
+    assert task.due == "2026-09-11"
+    # and the line survives a round trip unchanged
+    assert render_action(task.text, task.owner, task.due, done=task.done) == line
+
+
+def test_toggle_preserves_an_indented_checkbox(tmp_path):
+    """render_action must re-emit the indent the TASK regex captured, or a
+    toggle silently flattens a nested item - a structural change disguised as
+    the one-line edit R10.10 promises."""
+    path = tmp_path / "p.md"
+    path.write_text(
+        "## Next actions\n- [ ] top level\n  - [ ] nested sub task\n", encoding="utf-8"
     )
+    doc = Doc(path)
+    nested = doc.tasks()[1]
+    assert nested.indent == "  "
+    doc.toggle_task(nested.lineno)
+    assert doc.lines[nested.lineno] == "  - [x] nested sub task"
+
+
+def test_edit_task_preserves_the_users_checkbox_character(tmp_path):
+    """`- [X]` is the user's own text. Editing the description must not
+    normalise the mark; only toggling deliberately changes it."""
+    path = tmp_path / "p.md"
+    path.write_text("## Next actions\n- [X] shouty done marker\n", encoding="utf-8")
+    doc = Doc(path)
+    task = doc.tasks()[0]
+    assert task.done is True and task.mark == "X"
+    doc.edit_task(task.lineno, "sharpened text")
+    assert doc.lines[task.lineno] == "- [X] sharpened text"
 
 
 def test_stray_checkbox_outside_next_actions_is_not_a_task(brain_tree):
@@ -1542,11 +1713,22 @@ class Task(NamedTuple):
     text: str
     owner: Optional[str]
     due: Optional[str]
+    indent: str = ""
+    mark: str = " "
 
 
-def render_action(text: str, owner=None, due=None, done: bool = False) -> str:
-    """R4.2.2. No inline metadata other than @owner and due: is emitted."""
-    line = "- [{}] {}".format("x" if done else " ", text)
+def render_action(text: str, owner=None, due=None, done: bool = False,
+                  indent: str = "", mark=None) -> str:
+    """R4.2.2. No inline metadata other than @owner and due: is emitted.
+
+    `indent` round-trips a nested checkbox instead of flattening it, and `mark`
+    lets a caller keep the user's own checkbox character. Both exist so that
+    editing a line's description does not quietly restructure it (R10.10): a
+    one-line edit must change the description and nothing else.
+    """
+    if mark is None:
+        mark = "x" if done else " "
+    line = "{}- [{}] {}".format(indent, mark, text)
     if owner:
         line += "  @{}".format(owner)
     if due:
@@ -1562,16 +1744,21 @@ def parse_action(lineno: int, line: str):
     rest = match.group("rest")
     owner = OWNER.search(rest)
     due = DUE.search(rest)
+    # Remove the matched SPANS, not every copy of their text. A description may
+    # legitimately repeat "  @sara" or contain "  due:2026-01-01" as prose, and
+    # str.replace would delete the user's words along with the metadata.
     text = rest
-    for found in (owner, due):
-        if found:
-            text = text.replace(found.group(0), "")
+    found = [m for m in (owner, due) if m]
+    for m in sorted(found, key=lambda m: m.start(), reverse=True):
+        text = text[:m.start()] + text[m.end():]
     return Task(
         lineno=lineno,
         done=match.group("mark").lower() == "x",
         text=text.strip(),
         owner=owner.group("owner") if owner else None,
         due=due.group("due") if due else None,
+        indent=match.group("indent"),
+        mark=match.group("mark"),
     )
 ```
 
@@ -1614,7 +1801,7 @@ Add to `class Doc`:
         if task is None:
             raise ValueError("line {} of {} is not a task".format(lineno, self.path))
         self.lines[lineno] = render_action(
-            task.text, task.owner, task.due, done=not task.done
+            task.text, task.owner, task.due, done=not task.done, indent=task.indent
         )
         return lineno
 
@@ -1627,7 +1814,9 @@ Add to `class Doc`:
         task = parse_action(lineno, self.lines[lineno])
         if task is None:
             raise ValueError("line {} of {} is not a task".format(lineno, self.path))
-        self.lines[lineno] = render_action(text, task.owner, task.due, done=task.done)
+        self.lines[lineno] = render_action(
+            text, task.owner, task.due, indent=task.indent, mark=task.mark
+        )
         return lineno
 ```
 
@@ -1791,6 +1980,47 @@ def test_scribbled_inbox_survives(tmp_path):
     assert notes[1].id == "n3"
 
 
+def test_note_body_containing_a_fenced_heading_is_not_split(tmp_path):
+    """R4.6.1: nothing may drop a body line. Splitting on `## ` without fence
+    awareness promotes a heading inside a code fence to a note header, so that
+    line disappears from every body."""
+    path = tmp_path / "inbox.md"
+    path.write_text(
+        "## n1 \u00b7 2026-09-07 09:00 \u00b7 note \u00b7\n"
+        "here is some markdown\n"
+        "```\n"
+        "## this is inside a fence\n"
+        "```\n"
+        "trailing line\n",
+        encoding="utf-8",
+    )
+    notes = load_notes(path)
+    assert len(notes) == 1
+    assert notes[0].body == [
+        "here is some markdown",
+        "```",
+        "## this is inside a fence",
+        "```",
+        "trailing line",
+    ]
+
+
+def test_missing_status_is_flagged_for_check(tmp_path):
+    """R4.2.4: a file that reports `unknown` must also be flagged, or
+    `brain check` has nothing to surface."""
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    path = projects / "sparse.md"
+    path.write_text(
+        "---\nproject: Sparse\n---\n\n## Summary\n\n## Next actions\n\n"
+        "## Open questions\n\n## Decisions\n\n## Log\n",
+        encoding="utf-8",
+    )
+    project = Project(path)
+    assert project.status == "unknown"
+    assert any("status" in p for p in project.problems)
+
+
 def test_empty_inbox_yields_no_notes(tmp_path):
     path = tmp_path / "inbox.md"
     path.write_text("", encoding="utf-8")
@@ -1853,6 +2083,7 @@ from typing import List, NamedTuple, Optional
 
 from .model import (
     BOARD_SECTIONS,
+    FENCE,
     PROGRAM_SECTIONS,
     PROJECT_SECTIONS,
     STAKEHOLDER_SECTIONS,
@@ -1893,6 +2124,17 @@ class Entity:
     def _read(self) -> None:
         pass
 
+    def _flag_unknown(self, field: str, raw) -> None:
+        """R4.2.4: a value that reports `unknown` must also be flagged.
+
+        Reporting `unknown` and recording nothing would leave `brain check` with
+        nothing to surface, which is the half of R4.2.4 that makes tolerance
+        safe rather than merely quiet.
+        """
+        self.problems.append("{}: {}".format(
+            field, "missing" if raw in (None, "") else "unrecognised {!r}".format(raw)
+        ))
+
     @property
     def fm(self):
         return self.doc.fm
@@ -1925,6 +2167,11 @@ class Project(Entity):
 
     def _read(self):
         self.status = _one_of(self.fm.get("status"), STATUSES)
+        if self.status == UNKNOWN:
+            self._flag_unknown("status", self.fm.get("status"))
+        # `health` is deliberately NOT flagged when absent: a project at `idea`
+        # has nothing to rate yet, so flagging it would make `brain check` noisy
+        # about files that are fine. `status` is always meaningful.
         self.health = _one_of(self.fm.get("health"), HEALTHS)
         self.program = self.fm.get("program")
         self.due = self.fm.get("due")
@@ -1940,6 +2187,8 @@ class Program(Entity):
 
     def _read(self):
         self.status = _one_of(self.fm.get("status"), STATUSES)
+        if self.status == UNKNOWN:
+            self._flag_unknown("status", self.fm.get("status"))
 
 
 class Party(Entity):
@@ -2039,7 +2288,17 @@ def load_notes(path):
         text = text[:-1]
     lines = text.split("\n") if text else []
 
-    starts = [i for i, line in enumerate(lines) if line.startswith("## ")]
+    # Fence-aware: a `## ` inside a code fence is body text, not a new note.
+    # Splitting there would promote that line to a header and drop it from every
+    # body, which R4.6.1 forbids absolutely.
+    starts = []
+    in_fence = False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(FENCE):
+            in_fence = not in_fence
+            continue
+        if not in_fence and line.startswith("## "):
+            starts.append(i)
     notes = []
     for n, start in enumerate(starts):
         end = starts[n + 1] if n + 1 < len(starts) else len(lines)
