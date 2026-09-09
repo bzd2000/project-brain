@@ -293,7 +293,28 @@ Then print the result:
 
 Add `import json` and `from .errors import BrainError, VerbError` at the top.
 
-- [ ] **Step 5: Add `note list` so the read path has a verb**
+- [ ] **Step 5: Update 3a's tests for the new return type**
+
+`tests/test_commands.py` was written when `execute` returned a string:
+
+```python
+    out = _run(brain_repo, "log acme-migration -- Codes published at last")
+    assert "acme-migration" in out
+```
+
+`in` on a `Result` tests membership across its fields, not substring — it would
+now silently be `False`. Change that pair to:
+
+```python
+    result = _run(brain_repo, "log acme-migration -- Codes published at last")
+    assert "acme-migration" in result.message
+```
+
+Then grep the file for any other use of a verb's return value and give it
+`.message`. This is the only assertion shape that changes; the rest of 3a's
+tests assert on files and git.
+
+- [ ] **Step 6: Add `note list` so the read path has a verb**
 
 ```python
 @verb("note", "list", writes=False, allowed_flags=("type",))
@@ -318,17 +339,17 @@ def _note_list(root, positional, flags, text):
     )
 ```
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [ ] **Step 7: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_commands_read.py tests/test_commands.py -v`
 Expected: the six new tests pass and 3a's eleven still pass.
 
-- [ ] **Step 7: Run the whole suite**
+- [ ] **Step 8: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
 Expected: 234 passed (228 plus 6).
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add brain/commands.py brain/cli.py tests/conftest.py tests/test_commands.py tests/test_commands_read.py
@@ -976,11 +997,11 @@ def test_undo_with_nothing_to_undo_says_so(brain_repo):
 
 def test_check_authored_reports_a_hand_edit(brain_repo):
     """R3.2: a violation is visible rather than silent."""
-    clean = _run(brain_repo, "check --authored")
+    clean = _run(brain_repo, "check")
     assert clean.data == []
     path = brain_repo / "projects" / "q4-budget.md"
     path.write_text(path.read_text(encoding="utf-8") + "- by hand\n", encoding="utf-8")
-    flagged = _run(brain_repo, "check --authored")
+    flagged = _run(brain_repo, "check")
     assert "projects/q4-budget.md" in flagged.data
 ```
 
@@ -1159,16 +1180,41 @@ def _check(root, positional, flags, text):
     )
 ```
 
-`check` takes `--authored` as a bare flag, which `split_flags` treats as
-needing a value. Handle it in `cli.py` by translating a bare `--authored`
-into no flag at all before the line is built:
+**`check` takes no flags in 3b, and `--authored` is a CLI-level alias.** The
+grammar has no bare flags — `split_flags` requires every `--name` to take a
+value, which is what stops `--owner --due 2026-09-11` silently swallowing the
+date. So `check --authored` cannot reach a verb through `parse_line` at all.
+
+`check` has exactly one mode until `--fix` arrives in milestone 8, so rather
+than inventing bare-flag support for a single call site, `cli.py` drops the
+word before the line is built. In `main`, immediately before `_line_from_argv`:
 
 ```python
+    # `check` has one mode in 3b, so `--authored` is a spelling of it rather
+    # than a flag. Bare flags do not exist in the grammar (R6.0), and inventing
+    # them for one call site would weaken the rule that catches
+    # `--owner --due <date>`. Milestone 8's `--fix` is a second mode and will
+    # need a real answer.
     rest = [a for a in args.rest if a != "--authored"]
 ```
 
-placed immediately before `_line_from_argv`, with a comment noting that
-`check` has only one mode in 3b and `--fix` arrives in milestone 8.
+and use `rest` in the `_line_from_argv` call.
+
+**Tests call `check` without the flag**, since they drive `execute` directly and
+never pass through `cli.py`. One CLI-level test covers the alias:
+
+```python
+def test_check_authored_is_accepted_from_the_command_line(tmp_path, capsys):
+    """The word is a CLI alias for check's only mode; the grammar never sees
+    it, because bare flags do not exist (R6.0)."""
+    from brain import root as r
+
+    root = r.init(tmp_path / "b")
+    assert main(["--root", str(root), "check", "--authored"]) == 0
+    assert main(["--root", str(root), "check"]) == 0
+```
+
+Put it in `tests/test_commands_entities.py`, importing `main` from `brain.cli`.
 
 Add the imports these need: `date` from `datetime` (already there),
 `normalise` from `.resolve`, `parse_action` from `.model`, and the four
@@ -1177,7 +1223,7 @@ Add the imports these need: `date` from `datetime` (already there),
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_commands_entities.py -v`
-Expected: 16 passed.
+Expected: 17 passed.
 
 - [ ] **Step 5: Update `CLAUDE.md`**
 
@@ -1190,7 +1236,7 @@ short session showing `new`, `action add`, `action done`, `raise` and
 - [ ] **Step 6: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 271 passed.
+Expected: 272 passed.
 
 - [ ] **Step 7: Commit**
 
@@ -1215,7 +1261,7 @@ brain, which is what R3.2 asks for and what makes the rule enforceable."
 ## Milestone 3b done — stop here
 
 ```bash
-.venv/bin/python -m pytest -q          # 271 passed
+.venv/bin/python -m pytest -q          # 272 passed
 brain --root /tmp/demo new project -- Something new
 brain --root /tmp/demo check --authored
 ```
