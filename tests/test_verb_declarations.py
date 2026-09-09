@@ -104,3 +104,127 @@ def test_a_verb_that_resolves_positional_zero_declares_it(name):
             " ".join(name), resolves_positional_zero, verb.ref_kinds
         )
     )
+
+
+# --- Declaration CONTENT, not just presence (task 3 resolution 2) ---------
+#
+# The tests above prove a verb that resolves positional[0] HAS a ref_kinds,
+# and EXPECTED_REF_KINDS above proves the table's values are what the docs
+# say - but the table and the decorator could be wrong in the same way, and
+# nothing catches that. It matters now that `validate_batch` (R6.5.1) trusts
+# `ref_kinds`/`flag_refs` to resolve references without running the verb: a
+# decorator saying `("program",)` where the body resolves `kinds=("project",)`
+# would make `validate_batch` accept a reference the verb then refuses at
+# write time - `--dry-run` would report a batch as fine and the real run
+# would fail. These tests read the LITERAL `kinds=` a verb's own source
+# passes to `resolve` (or, via `_project_and_doc`, the fixed kinds that
+# helper passes on its behalf) and check it against the decorator - ground
+# truth from the body, not from the hand-written table.
+
+
+def _unparsed_resolve_calls(func):
+    """`(ref_expr, kinds)` for every literal `resolve(...)` call in `func`'s
+    source. `ref_expr` is the unparsed source of the reference argument
+    (`"positional[0]"`, `"ref"`, `"flags['program']"`, ...); `kinds` is the
+    literal tuple of strings passed as `kinds=`, or `()` when the call has no
+    `kinds=` at all - the same "any kind" meaning `ref_kinds=()` declares.
+    """
+    tree = ast.parse(inspect.getsource(func).lstrip())
+    calls = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and getattr(node.func, "id", None) == "resolve"):
+            continue
+        ref_expr = ast.unparse(node.args[1])
+        kinds = ()
+        for kw in node.keywords:
+            if kw.arg == "kinds" and isinstance(kw.value, ast.Tuple):
+                kinds = tuple(elt.value for elt in kw.value.elts)
+        calls.append((ref_expr, kinds))
+    return calls
+
+
+def _positional_zero_aliases(func):
+    """Local names assigned exactly `positional[0]` - bare, or one element of
+    a tuple-unpack assignment - inside `func`.
+
+    `_status_set` and `_health_set` write `ref, value = positional[0],
+    positional[1]` before calling `resolve`, so the call site spells `ref`,
+    not `positional[0]` - this traces that alias back to its source.
+    """
+    tree = ast.parse(inspect.getsource(func).lstrip())
+    names = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
+            continue
+        target, value = node.targets[0], node.value
+        if isinstance(target, ast.Tuple) and isinstance(value, ast.Tuple):
+            pairs = zip(target.elts, value.elts)
+        else:
+            pairs = [(target, value)]
+        for one_target, one_value in pairs:
+            if (isinstance(one_target, ast.Name)
+                    and ast.unparse(one_value) == "positional[0]"):
+                names.add(one_target.id)
+    return names
+
+
+def _calls_project_and_doc(func):
+    tree = ast.parse(inspect.getsource(func).lstrip())
+    return any(
+        isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "_project_and_doc"
+        for node in ast.walk(tree)
+    )
+
+
+# `_project_and_doc`'s own `kinds=("project",)` - every verb that delegates to
+# it inherits this without repeating it at the call site, so it is read once
+# here, from the same kind of literal `resolve()` call the per-verb tests
+# below read directly.
+_PROJECT_AND_DOC_KINDS = next(
+    kinds for ref, kinds in _unparsed_resolve_calls(c._project_and_doc)
+    if ref == "ref"
+)
+
+
+@pytest.mark.parametrize(
+    "name", sorted(n for n, v in c.VERBS.items() if v.ref_kinds is not None)
+)
+def test_declared_ref_kinds_matches_the_resolve_call_in_the_body(name):
+    verb = c.VERBS[name]
+    run = verb.run
+    aliases = _positional_zero_aliases(run) | {"positional[0]"}
+
+    found = None
+    if _calls_project_and_doc(run):
+        found = _PROJECT_AND_DOC_KINDS
+    for ref_expr, kinds in _unparsed_resolve_calls(run):
+        if ref_expr in aliases:
+            assert found in (None, kinds), (
+                "{}: body resolves positional[0] with two different kinds "
+                "({} and {})".format(" ".join(name), found, kinds)
+            )
+            found = kinds
+
+    assert found == verb.ref_kinds, (
+        "{}: body resolves positional[0] with kinds={!r}, decorator declares "
+        "ref_kinds={!r}".format(" ".join(name), found, verb.ref_kinds)
+    )
+
+
+@pytest.mark.parametrize(
+    "name", sorted(n for n, v in c.VERBS.items() if v.flag_refs)
+)
+def test_declared_flag_refs_matches_the_resolve_calls_in_the_body(name):
+    verb = c.VERBS[name]
+    found = {}
+    for ref_expr, kinds in _unparsed_resolve_calls(verb.run):
+        if ref_expr.startswith("flags[") and ref_expr.endswith("]"):
+            flag_name = ast.literal_eval(ref_expr[len("flags["):-1])
+            found[flag_name] = kinds
+
+    assert found == verb.flag_refs, (
+        "{}: body resolves flags with kinds={!r}, decorator declares "
+        "flag_refs={!r}".format(" ".join(name), found, verb.flag_refs)
+    )

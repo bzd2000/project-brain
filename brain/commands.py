@@ -13,9 +13,9 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
-from . import git, lock
+from . import git, grammar, lock
 from .entities import HEALTHS, NOTE_TYPES, STATUSES, load_notes
-from .errors import GrammarError, UnknownReference, VerbError
+from .errors import AmbiguousReference, GrammarError, UnknownReference, VerbError
 from .grammar import split_flags
 from .model import (
     BOARD_SECTIONS,
@@ -744,3 +744,177 @@ def execute(root, parsed, source: str = "cli") -> Result:
             git.restore(root, checkpoint)
             raise
     return result
+
+
+class BatchError(VerbError):
+    """A batch line that is wrong, named by its line number (R6.5)."""
+
+    def __init__(self, lineno: int, line: str, problem: str):
+        self.lineno = lineno
+        self.line = line
+        super().__init__("line {}: {}\n  {}".format(lineno, problem, line))
+
+
+def _numbered_lines(text: str):
+    """`text` split on "\\n", each paired with its 1-based line number."""
+    for offset, line in enumerate(text.split("\n")):
+        yield offset + 1, line
+
+
+def parse_batch(text: str) -> List[Tuple[int, "grammar.ParsedLine"]]:
+    """One entry per meaningful line, with its 1-based number in `text`.
+
+    A line `grammar.parse_line` refuses (R6.4) raises `GrammarError` here too
+    - unnumbered, same as calling `parse_line` directly. `validate_batch`
+    below is what attaches a line number to that failure (via `BatchError`);
+    this function's own contract is only the numbering of the lines that DO
+    parse.
+    """
+    out = []
+    for lineno, line in _numbered_lines(text):
+        parsed = grammar.parse_line(line)
+        if parsed is not None:
+            out.append((lineno, parsed))
+    return out
+
+
+def _reference_sites(plan: "Plan"):
+    """Where `plan` names an entity, as `(ref, kinds)` pairs - what a batch
+    must resolve before writing any of it (R6.5.1)."""
+    if plan.verb.ref_kinds is not None:
+        yield plan.positional[0], plan.verb.ref_kinds
+    for name, kinds in (plan.verb.flag_refs or {}).items():
+        if name in plan.flags:
+            yield plan.flags[name], kinds
+
+
+def _projected_slug(plan: "Plan"):
+    """The `(slug, kind)` a `new` line will create, or `None` if this line is
+    not a `new`, or its text has no slug in it (an empty-slug `new` is left
+    to fail at PERFORM time, same as today - `validate` does not check it
+    either, because R6.5.1 does not list it among what is checked statically).
+    """
+    if plan.verb.name != ("new",) or plan.text is None:
+        return None
+    slug = _slug(plan.text)
+    if not slug:
+        return None
+    kind = plan.positional[0] if plan.positional else None
+    return slug, kind
+
+
+def _exists_on_disk(root, slug: str) -> bool:
+    """True when `slug` already names a file in any of the four entity
+    directories."""
+    return any(
+        (Path(root) / directory / (slug + ".md")).exists()
+        for directory, _title_field, _sections, _defaults in NEW_ENTITY.values()
+    )
+
+
+def _match_projected(ref: str, kinds, projected):
+    """Slugs in `projected` (`slug -> (lineno, kind)`) that `ref` could mean,
+    matched the same two ways `resolve` matches the tree - exact slug, then
+    unique slug prefix - and restricted to `kinds` (empty tuple means "any
+    kind", `resolve`'s own convention).
+
+    A slug of the wrong kind is not a candidate: without this, `log acme -- x`
+    (a project reference) could match a projected STAKEHOLDER slug that merely
+    shares a prefix, and validation would accept a line that fails at write
+    time - the exact lie R6.5.1 exists to prevent.
+    """
+    pool = [slug for slug, (_lineno, kind) in projected.items()
+            if not kinds or kind in kinds]
+    exact = [slug for slug in pool if slug == ref]
+    if exact:
+        return exact
+    wanted = normalise(ref)
+    return [slug for slug in pool if wanted and slug.startswith(wanted)]
+
+
+def _resolve_against(root, ref: str, kinds, projected):
+    """Resolve `ref` against the tree UNIONED with `projected` - the slugs
+    this batch's earlier `new` lines will create (R6.5.1).
+
+    Tries the tree first. An `UnknownReference` there retries against the
+    projection. Either way the projection is always consulted: a match
+    against the tree does not short-circuit it, because a slug this batch is
+    about to create is a candidate exactly like one already on disk, and a
+    reference matching both is ambiguous - never a silent preference for the
+    file that happens to exist already (R6.2).
+    """
+    matches = _match_projected(ref, kinds, projected)
+    try:
+        found = resolve(root, ref, kinds=kinds or None)
+    except UnknownReference:
+        if len(matches) == 1:
+            return
+        if len(matches) > 1:
+            raise AmbiguousReference(
+                "{!r} matches {} entit(ies) this batch will create: {}. Say "
+                "which one.".format(ref, len(matches), ", ".join(sorted(matches)))
+            )
+        raise
+    else:
+        if matches:
+            raise AmbiguousReference(
+                "{!r} matches {} on disk and also {} this batch is about to "
+                "create. Say which one.".format(
+                    ref, found.slug, ", ".join(sorted(matches))
+                )
+            )
+
+
+def validate_batch(root, text: str) -> List[Tuple[int, "Plan"]]:
+    """Every line statically valid, every reference resolvable against the
+    tree unioned with what earlier lines will create (R6.5.1). Raises
+    `BatchError` naming the first bad line. Writes nothing, takes no lock -
+    including for a batch about to be rejected on its very last line, which is
+    what makes `--dry-run` and R6.5's "nothing written" the same code path.
+
+    Walking IN ORDER is deliberate (not building the projection from the whole
+    batch first): a reference that precedes its `new` line fails here, at
+    validation, rather than passing and failing mid-write (A18).
+    """
+    plans: List[Tuple[int, Plan]] = []
+    projected: Dict[str, Tuple[int, Optional[str]]] = {}  # slug -> (lineno, kind)
+
+    for lineno, line in _numbered_lines(text):
+        try:
+            parsed = grammar.parse_line(line)
+        except GrammarError as exc:
+            raise BatchError(lineno, line.rstrip("\r\n"), str(exc))
+        if parsed is None:
+            continue
+
+        try:
+            plan = validate(parsed)
+        except (VerbError, GrammarError) as exc:
+            raise BatchError(lineno, parsed.raw, str(exc))
+        if plan is None:
+            continue
+
+        projection = _projected_slug(plan)
+        if projection is not None:
+            slug, kind = projection
+            if slug in projected:
+                raise BatchError(
+                    lineno, parsed.raw,
+                    "{} is already created on line {}".format(
+                        slug, projected[slug][0]
+                    ),
+                )
+            if _exists_on_disk(root, slug):
+                raise BatchError(
+                    lineno, parsed.raw, "{} already exists".format(slug)
+                )
+            projected[slug] = (lineno, kind)
+
+        for ref, kinds in _reference_sites(plan):
+            try:
+                _resolve_against(root, ref, kinds, projected)
+            except (UnknownReference, AmbiguousReference) as exc:
+                raise BatchError(lineno, parsed.raw, str(exc))
+
+        plans.append((lineno, plan))
+    return plans
