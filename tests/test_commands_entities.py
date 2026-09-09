@@ -125,6 +125,46 @@ def test_a_done_request_keeps_its_text_and_exposes_its_date(brain_repo):
     assert entry["done_on"] == date.today().isoformat()
 
 
+def test_a_request_keeps_text_that_looks_like_action_metadata(brain_repo):
+    """§4.7 requests have no owner or due syntax, so `  @dave` and `  due:…`
+    in a request are the user's words. Parsing them as an action strips them,
+    and `request done` then writes the stripped text back to disk."""
+    original = "email  @dave  before  due:2026-10-01  the review"
+    _run(brain_repo, "request add -- " + original)
+    assert _run(brain_repo, "request list").data[0]["text"] == original
+    _run(brain_repo, "request done 1")
+    entry = _run(brain_repo, "request list").data[0]
+    assert entry["text"] == original
+    assert original in (brain_repo / "_request.md").read_text(encoding="utf-8")
+
+
+def test_collapse_still_works_for_such_a_request(brain_repo):
+    """R4.7.2: the stripped text never matched a retype, so the duplicate got
+    through."""
+    line = "ping  @sam  now"
+    _run(brain_repo, "request add -- " + line)
+    _run(brain_repo, "request add -- " + line)
+    assert len(_run(brain_repo, "request list").data) == 1
+
+
+def test_request_file_keeps_its_line_endings(brain_repo):
+    """R5.2 on C5's primary platform."""
+    (brain_repo / "_request.md").write_bytes(b"- [ ] first thing\r\n")
+    g.commit(brain_repo, ["_request.md"], "brain: seed", source="cli")
+    _run(brain_repo, "request add -- second thing")
+    _run(brain_repo, "request done 1")
+    raw = (brain_repo / "_request.md").read_bytes()
+    assert b"\r\n" in raw
+    assert b"\n" not in raw.replace(b"\r\n", b"")
+
+
+def test_request_done_twice_refuses(brain_repo):
+    _run(brain_repo, "request add -- process inbox")
+    _run(brain_repo, "request done 1")
+    with pytest.raises(VerbError):
+        _run(brain_repo, "request done 1")
+
+
 def test_undo_reverses_the_last_write(brain_repo):
     """A6: undo after a write verb restores the tree."""
     path = brain_repo / "projects" / "acme-migration.md"

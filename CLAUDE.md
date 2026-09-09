@@ -20,8 +20,11 @@ every verb in §6.1 works from a terminal except `apply`, `context`, `search`,
 `request done`, `undo` and `check --authored`. Milestone 3 continues in 3c
 (`brain apply`, `--dry-run`, and the concurrent-writer test A15). `index.py`,
 `tui.py`, `AGENTS.md` + `process inbox`, agendas, and `tidy`/`review`/`rewrite`
-are unbuilt. The repository also holds a decision-complete design and the
-screens to build against:
+are unbuilt. Known gap, deferred to milestone 6: `note add` does not yet refuse
+a body line that itself matches the `## <id> · <date> · <type>` header shape,
+so such a line is read back as a real note and advances the id counter - not
+reachable until `process inbox` starts feeding it captured text. The repository
+also holds a decision-complete design and the screens to build against:
 
 - `BRAIN-SPEC.md` — requirements and solution design. Where a choice was made it
   is written as a requirement (`R<n>`), not an option. Read it end to end before

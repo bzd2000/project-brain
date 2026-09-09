@@ -106,18 +106,30 @@ def test_field_set_refuses_a_field_a_verb_owns(brain_repo):
 
 
 def test_every_project_verb_sets_updated(brain_repo):
-    """R4.2.3: `updated:` is set by every write and is authoritative."""
+    """R4.2.3: `updated:` is set by every write and is authoritative.
+
+    The reset rewrites whatever `updated:` currently holds. Matching a literal
+    date only works on the first iteration, after which the test asserts
+    nothing - and three of these verbs could lose `touch()` unnoticed.
+    """
+    import re as _re
+
+    path = brain_repo / "projects" / "acme-migration.md"
     for line in (
         "action add acme-migration -- one",
+        "action due acme-migration --to 2026-12-01 1",
         "decision add acme-migration -- two",
         "question add acme-migration -- three",
         "health set acme-migration green",
+        "field set acme-migration owner -- Bram",
     ):
-        (brain_repo / "projects" / "acme-migration.md").write_text(
-            (brain_repo / "projects" / "acme-migration.md")
-            .read_text(encoding="utf-8").replace("updated: 2026-09-07", "updated: 1999-01-01"),
+        path.write_text(
+            _re.sub(r"(?m)^updated: .*$", "updated: 1999-01-01",
+                    path.read_text(encoding="utf-8")),
             encoding="utf-8",
         )
-        c.git.commit(brain_repo, ["projects/acme-migration.md"], "brain: reset", source="cli")
+        c.git.commit(brain_repo, ["projects/acme-migration.md"],
+                     "brain: reset", source="cli")
+        assert Project(path).updated == "1999-01-01", "the reset did nothing"
         _run(brain_repo, line)
-        assert _project(brain_repo).updated != "1999-01-01", line
+        assert Project(path).updated != "1999-01-01", line

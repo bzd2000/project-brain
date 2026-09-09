@@ -71,29 +71,44 @@ def main(argv=None) -> int:
             return 0
 
         where = root.find_root(args.root)
-        # `check` has one mode in 3b, so `--authored` is a spelling of it rather
-        # than a flag. Bare flags do not exist in the grammar (R6.0), and inventing
-        # them for one call site would weaken the rule that catches
-        # `--owner --due <date>`. Milestone 8's `--fix` is a second mode and will
-        # need a real answer.
-        rest = [a for a in args.rest if a != "--authored"]
-        parsed = grammar.parse_line(_line_from_argv(
-            [a for i, a in enumerate(rest)
-             if not (a == "-f" or (i and rest[i - 1] == "-f"))]
-        ))
+
+        # Everything right of the first bare `--` is the user's free text
+        # (R6.4). Filtering the whole of argv deletes words out of a note
+        # body, which is exactly what R4.6.1 forbids - so split first, and
+        # only ever touch the left.
+        cut = args.rest.index("--") if "--" in args.rest else len(args.rest)
+        left, text_part = args.rest[:cut], args.rest[cut:]
+
+        # `check` has one mode in 3b, so `--authored` is a spelling of it
+        # rather than a flag. Milestone 8's `--fix` is a second mode and
+        # needs a real one.
+        left = [a for a in left if a != "--authored"]
+
+        # `--json` after the verb, which is where the TUI and an agent will
+        # write it - argparse's REMAINDER swallows it before `--json` above
+        # ever sees it once a positional has started.
+        want_json = args.json or "--json" in left
+        left = [a for a in left if a != "--json"]
+
+        from_stdin = False
+        if "-f" in left:
+            cut_f = left.index("-f")
+            if cut_f + 1 >= len(left) or left[cut_f + 1] != "-":
+                raise VerbError("-f takes `-`, meaning standard input")
+            left = left[:cut_f] + left[cut_f + 2:]
+            from_stdin = True
+
+        parsed = grammar.parse_line(_line_from_argv(left + text_part))
         if parsed is None:
             return 0
-        if "-f" in args.rest:
-            cut = args.rest.index("-f")
-            if cut + 1 >= len(args.rest) or args.rest[cut + 1] != "-":
-                raise VerbError("-f takes `-`, meaning standard input")
+        if from_stdin:
             if parsed.text is not None:
                 raise VerbError(
                     "give a body with `-f -` or after ` -- `, not both"
                 )
             parsed = parsed._replace(text=read_stdin_text())
 
-        if args.json:
+        if want_json:
             # Before execute, not after. A refusal that arrives once the write
             # has happened tells a caller the operation failed when it
             # succeeded - and a script that retries on exit 1 captures the note
@@ -108,7 +123,7 @@ def main(argv=None) -> int:
                 )
 
         result = commands.execute(where, parsed, source="cli")
-        if args.json:
+        if want_json:
             sys.stdout.write(json.dumps(result.data, indent=2) + "\n")
         elif result.message:
             sys.stdout.write(result.message + "\n")

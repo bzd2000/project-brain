@@ -23,7 +23,6 @@ from .model import (
     PROJECT_SECTIONS,
     STAKEHOLDER_SECTIONS,
     Doc,
-    parse_action,
     render_action,
 )
 from .resolve import normalise, resolve, resolve_action
@@ -272,8 +271,7 @@ def _note_add(root, positional, flags, text):
     # contain them. Tidying the user's words is exactly what R4.6.1 forbids.
     inbox = Path(root) / "inbox.md"
     existing = inbox.read_bytes() if inbox.exists() else b""
-    crlf = existing.count(b"\r\n")
-    eol = b"\r\n" if crlf > existing.count(b"\n") - crlf else b"\n"
+    eol = _eol_of(existing)
     if existing and not existing.endswith(eol):
         existing += eol
     if existing:
@@ -329,8 +327,7 @@ def rewrite_inbox(root, notes) -> None:
     """
     inbox = Path(root) / "inbox.md"
     existing = inbox.read_bytes() if inbox.exists() else b""
-    crlf = existing.count(b"\r\n")
-    eol = b"\r\n" if crlf > existing.count(b"\n") - crlf else b"\n"
+    eol = _eol_of(existing)
 
     blocks = []
     for note in notes:
@@ -489,6 +486,18 @@ class Request(NamedTuple):
 # R4.7 stamps the completion date onto the line: `- [x] 2026-09-06 rollup …`.
 DONE_STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2})\s+(.*)$")
 
+# §4.7's own format, and nothing more. Requests are NOT actions: they have no
+# owner and no due date, so parsing them with `parse_action` strips `  @who`
+# and `  due:…` spans that are simply the user's words (R4.6.1's principle,
+# applied to the one other file a user types into).
+REQUEST_LINE = re.compile(r"^\s*- \[([ xX])\] (.*)$")
+
+
+def _eol_of(data: bytes) -> bytes:
+    """The dominant line ending of a file we are about to rewrite (R5.2)."""
+    crlf = data.count(b"\r\n")
+    return b"\r\n" if crlf > data.count(b"\n") - crlf else b"\n"
+
 
 def _requests(root):
     """R4.7: `- [ ] text` / `- [x] YYYY-MM-DD text`.
@@ -501,17 +510,22 @@ def _requests(root):
     path = Path(root) / "_request.md"
     if not path.exists():
         return []
+    # Normalise CRLF before splitting, so a line's index and text are the same
+    # regardless of the file's own line ending (R5.2) - the write side puts
+    # `_eol_of`'s ending back rather than baking one in here.
+    text = path.read_bytes().decode("utf-8").replace("\r\n", "\n")
     out = []
-    for lineno, line in enumerate(path.read_text(encoding="utf-8").split("\n")):
-        task = parse_action(lineno, line)
-        if task is None:
+    for lineno, line in enumerate(text.split("\n")):
+        match = REQUEST_LINE.match(line)
+        if match is None:
             continue
-        text, done_on = task.text, None
-        if task.done:
-            stamped = DONE_STAMP.match(text)
+        done = match.group(1).lower() == "x"
+        body, done_on = match.group(2), None
+        if done:
+            stamped = DONE_STAMP.match(body)
             if stamped:
-                done_on, text = stamped.group(1), stamped.group(2)
-        out.append(Request(lineno=lineno, text=text, done=task.done, done_on=done_on))
+                done_on, body = stamped.group(1), stamped.group(2)
+        out.append(Request(lineno=lineno, text=body, done=done, done_on=done_on))
     return out
 
 
@@ -522,10 +536,12 @@ def _request_add(root, positional, flags, text):
     for task in _requests(root):
         if not task.done and task.text == text:
             return Result("already queued: {}".format(text))
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    if existing and not existing.endswith("\n"):
-        existing += "\n"
-    path.write_text(existing + "- [ ] " + text + "\n", encoding="utf-8")
+    existing = path.read_bytes() if path.exists() else b""
+    eol = _eol_of(existing)
+    if existing and not existing.endswith(eol):
+        existing += eol
+    line = ("- [ ] " + text).encode("utf-8") + eol
+    path.write_bytes(existing + line)
     return Result("queued: {}".format(text), ("_request.md",))
 
 
@@ -552,10 +568,16 @@ def _request_done(root, positional, flags, text):
             "there is no request {} ({} queued)".format(index, len(tasks))
         )
     task = tasks[index - 1]
+    if task.done:
+        raise VerbError(
+            "request {} is already done ({})".format(index, task.done_on or "undated")
+        )
     path = Path(root) / "_request.md"
-    lines = path.read_text(encoding="utf-8").split("\n")
+    raw = path.read_bytes()
+    eol = _eol_of(raw)
+    lines = raw.decode("utf-8").replace("\r\n", "\n").split("\n")
     lines[task.lineno] = "- [x] {} {}".format(date.today().isoformat(), task.text)
-    path.write_text("\n".join(lines), encoding="utf-8")
+    path.write_bytes(eol.join(line.encode("utf-8") for line in lines))
     return Result("done: {}".format(task.text), ("_request.md",))
 
 
