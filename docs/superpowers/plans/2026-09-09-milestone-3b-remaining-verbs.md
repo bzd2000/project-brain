@@ -988,8 +988,11 @@ def test_new_makes_each_kind_with_its_own_shape(brain_repo, kind, directory, cls
 
 def test_new_refuses_to_overwrite(brain_repo):
     """A slug collision must not silently replace someone's file."""
+    # "Acme Migration", not the fixture's own title: §4.2's project is titled
+    # "Acme - Azure migration", which normalises to `acme-azure-migration` and
+    # would NOT collide with its own filename, `acme-migration.md`.
     with pytest.raises(VerbError) as excinfo:
-        _run(brain_repo, "new project -- Acme - Azure migration")
+        _run(brain_repo, "new project -- Acme Migration")
     assert "acme-migration" in str(excinfo.value)
 
 
@@ -1326,7 +1329,7 @@ Expected: 274 passed.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add brain/commands.py CLAUDE.md tests/test_commands_entities.py
+git add brain/commands.py brain/cli.py CLAUDE.md tests/test_commands_entities.py
 git commit -m "Add new, link, raise, request, undo and check (R4.1, R4.7, R11.5, R11.6)
 
 new creates a file with its kind's sections in order and refuses a slug that
