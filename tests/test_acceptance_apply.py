@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -89,6 +90,14 @@ def test_a15_a_second_apply_refuses_while_the_lock_is_held(brain_repo):
     assert "Traceback" not in done.stderr
 
 
+def _long_batch(lines: int = 40) -> str:
+    """A batch big enough that the writer still holds the lock when the second
+    process starts. One line is not: interpreter startup dwarfs the write."""
+    return "".join(
+        "log acme-migration -- steering note {}\n".format(n) for n in range(lines)
+    )
+
+
 def test_a15_two_real_processes_race_for_the_lock(brain_repo):
     """A15's own two load-bearing clauses, pinned against two REAL `brain
     apply` processes - not one process holding `lock.held` in-test while a
@@ -103,15 +112,29 @@ def test_a15_two_real_processes_race_for_the_lock(brain_repo):
     before = _commit_count(brain_repo)
     results = {}
 
-    def run(name):
-        results[name] = _apply(brain_repo, FIVE_GOOD)
+    def run(name, batch):
+        results[name] = _apply(brain_repo, batch)
 
-    t1 = threading.Thread(target=run, args=("a",))
-    t2 = threading.Thread(target=run, args=("b",))
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
+    # Starting both threads and hoping they overlap is not a race, it is a
+    # coin toss: under load the winner can finish and release before the loser
+    # has finished starting a Python interpreter, and then BOTH succeed. That
+    # failed roughly one full-suite run in seven. So make the contention real -
+    # give the first process enough work to still be holding the lock, and do
+    # not start the second until the lock file actually exists.
+    first = threading.Thread(target=run, args=("a", _long_batch()))
+    first.start()
+    lock_path = brain_repo / lock.LOCK_NAME
+    deadline = time.time() + 10
+    while not lock_path.exists() and time.time() < deadline:
+        time.sleep(0.001)
+    assert lock_path.exists(), (
+        "the first process never took the lock, so there was no contention to "
+        "observe and this test would have proved nothing"
+    )
+    second = threading.Thread(target=run, args=("b", FIVE_GOOD))
+    second.start()
+    first.join()
+    second.join()
 
     codes = [results["a"].returncode, results["b"].returncode]
     assert codes.count(0) == 1, ("exactly one apply must succeed", results)
