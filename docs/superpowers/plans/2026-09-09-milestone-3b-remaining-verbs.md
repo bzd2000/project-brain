@@ -451,6 +451,33 @@ def _content(note):
     return body
 
 
+def test_note_flag_does_not_touch_a_body_line_that_looks_like_a_flag(brain_repo):
+    """R4.6.1/A13: `> ?` is brain's notation, but the user may have typed it —
+    in prose, or inside a fenced block `load_notes` is careful to preserve.
+    Only the marker brain itself appended may be replaced."""
+    (brain_repo / "inbox.md").write_text(
+        "## n1 \u00b7 2026-09-07 09:00 \u00b7 note \u00b7\n"
+        "quoting the reply:\n"
+        "> ? is this a flag, or my words\n"
+        "and a fence:\n"
+        "```\n"
+        "> ? inside a fence\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    c.git.commit(brain_repo, ["inbox.md"], "brain: seed", source="cli")
+    _run(brain_repo, "note flag n1 -- could not place this")
+    body = load_notes(brain_repo / "inbox.md")[0].body
+    assert "> ? is this a flag, or my words" in body
+    assert "> ? inside a fence" in body
+    assert body[-1] == "> ? could not place this"
+    _run(brain_repo, "note flag n1 -- second reason")
+    body = load_notes(brain_repo / "inbox.md")[0].body
+    assert body[-1] == "> ? second reason"
+    assert "> ? could not place this" not in body
+    assert "> ? is this a flag, or my words" in body
+
+
 def test_note_drop_removes_only_that_note(brain_repo):
     """R4.6.4: processing deletes the note; git holds the history."""
     for n in ("one", "two", "three"):
@@ -563,8 +590,15 @@ def _note_flag(root, positional, flags, text):
     marked = []
     for note in notes:
         if note.id == note_id:
-            body = [l for l in note.body if not l.lstrip().startswith("> ?")]
+            body = list(note.body)
             while body and not body[-1].strip():
+                body.pop()
+            # Replace only the marker WE appended, which is always the last
+            # line. Filtering every `> ?` line would delete one the user wrote,
+            # including one inside a fenced block that `load_notes` goes out of
+            # its way to keep - R4.6.1 and A13 say no path rewrites a body, and
+            # `> ?` being our notation does not make it ours wherever it appears.
+            if body and body[-1].lstrip().startswith("> ?"):
                 body.pop()
             note = note._replace(body=body + ["> ? " + text])
         marked.append(note)
@@ -590,12 +624,12 @@ Add `UnknownReference` to the imports from `.errors`.
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_commands_read.py -v`
-Expected: 14 passed.
+Expected: 15 passed.
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 242 passed.
+Expected: 243 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -882,7 +916,7 @@ Expected: 14 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 256 passed.
+Expected: 257 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1287,7 +1321,7 @@ short session showing `new`, `action add`, `action done`, `raise` and
 - [ ] **Step 6: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: 273 passed.
+Expected: 274 passed.
 
 - [ ] **Step 7: Commit**
 
@@ -1312,7 +1346,7 @@ brain, which is what R3.2 asks for and what makes the rule enforceable."
 ## Milestone 3b done — stop here
 
 ```bash
-.venv/bin/python -m pytest -q          # 273 passed
+.venv/bin/python -m pytest -q          # 274 passed
 brain --root /tmp/demo new project -- Something new
 brain --root /tmp/demo check --authored
 ```
