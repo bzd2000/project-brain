@@ -8,6 +8,7 @@ an invariant the rest of the system assumes.
 """
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
@@ -444,7 +445,7 @@ def _new(root, positional, flags, text):
     doc.save()
     return Result(
         "created {}/{}".format(directory, slug),
-        ["{}/{}.md".format(directory, slug)],
+        ("{}/{}.md".format(directory, slug),),
     )
 
 
@@ -459,7 +460,7 @@ def _link(root, positional, flags, text):
     doc.set_field("program", program.slug)
     doc.touch()
     doc.save()
-    return Result("{} is in {}".format(project.slug, program.slug), [rel])
+    return Result("{} is in {}".format(project.slug, program.slug), (rel,))
 
 
 @verb("raise", needs_text=True, arity=(1, 1), allowed_flags=("ref",))
@@ -475,19 +476,42 @@ def _raise(root, positional, flags, text):
     party.doc.add_bullet("Pending", line, newest_first=False)
     party.doc.touch()
     party.doc.save()
-    return Result("raised with {}".format(party.slug), [rel])
+    return Result("raised with {}".format(party.slug), (rel,))
+
+
+class Request(NamedTuple):
+    lineno: int
+    text: str
+    done: bool
+    done_on: Optional[str]
+
+
+# R4.7 stamps the completion date onto the line: `- [x] 2026-09-06 rollup …`.
+DONE_STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2})\s+(.*)$")
 
 
 def _requests(root):
-    """R4.7: `- [ ] text` / `- [x] YYYY-MM-DD text`."""
+    """R4.7: `- [ ] text` / `- [x] YYYY-MM-DD text`.
+
+    The date stamp is part of the FILE's format, not part of the request. Split
+    it out here, or a done request's text differs from the pending text it was
+    written as and `request list` shows two shapes for one thing - which also
+    breaks R4.7.2's collapse, since stamped text never matches a retype.
+    """
     path = Path(root) / "_request.md"
     if not path.exists():
         return []
     out = []
     for lineno, line in enumerate(path.read_text(encoding="utf-8").split("\n")):
         task = parse_action(lineno, line)
-        if task is not None:
-            out.append(task)
+        if task is None:
+            continue
+        text, done_on = task.text, None
+        if task.done:
+            stamped = DONE_STAMP.match(text)
+            if stamped:
+                done_on, text = stamped.group(1), stamped.group(2)
+        out.append(Request(lineno=lineno, text=text, done=task.done, done_on=done_on))
     return out
 
 
@@ -497,12 +521,12 @@ def _request_add(root, positional, flags, text):
     path = Path(root) / "_request.md"
     for task in _requests(root):
         if not task.done and task.text == text:
-            return Result("already queued: {}".format(text), [])
+            return Result("already queued: {}".format(text))
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     if existing and not existing.endswith("\n"):
         existing += "\n"
     path.write_text(existing + "- [ ] " + text + "\n", encoding="utf-8")
-    return Result("queued: {}".format(text), ["_request.md"])
+    return Result("queued: {}".format(text), ("_request.md",))
 
 
 @verb("request", "list", writes=False, arity=(0, 0))
@@ -511,7 +535,8 @@ def _request_list(root, positional, flags, text):
     return Result(
         "{} request(s)".format(len(tasks)) if tasks else "nothing queued",
         [],
-        [{"n": i + 1, "text": t.text, "done": t.done} for i, t in enumerate(tasks)],
+        [{"n": i + 1, "text": t.text, "done": t.done, "done_on": t.done_on}
+         for i, t in enumerate(tasks)],
     )
 
 
@@ -531,7 +556,7 @@ def _request_done(root, positional, flags, text):
     lines = path.read_text(encoding="utf-8").split("\n")
     lines[task.lineno] = "- [x] {} {}".format(date.today().isoformat(), task.text)
     path.write_text("\n".join(lines), encoding="utf-8")
-    return Result("done: {}".format(task.text), ["_request.md"])
+    return Result("done: {}".format(task.text), ("_request.md",))
 
 
 @verb("undo", arity=(0, 0))

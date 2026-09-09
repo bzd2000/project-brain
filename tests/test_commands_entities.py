@@ -35,6 +35,9 @@ def test_new_makes_each_kind_with_its_own_shape(brain_repo, kind, directory, cls
 
 def test_new_refuses_to_overwrite(brain_repo):
     """A slug collision must not silently replace someone's file."""
+    # "Acme Migration", not the fixture's own title: §4.2's project is titled
+    # "Acme - Azure migration", which normalises to `acme-azure-migration` and
+    # would NOT collide with its own filename, `acme-migration.md`.
     with pytest.raises(VerbError) as excinfo:
         _run(brain_repo, "new project -- Acme Migration")
     assert "acme-migration" in str(excinfo.value)
@@ -107,6 +110,19 @@ def test_duplicate_pending_requests_collapse(brain_repo):
     _run(brain_repo, "request add -- process inbox")
     _run(brain_repo, "request add -- process inbox")
     assert len(_run(brain_repo, "request list").data) == 1
+
+
+def test_a_done_request_keeps_its_text_and_exposes_its_date(brain_repo):
+    """R4.7 stamps the date onto the line, but the date is not part of the
+    request. `request list` must show one shape for a thing, not two."""
+    from datetime import date
+
+    _run(brain_repo, "request add -- process inbox")
+    _run(brain_repo, "request done 1")
+    entry = _run(brain_repo, "request list").data[0]
+    assert entry["text"] == "process inbox"
+    assert entry["done"] is True
+    assert entry["done_on"] == date.today().isoformat()
 
 
 def test_undo_reverses_the_last_write(brain_repo):
