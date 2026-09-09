@@ -223,7 +223,7 @@ def rewrite_inbox(root, notes) -> None:
             body.pop()
         lines = [note.header] + body
         blocks.append(eol.join(line.encode("utf-8") for line in lines))
-    inbox.write_bytes(eol.join(blocks) + (eol if blocks else b""))
+    inbox.write_bytes((eol + eol).join(blocks) + (eol if blocks else b""))
 
 
 @verb("note", "show", writes=False, arity=(1, 1))

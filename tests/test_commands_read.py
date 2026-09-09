@@ -140,3 +140,17 @@ def test_dropping_the_last_note_leaves_an_empty_inbox(brain_repo):
     _run(brain_repo, "note drop n1")
     assert (brain_repo / "inbox.md").read_text(encoding="utf-8") == ""
     assert load_notes(brain_repo / "inbox.md") == []
+
+
+def test_rewrite_inbox_round_trips_the_fixture_byte_for_byte(brain_repo):
+    """§4.6 puts a blank line between notes. Rewriting must reproduce the file
+    it read, or `note drop` silently reformats the whole inbox on first use."""
+    import shutil
+
+    from conftest import FIXTURES
+    from brain.commands import rewrite_inbox
+
+    shutil.copy(FIXTURES / "brain" / "inbox.md", brain_repo / "inbox.md")
+    before = (brain_repo / "inbox.md").read_bytes()
+    rewrite_inbox(brain_repo, load_notes(brain_repo / "inbox.md"))
+    assert (brain_repo / "inbox.md").read_bytes() == before
