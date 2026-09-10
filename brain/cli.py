@@ -186,6 +186,16 @@ def main(argv=None) -> int:
                         " ".join(found.name)
                     )
                 )
+            if not found.json_ok:
+                # `context` only, today: R6.3's consumer is a model reading a
+                # terminal, and wrapping the digest in a JSON envelope costs
+                # tokens for nothing invariant 4 gets back.
+                raise VerbError(
+                    "--json is not offered on `{}`; it already prints a "
+                    "compact digest for a model to read directly".format(
+                        " ".join(found.name)
+                    )
+                )
 
         result = commands.execute(where, parsed, source="cli")
         if want_json:

@@ -13,7 +13,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
-from . import git, grammar, lock, tree
+from . import digest, git, grammar, lock, tree
 from .entities import HEALTHS, KINDS, NOTE_TYPES, STATUSES, load_notes
 from .errors import (
     AmbiguousReference,
@@ -78,6 +78,11 @@ class Verb(NamedTuple):
     # writes files and lets its caller commit, so `True` is safe as the
     # default rather than something each declaration has to opt into.
     batchable: bool = True
+    # False only for `context`: R6.3's consumer is a model reading a
+    # terminal, and a JSON envelope around the digest costs tokens for no
+    # gain. Every other read verb keeps `--json` (R6.1), so this defaults
+    # True rather than something each of them has to opt into.
+    json_ok: bool = True
 
 
 VERBS: Dict[Tuple[str, ...], Verb] = {}
@@ -89,7 +94,7 @@ def verb(*name, needs_text: bool = False, writes: bool = True,
          ref_kinds: Optional[Tuple[str, ...]] = None,
          flag_refs: Optional[Dict[str, Tuple[str, ...]]] = None,
          value_choices: Optional[Tuple[int, Tuple[str, ...]]] = None,
-         batchable: bool = True):
+         batchable: bool = True, json_ok: bool = True):
     """Register a verb.
 
     `arity` is (min, max) positionals AFTER the verb's own words, and
@@ -103,7 +108,7 @@ def verb(*name, needs_text: bool = False, writes: bool = True,
             arity=arity, allowed_flags=tuple(allowed_flags),
             optional_text=optional_text, ref_kinds=ref_kinds,
             flag_refs=flag_refs, value_choices=value_choices,
-            batchable=batchable,
+            batchable=batchable, json_ok=json_ok,
         )
         return func
     return register
@@ -691,6 +696,25 @@ def _check(root, positional, flags, text):
         [],
         offenders,
     )
+
+
+@verb("context", writes=False, arity=(0, 0), allowed_flags=("for",),
+      json_ok=False)
+def _context(root, positional, flags, text):
+    """R6.3: the ~200-token digest an agent reads INSTEAD of entity files
+    (invariant 4). `--for <entity>` names one entity to add detail for -
+    R6.3's prose, not the stray `--for inbox` in its own worked example,
+    which names something that is not an entity (design ruling, milestone 4
+    task 3 brief).
+
+    `execute` always runs a read verb inside `with tree.for_command(root):`,
+    so `tree.current()` is the one scan this whole command made; falling
+    back to a fresh `Tree` only covers a caller that reaches this function
+    with no command in flight, which nothing in this codebase does today.
+    """
+    active = tree.current() or tree.Tree(root)
+    out = digest.context(active, flags.get("for"))
+    return Result(out, [], None)
 
 
 class Plan(NamedTuple):

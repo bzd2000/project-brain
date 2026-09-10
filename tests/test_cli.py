@@ -169,6 +169,29 @@ def test_apply_dry_run_writes_nothing_and_prints_each_line(brain_repo, monkeypat
     ).read_text(encoding="utf-8")
 
 
+def test_context_end_to_end(brain_repo, capsys):
+    """R6.3, wired through argv like every other verb: `--for` is a flag
+    after the verb, same as any other."""
+    assert _cli("--root", brain_repo, "context") == 0
+    out = capsys.readouterr().out
+    assert out.startswith("today: ")
+    assert "acme-migration" in out
+
+    assert _cli("--root", brain_repo, "context", "--for", "acme-migration") == 0
+    out = capsys.readouterr().out
+    assert "for acme-migration:" in out
+
+
+def test_context_json_is_refused(brain_repo, capsys):
+    """R6.3's ruling: `--json` is not offered on `context` - the digest IS
+    the compact, model-facing answer, and a JSON envelope around it costs
+    tokens for nothing invariant 4 (CLAUDE.md) gets back. `context` is a read
+    verb, so this is not the write-verb refusal above (`json_ok=False`,
+    distinct from `writes=False`)."""
+    assert _cli("--root", brain_repo, "--json", "context") != 0
+    assert "--json" in capsys.readouterr().err
+
+
 def test_apply_json_is_refused_before_it_writes(brain_repo, monkeypatch, capsys):
     """`apply` is a write verb (R6.1) and bypasses `find_verb`, so this is the
     explicit refusal `cli.py` adds for it - and it must fire before the batch
