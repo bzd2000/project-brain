@@ -120,3 +120,120 @@ def test_init_refuses_a_path_and_root_together(tmp_path, capsys):
     """R6.2's spirit: two answers to "where" is a question, not a guess."""
     assert _cli("--root", tmp_path / "a", "init", tmp_path / "b") != 0
     assert "not both" in capsys.readouterr().err
+
+
+# --- brain apply (R6.4, R6.5, R6.6) ---------------------------------------
+
+
+_APPLY_BATCH = "log acme-migration -- Steering call from the CLI\n"
+
+
+def test_apply_reads_the_batch_from_stdin_with_no_flag(brain_repo, monkeypatch, capsys):
+    import io
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(_APPLY_BATCH))
+    assert _cli("--root", brain_repo, "apply") == 0
+    body = (brain_repo / "projects" / "acme-migration.md").read_text(encoding="utf-8")
+    assert "Steering call from the CLI" in body
+    assert "applied" in capsys.readouterr().out
+
+
+def test_apply_dash_f_dash_means_the_same_thing_as_no_flag(brain_repo, monkeypatch):
+    """R6.4c: `-f -` and no `-f` are two spellings of the same "read stdin"."""
+    import io
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(_APPLY_BATCH))
+    assert _cli("--root", brain_repo, "apply", "-f", "-") == 0
+    body = (brain_repo / "projects" / "acme-migration.md").read_text(encoding="utf-8")
+    assert "Steering call from the CLI" in body
+
+
+def test_apply_dry_run_writes_nothing_and_prints_each_line(brain_repo, monkeypatch, capsys):
+    import io
+
+    from brain import git as g
+
+    before = g.head(brain_repo)
+    monkeypatch.setattr("sys.stdin", io.StringIO(_APPLY_BATCH))
+    assert _cli("--root", brain_repo, "apply", "--dry-run") == 0
+    out = capsys.readouterr().out
+    # L5: names the verb and the RESOLVED target, not an echo of the raw
+    # line - "Steering call from the CLI" is the user's free text and must
+    # not appear in the preview at all.
+    assert "log -> acme-migration" in out
+    assert "Steering call from the CLI" not in out
+    assert "nothing written" in out
+    assert g.head(brain_repo) == before
+    assert "Steering call from the CLI" not in (
+        brain_repo / "projects" / "acme-migration.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_apply_json_is_refused_before_it_writes(brain_repo, monkeypatch, capsys):
+    """`apply` is a write verb (R6.1) and bypasses `find_verb`, so this is the
+    explicit refusal `cli.py` adds for it - and it must fire before the batch
+    is ever validated or applied, exactly like every other write verb."""
+    import io
+
+    from brain import git as g
+
+    before = g.head(brain_repo)
+    monkeypatch.setattr("sys.stdin", io.StringIO(_APPLY_BATCH))
+    assert _cli("--root", brain_repo, "--json", "apply") != 0
+    assert "--json" in capsys.readouterr().err
+    assert g.head(brain_repo) == before, "it committed before refusing"
+    assert "Steering call from the CLI" not in (
+        brain_repo / "projects" / "acme-migration.md"
+    ).read_text(encoding="utf-8"), "it wrote before refusing"
+
+
+def test_apply_a_bad_line_exits_non_zero_naming_the_line(brain_repo, monkeypatch, capsys):
+    import io
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("status set acme-migration\n"))
+    assert _cli("--root", brain_repo, "apply") != 0
+    err = capsys.readouterr().err
+    assert "line 1" in err
+
+
+# --- `apply -f <path>` (fix round 1, L4/L7: §6.1's `[-f file|-]`, R6.4) ---
+
+
+def test_apply_dash_f_reads_a_real_file(brain_repo, tmp_path):
+    batch_file = tmp_path / "batch.txt"
+    batch_file.write_text(_APPLY_BATCH, encoding="utf-8")
+    assert _cli("--root", brain_repo, "apply", "-f", str(batch_file)) == 0
+    body = (brain_repo / "projects" / "acme-migration.md").read_text(encoding="utf-8")
+    assert "Steering call from the CLI" in body
+
+
+def test_apply_dash_f_file_with_crlf_applies_like_stdin_crlf_would(brain_repo, tmp_path):
+    """L4/L7: a CRLF batch FILE (C5, Windows) must produce the same result as
+    CRLF arriving on stdin - it is read as bytes and decoded rather than
+    through a text-mode open that would silently normalise it first."""
+    batch_file = tmp_path / "batch.txt"
+    batch_file.write_bytes(_APPLY_BATCH.replace("\n", "\r\n").encode("utf-8"))
+    assert _cli("--root", brain_repo, "apply", "-f", str(batch_file)) == 0
+    body = (brain_repo / "projects" / "acme-migration.md").read_text(encoding="utf-8")
+    assert "Steering call from the CLI" in body
+
+
+def test_apply_dash_f_missing_file_names_the_path(brain_repo, capsys):
+    missing = str(brain_repo / "does-not-exist.txt")
+    assert _cli("--root", brain_repo, "apply", "-f", missing) != 0
+    assert missing in capsys.readouterr().err
+
+
+def test_apply_dash_f_non_utf8_file_is_refused_not_a_traceback(brain_repo, tmp_path, capsys):
+    """Fix round 2, item 1: `UnicodeDecodeError` is a `ValueError`, which
+    `main`'s `except (BrainError, OSError)` does not catch - a batch file
+    saved as cp1252 (Windows Notepad's ANSI default; C5 makes Windows the
+    primary platform) used to crash with a raw traceback out of a flag §6.1
+    spells out as "one short line ... exits non-zero", not a stack trace."""
+    batch_file = tmp_path / "batch.txt"
+    batch_file.write_bytes("log acme-migration -- caf’s".encode("cp1252"))
+    assert _cli("--root", brain_repo, "apply", "-f", str(batch_file)) != 0
+    err = capsys.readouterr().err
+    assert "brain:" in err
+    assert str(batch_file) in err
+    assert "UTF-8" in err

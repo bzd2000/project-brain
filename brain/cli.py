@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from . import commands, grammar, root
 from .errors import BrainError, VerbError
@@ -71,6 +72,70 @@ def main(argv=None) -> int:
             return 0
 
         where = root.find_root(args.root)
+
+        if args.rest[0] == "apply":
+            # `apply`'s input is a whole document read from stdin, not one
+            # line of argv, so it is handled here rather than falling through
+            # to the grammar path below, which assumes exactly that (R6.4).
+            tail = args.rest[1:]
+            want_json = args.json or "--json" in tail
+            if want_json:
+                # Before anything runs, same as every other write verb: a
+                # refusal that arrived after `apply_batch` had already
+                # committed would tell a caller the batch failed when it had
+                # in fact been applied, and a script that retries on exit 1
+                # would apply it twice. `apply` never reaches `find_verb`, so
+                # the generic `--json`-on-a-write-verb refusal below never
+                # sees it - this is that same refusal, spelled out here.
+                raise VerbError(
+                    "--json is for read verbs; `apply` answers in one line"
+                )
+            dry_run = "--dry-run" in tail
+            tail = [a for a in tail if a != "--dry-run"]
+            # No `-f` and `-f -` both mean "read the batch from stdin"
+            # (R6.4c); `-f <path>` reads that file instead - §6.1 spells
+            # `brain apply [-f file|-]` and R6.4 says `apply` "reads commands
+            # from a file or stdin" (fix round 1, L4/L7).
+            if not tail:
+                text = read_stdin_text()
+            elif len(tail) == 2 and tail[0] == "-f" and tail[1] == "-":
+                text = read_stdin_text()
+            elif len(tail) == 2 and tail[0] == "-f":
+                # Bytes, then decode - not `Path.read_text`, whose universal
+                # newlines would silently normalise a CRLF batch file before
+                # the grammar ever sees it. `grammar.parse_line` already
+                # strips a trailing `\r` off of every line regardless of
+                # where it came from, so THIS file parses correctly without a
+                # second newline-translation layer (R5.2, C5). That is NOT
+                # the same claim as "identical to stdin" (fix round 2
+                # correction): `read_stdin_text` decodes with the platform's
+                # default encoding, not UTF-8, so the same non-UTF-8 bytes
+                # crash differently later (inside `Doc.save`) depending on
+                # which door they came through - a pre-existing gap this fix
+                # does not close. A missing file surfaces as a bare
+                # `OSError`, which `main`'s own handler below already turns
+                # into a one-line refusal naming the path; a non-UTF-8 file
+                # is refused here the same way, by name, rather than
+                # reaching the user as a traceback (fix round 2, Windows's
+                # Notepad defaults to cp1252, and C5 makes Windows primary).
+                try:
+                    text = Path(tail[1]).read_bytes().decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise VerbError(
+                        "{} is not valid UTF-8 ({}). Save the batch file as "
+                        "UTF-8 and try again.".format(tail[1], exc)
+                    )
+            else:
+                raise VerbError(
+                    "`apply` takes its batch as `-f <path>`, `-f -`, or "
+                    "nothing (stdin), plus an optional --dry-run"
+                )
+            result = commands.apply_batch(where, text, dry_run=dry_run, source="cli")
+            if dry_run:
+                for line in result.data:
+                    sys.stdout.write(line + "\n")
+            sys.stdout.write(result.message + "\n")
+            return 0
 
         # Everything right of the first bare `--` is the user's free text
         # (R6.4). Filtering the whole of argv deletes words out of a note

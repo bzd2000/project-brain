@@ -2,6 +2,7 @@ import pytest
 
 from conftest import snapshot, assert_only_changed
 from brain import commands as c
+from brain import git as g
 from brain import grammar as gr
 from brain.entities import Project
 from brain.errors import AmbiguousReference, UnknownReference, VerbError
@@ -95,6 +96,26 @@ def test_health_set_validates_the_enum(brain_repo):
 def test_field_set_writes_one_front_matter_line(brain_repo):
     _run(brain_repo, "field set acme-migration owner -- Bram")
     assert _project(brain_repo).fm["owner"] == "Bram"
+
+
+def test_field_set_with_a_control_character_does_not_brick_undo(brain_repo):
+    """S1, whole-branch review item 1 - the fix brief's literal repro, through
+    the real single-verb path (`commands.py`'s `execute`:
+    `git.commit(root, result.paths, "brain: " + result.message, ...)`), where
+    `result.message` (`"{slug} {key} is now {text}"`) carries the user's free
+    text verbatim. `test_git_undo.py` proves the fix at the `git.commit`
+    boundary directly; this proves the attack vector through it is actually
+    closed. Before the fix, the second `brain undo`-equivalent call below
+    raised `ValueError: not enough values to unpack` (R11.4 bans amend, so a
+    poisoned subject could never be repaired)."""
+    before = _project(brain_repo).fm.get("owner")
+    _run(brain_repo, "field set acme-migration owner -- Bob\x1eX")
+    # R4.6.1/A13: the file holds the user's byte, control character included -
+    # only the commit SUBJECT is sanitised, never file content.
+    assert _project(brain_repo).fm["owner"] == "Bob\x1eX"
+    undone = g.undo(brain_repo)
+    assert undone is not None
+    assert _project(brain_repo).fm.get("owner") == before
 
 
 def test_field_set_refuses_a_field_a_verb_owns(brain_repo):

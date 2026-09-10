@@ -19,12 +19,22 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
+from .errors import BrainError
+
 LOCK_NAME = ".brain.lock"
 STALE_AFTER = 600  # seconds; R11.7
 
 
-class LockBusy(Exception):
-    """Another `brain` process holds the write lock."""
+class LockBusy(BrainError):
+    """Another `brain` process holds the write lock.
+
+    A concurrent writer is exactly the foreseeable failure R6.1 and errors.py's
+    "one exception family" are for (A15): `cli.py` already catches every other
+    refusal through `BrainError`, and a bare `Exception` here fell through that
+    net and reached the user as a traceback instead of the one-line refusal
+    R11.7 promises. `errors.py` cannot be the one to define this - lock.py's
+    stale-holder logic is R11.7's own concern - so it imports `BrainError`
+    instead (git.py's `GitError` does the same)."""
 
 
 def holder(root) -> Optional[dict]:

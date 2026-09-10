@@ -83,6 +83,80 @@ def test_a_subject_that_merely_looks_like_an_undo_is_still_undoable(git_root):
     assert g.undoable(git_root).sha == sha
 
 
+def test_a_control_character_in_the_subject_does_not_brick_undo(git_root):
+    """S1 (whole-branch review, item 1). `brain_commits` asks git for
+    `%H%x1f%s%x1f...%x1e` and splits each commit on those bytes - a literal
+    U+001E in the subject (which carries the user's free text on the
+    single-verb path, `commands.py`: `"brain: " + result.message`) used to
+    split one log entry into two, so `sha, subject, source, undo_of =
+    entry.split("\\x1f", 3)` unpacked too few values and every later `undo`
+    died with `ValueError: not enough values to unpack`. R11.4 forbids
+    amend, so a poisoned subject could never be repaired - `git.commit` must
+    sanitise on the way in.
+
+    Reproduction, verbatim from the fix brief:
+        brain field set acme owner -- Bob<U+001E>X
+        brain undo   ->  ValueError: not enough values to unpack
+    Reproduced here at the `git.commit` boundary directly, matching this
+    file's existing style (`test_prose_quoting_a_trailer_does_not_hide_a_
+    commit` above), because the crash lives in `git.py` regardless of which
+    verb built the poisoned subject."""
+    path = git_root / "projects" / "acme-migration.md"
+    path.write_text(path.read_text(encoding="utf-8") + "- one\n", encoding="utf-8")
+    sha = g.commit(
+        git_root, ["projects/acme-migration.md"],
+        "brain: acme-migration owner is now Bob\x1eX",
+    )
+    # Before the fix, this line itself raised ValueError.
+    target = g.undoable(git_root)
+    assert target is not None and target.sha == sha
+    undone = g.undo(git_root)
+    assert undone is not None
+    assert "Brain-Undo: " + sha in g.commit_body(git_root, undone)
+
+
+def test_a_forged_undo_source_in_the_subject_does_not_hijack_undo(git_root):
+    """Second reproduction from the brief. `brain_commits` splits each entry
+    on `\\x1f` with `maxsplit=3`, matching `%H%x1f%s%x1f<source>%x1f<undo_of>`
+    field for field - so a `\\x1f` embedded in the SUBJECT (`%s`) shifts every
+    field after it. `Bob<U+001F>undo<U+001F><sha>` in free text used to read
+    back with `source='undo'`, and `undoable()` skips anything sourced
+    `"undo"` (by design - undo commits must not themselves be undoable) - so
+    the poisoned commit silently vanished from `undo`'s view and a later
+    `undo` would revert an OLDER commit than the user's last write, not the
+    one they just made."""
+    path = git_root / "projects" / "acme-migration.md"
+    path.write_text(path.read_text(encoding="utf-8") + "- one\n", encoding="utf-8")
+    sha = g.commit(
+        git_root, ["projects/acme-migration.md"],
+        "brain: acme-migration owner is now Bob\x1fundo\x1f0000000000000000000000000000000000000000",
+    )
+    target = g.undoable(git_root)
+    assert target is not None and target.sha == sha, (
+        "the forged subject hid the real commit from undoable()"
+    )
+    undone = g.undo(git_root)
+    assert undone is not None
+    assert "Brain-Undo: " + sha in g.commit_body(git_root, undone)
+
+
+def test_the_sanitised_subject_leaves_file_content_untouched(git_root):
+    """R4.6.1/A13: sanitising the SUBJECT must not become sanitising the file.
+    The control character is metadata-hostile (it breaks `brain_commits`'
+    delimiter parsing) but it is the user's byte on disk, and must survive
+    there exactly - this guards against the fix being "improved" into
+    stripping it from content too."""
+    path = git_root / "projects" / "acme-migration.md"
+    poisoned = path.read_text(encoding="utf-8") + "- Bob\x1eX\n"
+    path.write_text(poisoned, encoding="utf-8")
+    g.commit(
+        git_root, ["projects/acme-migration.md"],
+        "brain: acme-migration owner is now Bob\x1eX",
+    )
+    assert path.read_text(encoding="utf-8") == poisoned
+    assert "\x1e" in path.read_bytes().decode("utf-8")
+
+
 def test_a_failed_commit_after_the_revert_restores_the_tree(git_root, monkeypatch):
     """The revert applied but recording it did not. Leaving the reverted content
     in the tree would be a half-done undo no later call knows about."""

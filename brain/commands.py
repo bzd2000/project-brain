@@ -13,9 +13,15 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
-from . import git, lock
+from . import git, grammar, lock
 from .entities import HEALTHS, NOTE_TYPES, STATUSES, load_notes
-from .errors import GrammarError, UnknownReference, VerbError
+from .errors import (
+    AmbiguousReference,
+    BrainError,
+    GrammarError,
+    UnknownReference,
+    VerbError,
+)
 from .grammar import split_flags
 from .model import (
     BOARD_SECTIONS,
@@ -25,7 +31,7 @@ from .model import (
     Doc,
     render_action,
 )
-from .resolve import normalise, resolve, resolve_action
+from .resolve import _candidates, normalise, resolve, resolve_among, resolve_action
 
 
 class Result(NamedTuple):
@@ -49,6 +55,29 @@ class Verb(NamedTuple):
     arity: Tuple[int, int]
     allowed_flags: Tuple[str, ...]
     optional_text: bool
+    # Where this verb's entity references live, so a batch can be validated
+    # without running it (R6.5.1). `ref_kinds` is None when positional[0] is
+    # not an entity reference - a note id, an action selector, or a kind name.
+    # An empty tuple means "any kind", matching `resolve(root, ref)` with no
+    # `kinds` argument.
+    ref_kinds: Optional[Tuple[str, ...]] = None
+    # Maps a flag name to the kinds its value may name; None (not {}, a
+    # mutable NamedTuple default) when the verb has no reference-valued
+    # flags. Readers use `(verb.flag_refs or {})`.
+    flag_refs: Optional[Dict[str, Tuple[str, ...]]] = None
+    # A positional whose legal values are known statically, as (index, values).
+    # `status set` and `health set` check this in their own bodies too; that is
+    # defence in depth, and duplicates a constant reference rather than logic.
+    value_choices: Optional[Tuple[int, Tuple[str, ...]]] = None
+    # A verb that makes its OWN commit (bypassing `execute`/`apply_batch`'s one
+    # envelope) cannot appear inside a batch: R6.5 promises one commit for the
+    # whole batch, and a checkpoint restores FILES, never history, so a line
+    # that already moved HEAD cannot be rolled back along with the rest
+    # (fix round 1, M2). Audited every verb body for a `git.commit`/`git.undo`
+    # call of its own: only `undo` (via `git.undo`) has one. Every other verb
+    # writes files and lets its caller commit, so `True` is safe as the
+    # default rather than something each declaration has to opt into.
+    batchable: bool = True
 
 
 VERBS: Dict[Tuple[str, ...], Verb] = {}
@@ -56,7 +85,11 @@ VERBS: Dict[Tuple[str, ...], Verb] = {}
 
 def verb(*name, needs_text: bool = False, writes: bool = True,
          arity: Tuple[int, int] = (0, 0), allowed_flags: Tuple[str, ...] = (),
-         optional_text: bool = False):
+         optional_text: bool = False,
+         ref_kinds: Optional[Tuple[str, ...]] = None,
+         flag_refs: Optional[Dict[str, Tuple[str, ...]]] = None,
+         value_choices: Optional[Tuple[int, Tuple[str, ...]]] = None,
+         batchable: bool = True):
     """Register a verb.
 
     `arity` is (min, max) positionals AFTER the verb's own words, and
@@ -68,7 +101,9 @@ def verb(*name, needs_text: bool = False, writes: bool = True,
         VERBS[tuple(name)] = Verb(
             name=tuple(name), run=func, needs_text=needs_text, writes=writes,
             arity=arity, allowed_flags=tuple(allowed_flags),
-            optional_text=optional_text,
+            optional_text=optional_text, ref_kinds=ref_kinds,
+            flag_refs=flag_refs, value_choices=value_choices,
+            batchable=batchable,
         )
         return func
     return register
@@ -106,7 +141,31 @@ def next_note_id(root) -> Tuple[str, int]:
     return "n{}".format(nxt), nxt
 
 
-@verb("log", needs_text=True, arity=(1, 1))
+# The noun each `value_choices` check names in its error message, keyed by
+# verb name. `validate` and a verb's own defence-in-depth raise both build
+# their message through `_value_choice_error` (below), so the two can never
+# drift apart - the user-visible message does not change depending on which
+# layer catches a bad value.
+_VALUE_CHOICE_NOUN: Dict[Tuple[str, ...], str] = {
+    ("status", "set"): "status",
+    ("health", "set"): "health",
+    ("note", "add"): "note type",
+    ("new",): "entity kind",
+}
+
+
+def _value_choice_error(name: Tuple[str, ...], value: str,
+                         allowed: Tuple[str, ...]) -> VerbError:
+    noun = _VALUE_CHOICE_NOUN.get(name, name[0])
+    article = "an" if noun[:1].lower() in "aeiou" else "a"
+    return VerbError(
+        "{!r} is not {} {}. One of: {}".format(
+            value, article, noun, ", ".join(allowed)
+        )
+    )
+
+
+@verb("log", needs_text=True, arity=(1, 1), ref_kinds=("project",))
 def _log(root, positional, flags, text):
     project = resolve(root, positional[0], kinds=("project",))
     doc = project.doc
@@ -117,13 +176,12 @@ def _log(root, positional, flags, text):
     return Result("logged to {}".format(project.slug), (rel,))
 
 
-@verb("status", "set", arity=(2, 2))
+@verb("status", "set", arity=(2, 2), ref_kinds=("project",),
+      value_choices=(1, STATUSES))
 def _status_set(root, positional, flags, text):
     ref, value = positional[0], positional[1]
     if value not in STATUSES:
-        raise VerbError(
-            "{!r} is not a status. One of: {}".format(value, ", ".join(STATUSES))
-        )
+        raise _value_choice_error(("status", "set"), value, STATUSES)
     project = resolve(root, ref, kinds=("project",))
     doc = project.doc
     doc.set_field("status", value)
@@ -146,7 +204,7 @@ def _project_and_doc(root, ref):
 
 
 @verb("action", "add", needs_text=True, arity=(1, 1),
-      allowed_flags=("owner", "due"))
+      allowed_flags=("owner", "due"), ref_kinds=("project",))
 def _action_add(root, positional, flags, text):
     project, doc, rel = _project_and_doc(root, positional[0])
     doc.add_action(text, owner=flags.get("owner"), due=flags.get("due"))
@@ -155,7 +213,7 @@ def _action_add(root, positional, flags, text):
     return Result("added an action to {}".format(project.slug), (rel,))
 
 
-@verb("action", "done", arity=(1, 2), optional_text=True)
+@verb("action", "done", arity=(1, 2), optional_text=True, ref_kinds=("project",))
 def _action_done(root, positional, flags, text):
     """R6.2: a 1-based index into the OPEN actions, or a unique substring."""
     project, doc, rel = _project_and_doc(root, positional[0])
@@ -171,7 +229,8 @@ def _action_done(root, positional, flags, text):
     return Result("ticked {} in {}".format(task.text, project.slug), (rel,))
 
 
-@verb("action", "due", arity=(1, 2), allowed_flags=("to",), optional_text=True)
+@verb("action", "due", arity=(1, 2), allowed_flags=("to",), optional_text=True,
+      ref_kinds=("project",))
 def _action_due(root, positional, flags, text):
     if "to" not in flags:
         raise VerbError("`action due` needs --to <date>")
@@ -191,7 +250,7 @@ def _action_due(root, positional, flags, text):
     )
 
 
-@verb("decision", "add", needs_text=True, arity=(1, 1))
+@verb("decision", "add", needs_text=True, arity=(1, 1), ref_kinds=("project",))
 def _decision_add(root, positional, flags, text):
     project, doc, rel = _project_and_doc(root, positional[0])
     doc.add_decision(text)
@@ -200,7 +259,7 @@ def _decision_add(root, positional, flags, text):
     return Result("recorded a decision on {}".format(project.slug), (rel,))
 
 
-@verb("question", "add", needs_text=True, arity=(1, 1))
+@verb("question", "add", needs_text=True, arity=(1, 1), ref_kinds=("project",))
 def _question_add(root, positional, flags, text):
     project, doc, rel = _project_and_doc(root, positional[0])
     doc.add_question(text)
@@ -209,13 +268,12 @@ def _question_add(root, positional, flags, text):
     return Result("added a question to {}".format(project.slug), (rel,))
 
 
-@verb("health", "set", arity=(2, 2))
+@verb("health", "set", arity=(2, 2), ref_kinds=("project",),
+      value_choices=(1, HEALTHS))
 def _health_set(root, positional, flags, text):
     value = positional[1]
     if value not in HEALTHS:
-        raise VerbError(
-            "{!r} is not a health. One of: {}".format(value, ", ".join(HEALTHS))
-        )
+        raise _value_choice_error(("health", "set"), value, HEALTHS)
     project, doc, rel = _project_and_doc(root, positional[0])
     doc.set_field("health", value)
     doc.touch()
@@ -223,7 +281,7 @@ def _health_set(root, positional, flags, text):
     return Result("{} is now {}".format(project.slug, value), (rel,))
 
 
-@verb("field", "set", needs_text=True, arity=(2, 2))
+@verb("field", "set", needs_text=True, arity=(2, 2), ref_kinds=())
 def _field_set(root, positional, flags, text):
     key = positional[1]
     if key in GUARDED_FIELDS:
@@ -240,7 +298,8 @@ def _field_set(root, positional, flags, text):
     return Result("{} {} is now {}".format(entity.slug, key, text), (rel,))
 
 
-@verb("note", "add", needs_text=True, arity=(0, 1), allowed_flags=("tag",))
+@verb("note", "add", needs_text=True, arity=(0, 1), allowed_flags=("tag",),
+      value_choices=(0, NOTE_TYPES))
 def _note_add(root, positional, flags, text):
     """R4.6.1: the header is machine-written; the body is the user's words.
 
@@ -249,11 +308,7 @@ def _note_add(root, positional, flags, text):
     """
     note_type = positional[0] if positional else "note"
     if note_type not in NOTE_TYPES:
-        raise VerbError(
-            "{!r} is not a note type. One of: {}".format(
-                note_type, ", ".join(NOTE_TYPES)
-            )
-        )
+        raise _value_choice_error(("note", "add"), note_type, NOTE_TYPES)
     tags = [t for t in flags.get("tag", "").split() if t]
     note_id, number = next_note_id(root)
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -405,30 +460,56 @@ NEW_ENTITY = {
 }
 
 
+# Every `NEW_ENTITY` key, sorted - the legal values for `new`'s kind
+# positional, shared between the decorator's `value_choices` (so `--dry-run`
+# catches a bad kind statically, F3) and `_new`'s own defence-in-depth raise,
+# which is why both route through `_value_choice_error` rather than each
+# spelling the list separately.
+_NEW_KINDS: Tuple[str, ...] = tuple(sorted(NEW_ENTITY))
+
+
 def _slug(title: str) -> str:
     return normalise(title)
 
 
-@verb("new", needs_text=True, arity=(1, 1))
+def _find_existing_kind(root, slug: str) -> Optional[str]:
+    """The entity kind that already holds `slug`, checked across ALL FOUR
+    directories - not just the one the caller has in mind. A slug that exists
+    under two kinds makes `resolve(root, slug)` permanently ambiguous for any
+    caller that does not pass `kinds`, which is a trap the user cannot see
+    coming (R6.2) - so `new` and `validate_batch` share this ONE check rather
+    than each drawing the boundary differently (F6).
+    """
+    for kind, (directory, _title_field, _sections, _defaults) in NEW_ENTITY.items():
+        if (Path(root) / directory / (slug + ".md")).exists():
+            return kind
+    return None
+
+
+def _already_exists_message(slug: str, kind: str) -> str:
+    """The wording BOTH `_new` (at PERFORM time) and `validate_batch` (at
+    validation time) use for a slug collision, so the two paths cannot drift
+    apart the way L4 found them still doing after F6 closed the same gap in
+    the PREDICATE: validation said "ann already exists", `_new` said "ann
+    already exists as a stakeholder..." - true statements about the same
+    refusal, worded differently because each path built its own sentence."""
+    return "{} already exists as a {}. Pick another name, or edit that " \
+        "one.".format(slug, kind)
+
+
+@verb("new", needs_text=True, arity=(1, 1), value_choices=(0, _NEW_KINDS))
 def _new(root, positional, flags, text):
     kind = positional[0]
     if kind not in NEW_ENTITY:
-        raise VerbError(
-            "{!r} is not an entity kind. One of: {}".format(
-                kind, ", ".join(sorted(NEW_ENTITY))
-            )
-        )
+        raise _value_choice_error(("new",), kind, _NEW_KINDS)
     directory, title_field, sections, defaults = NEW_ENTITY[kind]
     slug = _slug(text)
     if not slug:
         raise VerbError("{!r} has no letters or digits to make a slug from".format(text))
+    existing_kind = _find_existing_kind(root, slug)
+    if existing_kind is not None:
+        raise VerbError(_already_exists_message(slug, existing_kind))
     target = Path(root) / directory / (slug + ".md")
-    if target.exists():
-        raise VerbError(
-            "{} already exists at {}. Pick another name, or edit that one.".format(
-                slug, target
-            )
-        )
 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("---\n---\n\n", encoding="utf-8")
@@ -446,7 +527,8 @@ def _new(root, positional, flags, text):
     )
 
 
-@verb("link", arity=(1, 1), allowed_flags=("program",))
+@verb("link", arity=(1, 1), allowed_flags=("program",),
+      ref_kinds=("project",), flag_refs={"program": ("program",)})
 def _link(root, positional, flags, text):
     """R4.1: membership is declared on the child. A project belongs to at most
     one program, and programs never list their projects."""
@@ -460,7 +542,8 @@ def _link(root, positional, flags, text):
     return Result("{} is in {}".format(project.slug, program.slug), (rel,))
 
 
-@verb("raise", needs_text=True, arity=(1, 1), allowed_flags=("ref",))
+@verb("raise", needs_text=True, arity=(1, 1), allowed_flags=("ref",),
+      ref_kinds=("stakeholder", "board"), flag_refs={"ref": ("project",)})
 def _raise(root, positional, flags, text):
     """R4.4.2: `## Pending` accumulates between meetings, and is what agenda
     generation consumes."""
@@ -581,10 +664,13 @@ def _request_done(root, positional, flags, text):
     return Result("done: {}".format(task.text), ("_request.md",))
 
 
-@verb("undo", arity=(0, 0))
+@verb("undo", arity=(0, 0), batchable=False)
 def _undo(root, positional, flags, text):
     """R11.5. `execute` must not commit on top of this - `undo` makes its own
-    commit, so it returns no paths."""
+    commit, so it returns no paths. `batchable=False`: `apply_batch` commits
+    once for the whole batch (R6.5), and `undo` already committed on its own
+    by the time that commit would run - two commits from one invocation, and
+    a checkpoint that cannot undo the second one (fix round 1, M2)."""
     sha = git.undo(root)
     if sha is None:
         return Result("nothing to undo")
@@ -607,10 +693,45 @@ def _check(root, positional, flags, text):
     )
 
 
-def execute(root, parsed, source: str = "cli") -> Result:
-    """Run one parsed line. Returns a `Result`."""
+class Plan(NamedTuple):
+    """One parsed, validated line, ready to run.
+
+    Producing a `Plan` touches no disk and takes no lock (R6.5.1): a batch
+    validates every line before writing any of them, which is only possible
+    if validation is a pure function of the parsed line and the `VERBS`
+    registry.
+    """
+    verb: Verb
+    positional: List[str]
+    flags: Dict[str, str]
+    text: Optional[str]
+    raw: str
+    # What `positional[0]` resolved to, when `verb.ref_kinds is not None` -
+    # filled in by `validate_batch`, which already runs this resolution to
+    # validate the line (R6.5.1), so `--dry-run` can name the target without
+    # `apply_batch` resolving it a second time (fix round 1, L5). `None` for
+    # a `new` line (nothing to resolve yet - see `_projected_slug`), a verb
+    # with no reference, or a `Plan` built by plain `validate` outside a
+    # batch, which never touches this field at all.
+    resolved: object = None
+    # `{flag_name: what it resolved to}` for every `flag_refs` site
+    # `validate_batch` resolved - `link --program <program>`, `raise --ref
+    # <project>`. `None` (not `{}`, a mutable `NamedTuple` default - the
+    # same reason `Verb.flag_refs` above is `None`) when the verb has none,
+    # or the flag was not given. Fix round 2, item 4: without this,
+    # `--dry-run` silently dropped `--ref`/`--program` from its preview even
+    # though `validate_batch` had already resolved them - the §8.1 canonical
+    # batch's own `raise arch-board --ref acme-migration -- ...` line is
+    # exactly the shape a wrong `--ref` would have gone unpreviewed on.
+    resolved_flags: Optional[Dict[str, object]] = None
+
+
+def validate(parsed) -> Optional[Plan]:
+    """Check one parsed line against its verb's declaration. Pure - no disk,
+    no lock. Raises `VerbError` / `GrammarError` on a bad line; returns
+    `None` for `parsed is None` (a blank or comment line, R6.4)."""
     if parsed is None:
-        return Result("")
+        return None
     positional, flags = split_flags(parsed.tokens)
     found, rest = find_verb(positional)
 
@@ -645,8 +766,36 @@ def execute(root, parsed, source: str = "cli") -> Result:
             "{!r}: `{}` takes no free text".format(parsed.raw, " ".join(found.name))
         )
 
-    if not found.writes:
-        return found.run(root, rest, flags, parsed.text)
+    # A batch must be able to report a bad `status`/`health`/note-type value
+    # from `--dry-run` alone, without running anything - so the check that
+    # used to live only inside the verb bodies (which still keep their own
+    # copy as defence in depth) is repeated here, at validation time. Both
+    # sides build the message through `_value_choice_error`, so they can
+    # never disagree on wording.
+    if found.value_choices is not None:
+        index, allowed = found.value_choices
+        if index < len(rest) and rest[index] not in allowed:
+            raise _value_choice_error(found.name, rest[index], allowed)
+
+    return Plan(found, rest, flags, parsed.text, parsed.raw)
+
+
+def perform(root, plan: "Plan") -> Result:
+    """Run one validated line. Writes files; does not commit or lock.
+
+    The caller owns the git envelope, because a batch has ONE envelope for N
+    lines (R6.5) and a single verb has one for one.
+    """
+    return plan.verb.run(root, plan.positional, plan.flags, plan.text)
+
+
+def execute(root, parsed, source: str = "cli") -> Result:
+    """Run one parsed line. Returns a `Result`."""
+    plan = validate(parsed)
+    if plan is None:
+        return Result("")
+    if not plan.verb.writes:
+        return perform(root, plan)
 
     git.require_repo(root)
     with lock.held(root):
@@ -657,9 +806,404 @@ def execute(root, parsed, source: str = "cli") -> Result:
         # same failure and deserves the same answer.
         checkpoint = git.checkpoint(root, git.brain_paths(root), prune=True)
         try:
-            result = found.run(root, rest, flags, parsed.text)
+            result = perform(root, plan)
             git.commit(root, result.paths, "brain: " + result.message, source=source)
-        except Exception:
+        except BaseException:
+            # BaseException, not Exception (fix round 1, M3): a Ctrl-C
+            # between the write and the commit must restore the checkpoint
+            # too, or the tree is left half-applied with no signal - exactly
+            # what R6.5's checkpoint exists to prevent, whatever interrupted
+            # it.
             git.restore(root, checkpoint)
             raise
     return result
+
+
+class BatchError(VerbError):
+    """A batch line that is wrong, named by its line number (R6.5)."""
+
+    def __init__(self, lineno: int, line: str, problem: str):
+        self.lineno = lineno
+        self.line = line
+        super().__init__("line {}: {}\n  {}".format(lineno, problem, line))
+
+
+def _numbered_lines(text: str):
+    """`text` split on "\\n", each paired with its 1-based line number - the
+    single tested path a batch's lines are walked through. (An earlier
+    `parse_batch` wrapped this with `grammar.parse_line`, but nothing outside
+    its own test called it, and an interface with an untested contract - "a
+    malformed line raises unnumbered" - is worse than no interface; deleted.)
+    """
+    for offset, line in enumerate(text.split("\n")):
+        yield offset + 1, line
+
+
+def _reference_sites(plan: "Plan"):
+    """Where `plan` names an entity, as `(ref, kinds, flag_name)` triples -
+    what a batch must resolve before writing any of it (R6.5.1). `flag_name`
+    is `None` for `positional[0]`'s reference (the PRIMARY target) and the
+    flag's own name (`"ref"`, `"program"`) for a `flag_refs` site, so a
+    caller that wants to tell the two apart - `--dry-run`'s preview, which
+    must not drop `--ref`/`--program` silently (fix round 2, item 4) - does
+    not have to guess from position alone."""
+    if plan.verb.ref_kinds is not None:
+        yield plan.positional[0], plan.verb.ref_kinds, None
+    for name, kinds in (plan.verb.flag_refs or {}).items():
+        if name in plan.flags:
+            yield plan.flags[name], kinds, name
+
+
+def _projected_slug(plan: "Plan"):
+    """The `(slug, kind, title)` a `new` line will create, or `None` if this
+    line is not a `new`. `title` is the exact free text the line will pass to
+    `doc.set_field` - the same text a stand-in candidate needs for the title
+    pass in `resolve_among` (F1) to behave like the real entity will.
+
+    Raises `VerbError` when the text has no slug in it - `_new` makes the same
+    refusal at PERFORM time, but the text is known statically, so a batch
+    names the line here instead of failing mid-write for a check R6.5.1 could
+    have made up front (F8).
+    """
+    if plan.verb.name != ("new",) or plan.text is None:
+        return None
+    slug = _slug(plan.text)
+    if not slug:
+        raise VerbError(
+            "{!r} has no letters or digits to make a slug from".format(plan.text)
+        )
+    kind = plan.positional[0] if plan.positional else None
+    return slug, kind, plan.text
+
+
+class _ProjectedEntity(NamedTuple):
+    """A stand-in for the entity a `new` line in this batch will create - just
+    enough surface for `resolve_among`'s four passes to treat it exactly like
+    a real, on-disk entity (F1): `slug` and `title` are what the passes read.
+    `pending_line` is not read by the passes at all; `_one`'s ambiguity
+    message reads it (via `resolve._describe`) to tell the user this
+    candidate does not exist on disk yet - a real `Entity` has no such
+    attribute, so `getattr(..., "pending_line", None)` tells the two apart.
+    """
+    slug: str
+    title: str
+    kind: str
+    pending_line: int
+
+
+def _resolve_against(root, ref: str, kinds, projected):
+    """Resolve `ref` against the tree UNIONED with `projected` - the entities
+    this batch's earlier `new` lines will create (R6.5.1) - by running R6.2's
+    ordered passes over the COMBINED candidate list (`resolve_among`), not by
+    resolving each side separately and unioning the results (F1/F7). An exact
+    slug on either side must beat a prefix or substring match on the other,
+    and that only holds if every candidate goes through the SAME passes
+    together: a slug already on disk and a slug this batch is about to create
+    are candidates of equal standing, in the same list, in the same order a
+    plain `resolve` against the tree alone would use.
+
+    Returns what it resolved to (a real `Entity` or a `_ProjectedEntity`
+    stand-in), so a caller that already needs the answer - `validate_batch`,
+    for `--dry-run`'s benefit (fix round 1, L5) - does not have to resolve
+    the same reference a second time.
+    """
+    candidates = list(_candidates(root, kinds))
+    for slug, (lineno, kind, title) in projected.items():
+        if not kinds or kind in kinds:
+            candidates.append(
+                _ProjectedEntity(slug=slug, title=title, kind=kind,
+                                  pending_line=lineno)
+            )
+    return resolve_among(candidates, ref)
+
+
+def _line_creating(root, text: str, after_lineno: int, ref: str, kinds):
+    """The first line AFTER `after_lineno` whose `new` would create a slug
+    `ref` resolves to, or `None`.
+
+    Used only to enrich an `UnknownReference` with A18's second clause: a
+    backward reference must be refused "naming the referencing line and the
+    line that creates it" - not just the referencing line, which is the one
+    piece of information that tells the user what to do (move that line up).
+    Best-effort: a line that itself fails to parse or validate is silently
+    skipped here, because this is a diagnostic aid to the real error, not a
+    second validation pass - the ordered walk in `validate_batch` remains the
+    only thing that decides whether the batch is valid.
+
+    A projected slug already on disk is skipped (M3): under F6's strict
+    cross-kind rule that line cannot actually create anything - it fails its
+    OWN collision check - so pointing the user at it ("move that line above
+    this one") would send them toward a batch that still does not validate.
+    """
+    for lineno, line in _numbered_lines(text):
+        if lineno <= after_lineno:
+            continue
+        try:
+            parsed = grammar.parse_line(line)
+            plan = validate(parsed) if parsed is not None else None
+            projection = _projected_slug(plan) if plan is not None else None
+        except (VerbError, GrammarError):
+            continue
+        if projection is None:
+            continue
+        slug, kind, title = projection
+        if kinds and kind not in kinds:
+            continue
+        if _find_existing_kind(root, slug) is not None:
+            continue
+        stub = _ProjectedEntity(slug=slug, title=title, kind=kind,
+                                 pending_line=lineno)
+        try:
+            resolve_among([stub], ref)
+        except UnknownReference:
+            continue
+        return lineno
+    return None
+
+
+def validate_batch(root, text: str) -> List[Tuple[int, "Plan"]]:
+    """Every line statically valid, every reference resolvable against the
+    tree unioned with what earlier lines will create (R6.5.1). Raises
+    `BatchError` naming the first bad line. Writes nothing, takes no lock -
+    including for a batch about to be rejected on its very last line, which is
+    what makes `--dry-run` and R6.5's "nothing written" the same code path.
+
+    Walking IN ORDER is deliberate (not building the projection from the whole
+    batch first): a reference that precedes its `new` line fails here, at
+    validation, rather than passing and failing mid-write (A18).
+    """
+    plans: List[Tuple[int, Plan]] = []
+    # slug -> (lineno, kind, title) - the entities earlier `new` lines project.
+    projected: Dict[str, Tuple[int, Optional[str], str]] = {}
+
+    for lineno, line in _numbered_lines(text):
+        try:
+            parsed = grammar.parse_line(line)
+        except GrammarError as exc:
+            raise BatchError(lineno, line.rstrip("\r\n"), str(exc))
+        if parsed is None:
+            continue
+
+        try:
+            plan = validate(parsed)
+        except (VerbError, GrammarError) as exc:
+            raise BatchError(lineno, parsed.raw, str(exc))
+        if plan is None:
+            continue
+
+        if not plan.verb.batchable:
+            # M2, fix round 1: a verb that commits on its own (`undo`) cannot
+            # share the batch's one envelope - R6.5 promises one commit, and
+            # a checkpoint restores files, never history, so a self-committed
+            # line could not be rolled back along with the rest. Refused
+            # here, before any write, like every other batch violation.
+            raise BatchError(
+                lineno, parsed.raw,
+                "`{}` makes its own commit and cannot be inside a batch "
+                "(R6.5 promises one commit for the whole batch). Run it on "
+                "its own.".format(" ".join(plan.verb.name)),
+            )
+
+        try:
+            projection = _projected_slug(plan)
+        except VerbError as exc:
+            raise BatchError(lineno, parsed.raw, str(exc))
+        if projection is not None:
+            slug, kind, title = projection
+            if slug in projected:
+                raise BatchError(
+                    lineno, parsed.raw,
+                    "{} is already created on line {}".format(
+                        slug, projected[slug][0]
+                    ),
+                )
+            existing_kind = _find_existing_kind(root, slug)
+            if existing_kind is not None:
+                raise BatchError(
+                    lineno, parsed.raw,
+                    _already_exists_message(slug, existing_kind),
+                )
+            projected[slug] = (lineno, kind, title)
+
+        # `_reference_sites` tells the PRIMARY target (`flag_name is None`)
+        # apart from a flag reference (`flag_name` is that flag's name).
+        # Both are captured onto the plan so `--dry-run` (L5, and item 4's
+        # flag-reference fix) can name them without `_resolve_against`
+        # walking the tree a second time.
+        for ref, kinds, flag_name in _reference_sites(plan):
+            try:
+                found = _resolve_against(root, ref, kinds, projected)
+            except AmbiguousReference as exc:
+                raise BatchError(lineno, parsed.raw, str(exc))
+            except UnknownReference as exc:
+                creator = _line_creating(root, text, lineno, ref, kinds)
+                if creator is None:
+                    raise BatchError(lineno, parsed.raw, str(exc))
+                raise BatchError(
+                    lineno, parsed.raw,
+                    "{!r} matches nothing yet - line {} creates it. Move "
+                    "that line above this one.".format(ref, creator),
+                )
+            if flag_name is None:
+                plan = plan._replace(resolved=found)
+            else:
+                resolved_flags = dict(plan.resolved_flags or {})
+                resolved_flags[flag_name] = found
+                plan = plan._replace(resolved_flags=resolved_flags)
+
+        plans.append((lineno, plan))
+    return plans
+
+
+def _dry_run_target(entity) -> str:
+    """One resolved entity's slug for `--dry-run`, annotated when it is a
+    stand-in for a `new` line elsewhere in this batch rather than something
+    already on disk (mirrors `resolve._describe`, which annotates the same
+    way for an ambiguity message)."""
+    pending = getattr(entity, "pending_line", None)
+    if pending is not None:
+        return "{} (created on line {})".format(entity.slug, pending)
+    return entity.slug
+
+
+def _dry_run_effect(plan: "Plan") -> str:
+    """What `--dry-run` names for one line (fix round 1, L5; extended in fix
+    round 2, item 4): the verb, the PRIMARY target `validate_batch` already
+    resolved it to, any `--flag` reference it also resolved (`link
+    --program`, `raise --ref`), and an enumerated value being set (`status
+    set`, `health set`) - distinguishing a line that CREATES an entity from
+    one that references something that already exists or that an earlier
+    line of the same batch will create.
+
+    A flag reference used to be silently dropped from the preview even
+    though `validate_batch` had already resolved it - the §8.1 canonical
+    batch's own `raise arch-board --ref acme-migration -- ...` line is
+    exactly the shape that hid a wrong `--ref` from the user. `new`'s own
+    `value_choices` (its entity kind) is already named by the "(creates)"
+    branch, so that branch returns before the enumerated-value logic below
+    would repeat it.
+
+    Never the user's free text (R4.6.1's principle, applied to a batch's own
+    preview): it is already on their screen, and this only ever names brain's
+    own syntax - a verb, a slug, an enumerated value, a flag name - not prose.
+    """
+    label = " ".join(plan.verb.name)
+    projection = _projected_slug(plan)
+    if projection is not None:
+        slug, kind, _title = projection
+        return "{} {} -> {} (creates)".format(label, kind, slug)
+
+    if plan.resolved is not None:
+        target = "{} -> {}".format(label, _dry_run_target(plan.resolved))
+    else:
+        target = label
+
+    extras = []
+    if plan.verb.value_choices is not None:
+        index, _allowed = plan.verb.value_choices
+        if index < len(plan.positional):
+            extras.append(plan.positional[index])
+    for name in sorted(plan.resolved_flags or {}):
+        extras.append(
+            "--{} {}".format(name, _dry_run_target(plan.resolved_flags[name]))
+        )
+
+    if extras:
+        return "{} ({})".format(target, ", ".join(extras))
+    return target
+
+
+def apply_batch(root, text: str, dry_run: bool = False,
+                 source: str = "cli") -> Result:
+    """Run a whole batch as ONE commit (R6.5, R6.6).
+
+    `validate_batch` runs to completion first, so a bad line is caught before
+    anything is written and needs no checkpoint to undo - "validated in full,
+    then applied, then committed" (R6.5), in that order. One envelope wraps
+    all N writes rather than N commits of one line each: the user typed one
+    batch, and `undo` (R11.5) must be able to revert it as the one thing it
+    was (R6.6) - N commits would make `undo` revert one line at a time
+    instead.
+
+    `--dry-run` returns after validation, before the lock (R11.7) is even
+    taken: nothing on disk changes, so there is nothing to check out of and
+    nothing to hold the lock against.
+
+    A reference that resolved fine at validation time can still fail at
+    write time - action selectors (`action done`/`action due`'s index-or-
+    substring) resolve only in `perform`, never in `validate_batch` - and
+    `validate_batch` only proves what R6.5.1 makes knowable statically in any
+    case; a slug's identity is only fixed once its file exists. Such a
+    failure is wrapped into a `BatchError` naming its line, because R6.5
+    promises the offending line is reported no matter which phase caught it.
+    `BrainError` is the catch, not `VerbError` (fix round 1, M1): reference
+    errors (`UnknownReference`, `AmbiguousReference`) and `GitError` are
+    `BrainError`'s SIBLINGS under it, not `VerbError`'s, and are exactly what
+    a write-time failure realistically raises. Anything else - a bug in
+    `perform`, not a bad line - propagates unwrapped rather than being
+    dressed up as one; the checkpoint restore below runs for it regardless,
+    because it catches `BaseException` (fix round 1, M3), not merely
+    `Exception` - a Ctrl-C between two writes gets the same rollback as any
+    other interruption.
+    """
+    plans = validate_batch(root, text)
+    # R11.1a/A17: `apply` is a write verb outside a batch's early returns too
+    # - even a comment-only batch that ends up writing nothing must still
+    # refuse outside a repository, the same as every other write verb (fix
+    # round 1, L6). Checked before EITHER early return below, not just the
+    # empty-batch one, since `--dry-run` is still a mode of a write verb.
+    git.require_repo(root)
+    if dry_run:
+        return Result(
+            "{} line(s), nothing written".format(len(plans)),
+            (),
+            [
+                "line {}: {}".format(lineno, _dry_run_effect(plan))
+                for lineno, plan in plans
+            ],
+        )
+    if not plans:
+        return Result("nothing to do", (), [])
+
+    with lock.held(root):
+        # A2: checkpoint before the first write, so a failure between two
+        # writes - nothing committed, so no HEAD sha describes it - restores
+        # the tree instead of leaving it half-applied.
+        checkpoint = git.checkpoint(root, git.brain_paths(root), prune=True)
+        paths: List[str] = []
+        try:
+            messages: List[str] = []
+            for lineno, plan in plans:
+                try:
+                    result = perform(root, plan)
+                except BatchError:
+                    raise
+                except (BrainError, OSError) as exc:
+                    raise BatchError(lineno, plan.raw, str(exc))
+                messages.append(result.message)
+                for path in result.paths:
+                    if path not in paths:
+                        paths.append(path)
+            git.commit(
+                root, tuple(paths),
+                "brain: {} change(s) in one batch".format(len(plans)),
+                source=source, notes=messages,
+            )
+        except BaseException:
+            # `git.commit` stages every path in `paths` before it can fail
+            # (a rejecting pre-commit hook, say), and `git.restore` only ever
+            # puts file CONTENT back - it never touches the index. Left
+            # alone, a failed commit leaves those paths staged against
+            # content `restore` just overwrote, so `brain check --authored`
+            # reports a path that no longer differs from HEAD as changed
+            # (fix round 1, M4). `git.undo` unstages in the analogous spot;
+            # this is the same fix for the batch path. Safe to call with
+            # nothing staged yet - `git reset -- <paths>` on unstaged paths
+            # is a no-op - so it runs unconditionally rather than only after
+            # `git.commit` was reached.
+            git._unstage(root, paths)
+            git.restore(root, checkpoint)
+            raise
+    return Result(
+        "applied {} line(s)".format(len(plans)), tuple(paths), messages
+    )
