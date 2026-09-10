@@ -32,6 +32,15 @@ def _normalise(value):
     return str(value)
 
 
+# Fix round 3 (M1): PyYAML's SCANNER folds `\x85` (NEL), U+2028 (LS) and
+# U+2029 (PS) as line breaks even INSIDE a double-quoted scalar, so quoting
+# alone does not protect them - `_quote` escapes them with YAML's own
+# `\N`/`\L`/`\P` (see `_quote` below), and this is the reverse table
+# `_unquote` needs for those three, on top of the two `_quote` already
+# emitted (`\\` and `\"`).
+_ESCAPE_DECODE = {"N": "\x85", "L": "\u2028", "P": "\u2029"}
+
+
 def _unquote(text: str) -> str:
     text = text.strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
@@ -44,7 +53,8 @@ def _unquote(text: str) -> str:
         out, i = [], 0
         while i < len(inner):
             if inner[i] == "\\" and i + 1 < len(inner):
-                out.append(inner[i + 1])
+                nxt = inner[i + 1]
+                out.append(_ESCAPE_DECODE.get(nxt, nxt))
                 i += 2
             else:
                 out.append(inner[i])
@@ -181,6 +191,20 @@ _YAML_TIMESTAMP = re.compile(r"""^[0-9][0-9][0-9][0-9]-[0-9][0-9]?-[0-9][0-9]?
 # either appearing as a bare value - a fix-round-2 finding (m4).
 _YAML_EXACT = frozenset(["<<", "="])
 
+# PyYAML's own `Reader.NON_PRINTABLE`, copied (not imported, R3.3): outside
+# this class `yaml.safe_load` raises `ReaderError` before scanning even
+# starts - U+007F-U+009F (C1 controls), lone surrogates and U+FFFE/U+FFFF
+# included, none of which `ord(ch) < 0x20` alone (fix round 2) caught (fix
+# round 3, m1). `ord(ch) < 0x20` stays too: it already covers an embedded
+# tab, which the READER accepts (`\x09` is inside this class) but the
+# SCANNER refuses to start a plain-scalar token with outside quotes
+# (`v: a<TAB>b` is a `ScannerError`) - a real, already-fixed case this
+# class alone does not cover, so replacing rather than adding to it would
+# have been a regression.
+_NON_PRINTABLE = re.compile(
+    "[^\x09\x0A\x0D\x20-\x7E\x85\xA0-\uD7FF\uE000-\uFFFD\U00010000-\U0010ffff]"
+)
+
 # Fix round 2 (m4): the date-only branch of PyYAML's timestamp resolver -
 # deliberately excluded from `_YAML_TIMESTAMP` above so a valid date stays
 # unquoted - still resolves `YYYY-MM-DD`, and `SafeConstructor` raises
@@ -215,17 +239,34 @@ def _subset_is_complete(lines) -> bool:
     active` written without the space, a stray NBSP, and a value carrying a
     second, unescaped quote - each a new corner of YAML 1.1, because trying
     to predict a full YAML parser from the outside never stops finding one.
-    We do not need to: `brain` is the only writer of this format (R3.1), and
-    after `_needs_quoting`'s fix-round-1 extensions it quotes everything
-    dangerous. So the fast path only has to recognise OUR OWN output, which
-    is bounded and provable - reconstruct `key + ": " + render_value(value)`
-    from what the subset extracted and compare it to the original line byte
-    for byte. Anything `brain` wrote satisfies that by construction.
-    Anything it did not - a hand edit, a missing space after the colon, a
-    trailing space, a stray NBSP, a badly escaped quote, a single-quoted
-    value (`_quote` only ever emits double quotes), an anchor, a tag, a
-    mis-split nested flow list - fails to reproduce and falls to PyYAML,
-    which is exactly where it belongs.
+    We do not need to: `brain` is the only writer of this format (R3.1). So
+    the fast path only has to recognise OUR OWN output - reconstruct
+    `key + ": " + render_value(value)` from what the subset extracted and
+    compare it to the original line byte for byte.
+
+    Fix round 3 (M1): "anything `brain` wrote satisfies that by
+    construction" - what round 2 said here - is wrong, and saying it plainly
+    is the fix, not just the three regex/escaping additions above. The round
+    trip is only bounded and provable for QUOTED scalars (accept iff the
+    token is exactly `_quote`'s output, which the reconstruction proves
+    directly) and for structure (spacing, flow-splitting, anchors). For a
+    PLAIN scalar, `render_value(value) == raw` reduces to
+    `not _needs_quoting(value)` - the round trip adds NOTHING there. So the
+    real, load-bearing assumption is "`_needs_quoting` is complete": every
+    plain scalar `brain` can write is one `_needs_quoting` already flags as
+    safe to leave unquoted. Rounds 1 through 3's `_needs_quoting` additions
+    (the YAML 1.1 resolver regexes, `_YAML_EXACT`, the printability and
+    line-break-folding checks, `_is_invalid_calendar_date`) are that
+    assumption's evidence, not a proof of it - a round trip cannot prove a
+    property of the function it calls. Whatever `_needs_quoting` was wrong
+    to leave unquoted, the round trip cannot catch: it will look identical
+    coming and going. Anything that is NOT a plain scalar `brain`'s own
+    writer would produce unquoted - a hand edit, a missing space after the
+    colon, a trailing space, a badly escaped quote, a single-quoted value
+    (`_quote` only ever emits double quotes), an anchor, a tag, a mis-split
+    nested flow list - still fails to reproduce and falls to PyYAML, which
+    is exactly where it belongs; that half of the guard IS provable, and
+    stays so.
 
     This subsumes three round-1 special cases that used to live here
     (quoted-scalar escape safety, anchors/tags, nested-flow bracket
@@ -297,15 +338,42 @@ def _needs_quoting(text: str, in_list: bool = False) -> bool:
         return True
     if any(ord(ch) < 0x20 for ch in text):
         return True
+    # Fix round 3 (M1/m1): `_NON_PRINTABLE` is the reader-level printability
+    # gate (see its own comment above); `_LINE_BREAK_LIKE` is narrower and
+    # separate - `\x85` IS reader-printable, but the scanner folds it (and
+    # U+2028/U+2029) as a line break even inside a double-quoted scalar, so
+    # `_quote` escapes those three explicitly (see `_quote` below) rather
+    # than relying on quoting alone.
+    if _NON_PRINTABLE.search(text):
+        return True
+    if any(ch in _LINE_BREAK_LIKE for ch in text):
+        return True
     if _is_invalid_calendar_date(text):
         return True
-    if in_list and ("," in text or "]" in text or "[" in text):
+    # m2: a flow-list item containing `{`, `}` or `?` (in addition to the
+    # existing `,`/`]`/`[`) makes `yaml.safe_load` raise `ParserError` on
+    # the WHOLE list - pre-existing at 4e60bb6, silent now that PyYAML no
+    # longer runs to surface it once the fast path wrongly accepts it.
+    # `{`, `}` and `?` are flow-context indicators: PyYAML raises a ParserError
+    # on `tags: [a?b]`, so without them `brain` would WRITE a list it cannot
+    # read back (m2). Pre-existing before this milestone, silent since the
+    # fast path stopped surfacing PyYAML's error.
+    if in_list and any(c in text for c in ",[]{}?"):
         return True
     return False
 
 
+# Fix round 3 (M1): the three characters `_ESCAPE_DECODE` above reverses -
+# PyYAML's scanner folds them as line breaks even inside a double-quoted
+# scalar, so they must be escaped, not just quoted.
+_LINE_BREAK_LIKE = {"\x85": "\\N", "\u2028": "\\L", "\u2029": "\\P"}
+
+
 def _quote(text: str) -> str:
-    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    for char, replacement in _LINE_BREAK_LIKE.items():
+        escaped = escaped.replace(char, replacement)
+    return '"' + escaped + '"'
 
 
 def _scalar(text, in_list: bool = False) -> str:

@@ -107,7 +107,20 @@ ROUND2_CASES = [
     'v: a\tb',  # m4: an embedded tab
 ]
 
-CASES = BENIGN_CASES + DANGEROUS_CASES + ROUND2_CASES
+ROUND3_CASES = [
+    'tags: [alpha\x85beta, gamma]',  # M1: NEL folded as a line break by PyYAML's scanner
+    'v: alpha\u2028beta',  # M1: LS folded as a line break
+    'v: alpha\u2029beta',  # M1: PS folded as a line break
+    'v: a\x7fb',  # m1: DEL, ReaderError - NON_PRINTABLE, not ord<0x20
+    'v: a\x9fb',  # m1: a C1 control, ReaderError
+    'v: a\ufffeb',  # m1: U+FFFE, ReaderError
+    'v: a\uffffb',  # m1: U+FFFF, ReaderError
+    'tags: [a?b, x]',  # m2: ParserError on the whole list
+    'tags: [a{b, x]',  # m2: ParserError on the whole list
+    'tags: [ab}, x]',  # m2: ParserError on the whole list
+]
+
+CASES = BENIGN_CASES + DANGEROUS_CASES + ROUND2_CASES + ROUND3_CASES
 
 
 @pytest.mark.parametrize("line", CASES)
@@ -204,6 +217,17 @@ def test_parse_front_matter_never_raises_on_junk():
         ("v: =", "ConstructorError"),
         ("v: a\tb", "ScannerError"),
         ("tags: [,]", "ParserError"),
+        # Fix round 3 (m1): PyYAML's READER rejects these before scanning
+        # starts, so `_NON_PRINTABLE` - not `ord(ch) < 0x20` - is what has to
+        # catch them. They were already in DANGEROUS_CASES, but that test
+        # compares FIELDS only, and `_parse_with_pyyaml` falls back to the
+        # subset parser when PyYAML raises - so the fields matched trivially
+        # and the lost problem report was invisible to it. Disabling
+        # `_NON_PRINTABLE` left the whole suite green until these landed here.
+        ("v: a\x7fb", "ReaderError"),          # DEL
+        ("v: a\x9fb", "ReaderError"),          # C1 control
+        ("v: a\ufffeb", "ReaderError"),        # non-character
+        ("v: a\uffffb", "ReaderError"),        # non-character
     ],
 )
 def test_malformed_front_matter_still_reports_a_problem(malformed_line, expected_exception):
@@ -244,6 +268,13 @@ DANGEROUS_FIELD_VALUES = [
     "=",
     "2026-02-30",  # date-shaped, not a real date
     "a\x01b",
+    # Fix round 3 (M1): the line-break-fold codepoints. `_quote` must
+    # escape these (\N/\L/\P), not just quote them - PyYAML's scanner
+    # folds them as line breaks even inside a double-quoted scalar.
+    "a\x85b",
+    "a\u2028b",
+    "a\u2029b",
+    "a\x85\u2028b\u2029c",  # more than one, in one value
 ]
 
 
@@ -282,6 +313,42 @@ def test_a_yaml_keyword_key_declines_even_though_the_value_round_trips(key):
     assert _yaml._subset_is_complete([line]) is False
 
 
+@pytest.mark.parametrize("line", [
+    "tags: [a?b]",
+    "tags: [a{b]",
+    "tags: [ab}]",
+    "tags: [a, b?c]",
+])
+def test_a_flow_indicator_inside_a_list_item_declines(line):
+    """Fix round 3 (m2): `{`, `}` and `?` are flow-context indicators, so
+    PyYAML raises a ParserError on `tags: [a?b]`. Without them in
+    `_needs_quoting`'s in-list check, `brain` would WRITE a list it could not
+    read back - and since the fast path stopped surfacing PyYAML's error, it
+    would do so silently.
+
+    This test exists because removing those three characters left all 527
+    tests green: the value round-trips byte-for-byte, so the round-trip guard
+    cannot see it, and the differential test compares fields only - PyYAML
+    falls back to the subset parser when it raises, so the fields matched.
+    """
+    assert _yaml._subset_is_complete([line]) is False
+    if _yaml.HAVE_PYYAML:
+        _fields, problems = _yaml.parse_front_matter([line])
+        assert problems, "PyYAML's refusal must reach `brain check` (R4.2.4)"
+
+
+def test_a_list_item_needing_quotes_is_written_quoted():
+    """The write half of the same rule: whatever `brain` puts in a flow list
+    must read back as what it put in (R4.6.1)."""
+    for value in ("a?b", "a{b", "ab}", "a,b", "a[b"):
+        rendered = _yaml.render_value([value])
+        fields, _ = _yaml._parse_subset(["tags: " + rendered])
+        assert fields["tags"] == [value], (value, rendered)
+        if _yaml.HAVE_PYYAML:
+            py, _ = _yaml._parse_with_pyyaml(["tags: " + rendered])
+            assert py["tags"] == [value], (value, rendered)
+
+
 def test_duplicate_keys_do_not_need_special_handling():
     """Fix round 2 checked this rather than assuming it, per the brief:
     'the subset parser silently keeps the last and PyYAML errors - check
@@ -303,3 +370,22 @@ def test_duplicate_keys_do_not_need_special_handling():
         subset_fields, _ = _yaml._parse_subset(lines)
         yaml_fields, _ = _yaml._parse_with_pyyaml(lines)
         assert subset_fields == yaml_fields, (lines, subset_fields, yaml_fields)
+
+
+def test_quote_and_unquote_stay_symmetric_for_line_break_like_codepoints():
+    """Fix round 3 (M1): the whole guard is `render_value(parsed) == raw`,
+    so if `_quote`/`_unquote` ever stopped being exact inverses for these
+    three, the fast path would start silently declining `brain`'s own
+    output - a correctness bug hiding as a performance regression, easy to
+    miss because nothing would misparse, everything would just get slower.
+    Checked directly, independent of the round-trip guard itself."""
+    for ch in ("\x85", " ", " "):
+        value = "before{}after".format(ch)
+        quoted = _yaml._quote(value)
+        assert _yaml._unquote(quoted) == value, (ch, quoted)
+        # And the guard itself: `brain`'s own rendering of this value must
+        # take the fast path when read back.
+        line = "v: " + quoted
+        assert _yaml._subset_is_complete([line]) is True
+        subset_fields, _ = _yaml._parse_subset([line])
+        assert subset_fields["v"] == value
