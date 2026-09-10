@@ -12,9 +12,11 @@ can tell that it happened.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import List, Optional
 
-from .entities import load_root
+from . import entities as _entities
+from . import tree
 from .errors import AmbiguousReference, UnknownReference
 
 
@@ -24,10 +26,19 @@ def normalise(text: str) -> str:
 
 
 def _candidates(root, kinds):
-    entities = load_root(root)
+    """R4.8.2: use the command-in-flight's `Tree` when one is active, so an
+    eight-line batch with nine reference sites scans the tree once instead of
+    sixteen times. Falls back to loading directly when no `Tree` is active
+    (or belongs to a different root) - `resolve` and `resolve_among` keep
+    their exact signatures and keep working for callers, tests included, that
+    call them with no command in flight."""
+    active = tree.current()
+    if active is not None and Path(active.root) == Path(root):
+        return active.entities(kinds)
+    found = _entities.load_root(root)
     if kinds:
-        entities = [e for e in entities if e.kind in kinds]
-    return entities
+        found = [e for e in found if e.kind in kinds]
+    return found
 
 
 def _describe(entity) -> str:
