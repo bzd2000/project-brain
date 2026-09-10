@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from . import digest
-from . import search, git, grammar, lock, tree
+from . import search, git, grammar, lock, rollup, tree
 from .entities import HEALTHS, KINDS, NOTE_TYPES, STATUSES, load_notes
 from .errors import (
     AmbiguousReference,
@@ -718,6 +718,28 @@ def _context(root, positional, flags, text):
     return Result(out, [], None)
 
 
+@verb("build", arity=(0, 0))
+def _build(root, positional, flags, text):
+    """R4.3.1a: regenerate every program's `## Roll-up`.
+
+    Every ordinary write already refreshes the roll-ups it invalidates, in
+    its own commit - so this exists for the case that bypasses them: a brain
+    edited outside `brain`, or one whose files arrived by `git pull`. It is
+    a write verb, so it goes through the same lock, checkpoint and commit as
+    anything else (R11.7, R6.5), and a program already correct is left
+    untouched rather than rewritten, so `build` on a clean brain is a no-op
+    and commits nothing.
+    """
+    active = tree.current() or tree.Tree(root)
+    every = [p.slug for p in active.entities(kinds=("program",))]
+    written = rollup.refresh_all(active, root, every)
+    if not written:
+        return Result("roll-ups already current", (), [])
+    return Result(
+        "rebuilt {} roll-up(s)".format(len(written)), written, list(written)
+    )
+
+
 @verb("search", needs_text=True, writes=False, arity=(0, 0))
 def _search(root, positional, flags, text):
     """R6.7: tokens matched case-insensitively against slug, title, tags and
@@ -852,14 +874,27 @@ def perform(root, plan: "Plan") -> Result:
     the gap before that lands rather than after.
     """
     active = tree.current()
-    known = active.known_paths() if active is not None else None
     result = plan.verb.run(root, plan.positional, plan.flags, plan.text)
+
+    # Ask the tree what it knows AFTER the verb ran, not before. A verb loads
+    # the tree itself, by resolving its own reference - so on the single-verb
+    # path the tree is still unloaded when `perform` starts, `known_paths()`
+    # is None, and capturing it up front skipped this whole block. That made
+    # `refresh_path` dead code for `execute`, which Task 5's roll-ups then
+    # read a stale `.health` through: `health set acme-migration amber`
+    # regenerated the roll-up with the OLD value and only caught up on the
+    # NEXT write.
+    known = active.known_paths() if active is not None else None
     if known is not None:
-        root_path = Path(root)
         entity_paths = [
-            full for full in (root_path / rel for rel in result.paths)
+            full for full in (Path(root) / rel for rel in result.paths)
             if full.parent.name in KINDS
         ]
+        # A path the tree has never seen, or one that has stopped existing,
+        # changes WHICH entities there are, so the whole tree is invalid
+        # (R6.5.1/A18's forward reference depends on this). Anything else is
+        # a content edit to an entity already in the list, and costs one
+        # single-file reparse rather than a rescan.
         if any((full in known) != full.exists() for full in entity_paths):
             active.invalidate()
         else:
@@ -892,8 +927,16 @@ def execute(root, parsed, source: str = "cli") -> Result:
             checkpoint = git.checkpoint(root, git.brain_paths(root), prune=True)
             try:
                 result = perform(root, plan)
+                # R4.3.1a: a roll-up is derived data living in the SOURCE OF
+                # TRUTH, so a stale one is a wrong answer in a committed file.
+                # The write that invalidates it regenerates it, in the same
+                # commit. Last thing inside the envelope, because the tree is
+                # shared for the length of one command and nothing resolves
+                # against it after this point.
+                paths = tuple(result.paths) + rollup.refresh(
+                    tree.current(), root, result.paths)
                 git.commit(
-                    root, result.paths, "brain: " + result.message, source=source
+                    root, paths, "brain: " + result.message, source=source
                 )
             except BaseException:
                 # BaseException, not Exception (fix round 1, M3): a Ctrl-C
@@ -1306,6 +1349,12 @@ def apply_batch(root, text: str, dry_run: bool = False,
                     for path in result.paths:
                         if path not in paths:
                             paths.append(path)
+                # R4.3.1a, once for the whole batch rather than per line: a
+                # three-project batch would otherwise rewrite the program file
+                # three times and put that churn in the commit.
+                for rel in rollup.refresh(tree.current(), root, paths):
+                    if rel not in paths:
+                        paths.append(rel)
                 git.commit(
                     root, tuple(paths),
                     "brain: {} change(s) in one batch".format(len(plans)),
