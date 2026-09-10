@@ -154,11 +154,17 @@ def test_a_write_time_reference_failure_is_wrapped_naming_its_line(brain_repo):
     No second case (a reference that resolves at validation but not at
     write) was added: every reference `validate_batch` checks is resolved
     against the tree at validation time AND at write time by the exact same
-    `resolve`/`resolve_among` call reading the exact same disk state in
-    between, with no other writer able to run concurrently (R11.7's lock) -
-    so nothing in this codebase can make that pair disagree without another
-    process changing the tree mid-batch, which is a concurrency scenario
-    (A15), not a reference-resolution one.
+    `resolve`/`resolve_among` call, and - since H1 (fix round 1) moved
+    `apply_batch`'s `with lock.held(root):` to wrap `validate_batch` as well
+    as the write loop, not only the write loop - no other process can run
+    concurrently between those two calls either (R11.7's lock now covers
+    both). Before H1, the SCAN that backs validation ran before the lock was
+    even taken, so this claim held for the reference-resolution ANSWER but
+    not for the disk state behind it; H1 closed that gap, so it is true
+    again in full. Either way, nothing in this codebase can make that pair
+    disagree without another process changing the tree mid-batch, which - now
+    genuinely excluded by the lock for the whole validate-then-write window -
+    would be a concurrency scenario (A15), not a reference-resolution one.
     """
     with pytest.raises(BatchError) as exc_info:
         c.apply_batch(

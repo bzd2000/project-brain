@@ -816,24 +816,39 @@ def perform(root, plan: "Plan") -> Result:
     whether this write changed which paths exist under one of the four
     entity directories - a `new` creating a file the `Tree` did not know
     about, or (symmetrically, though nothing removes an entity file today) a
-    removal - and invalidate it so the next lookup rescans. An ordinary
-    content edit (`log`, `field set`, ...) touches a path the `Tree` already
-    knew about and leaves its existence unchanged, so it does NOT invalidate
-    - that is what keeps an eight-line batch to one scan
-    (`tests/test_tree_cache.py::test_a_batch_loads_the_tree_once`).
+    removal - and invalidate it so the next lookup rescans.
+
+    M3, fix round 1: an ordinary content edit (`log`, `status set`, `field
+    set`, `link`'s `program:` write, ...) touches a path the `Tree` already
+    knew about and leaves its EXISTENCE unchanged, so it does not invalidate
+    the whole tree - that is what keeps an eight-line batch to one scan
+    (`tests/test_tree_cache.py::test_a_batch_loads_the_tree_once`). But it
+    can still change that ONE entity's own fields, and `Project.status` /
+    `.health` / `.program` / `.due` and `Party.projects` / `.cadence` /
+    `.last_met` / `.next_meeting` (entities.py) are snapshots taken once at
+    construction, not properties - so the cached `Entity` object for that
+    path is now stale. `Tree.refresh_path` reloads exactly that one file (a
+    single-file reparse, not a full rescan), so a later line in the same
+    batch that resolves this slug again sees the write. Nothing in
+    `commands.py` reads a stale attribute today - every verb re-reads
+    `entity.doc`/`entity.fm` fresh - but Task 5's roll-ups read `.program`
+    and `.status` off the cached object `resolve` returns, so this closes
+    the gap before that lands rather than after.
     """
     active = tree.current()
     known = active.known_paths() if active is not None else None
     result = plan.verb.run(root, plan.positional, plan.flags, plan.text)
     if known is not None:
         root_path = Path(root)
-        for rel in result.paths:
-            full = root_path / rel
-            if full.parent.name not in KINDS:
-                continue
-            if (full in known) != full.exists():
-                active.invalidate()
-                break
+        entity_paths = [
+            full for full in (root_path / rel for rel in result.paths)
+            if full.parent.name in KINDS
+        ]
+        if any((full in known) != full.exists() for full in entity_paths):
+            active.invalidate()
+        else:
+            for full in entity_paths:
+                active.refresh_path(full)
     return result
 
 
@@ -1185,6 +1200,14 @@ def apply_batch(root, text: str, dry_run: bool = False,
     taken: nothing on disk changes, so there is nothing to check out of and
     nothing to hold the lock against.
 
+    A non-`--dry-run` batch takes the lock BEFORE `validate_batch`, not just
+    around the writes (H1, fix round 1): `validate_batch` is what forces the
+    R4.8.2 `Tree`'s first scan, and R4.8.2's safety argument - no other
+    process can change the tree under a command in flight - only holds if
+    that scan happens inside the lock too. One consequence worth knowing: a
+    second `brain apply` now refuses while the first is still VALIDATING,
+    not only while it is writing.
+
     A reference that resolved fine at validation time can still fail at
     write time - action selectors (`action done`/`action due`'s index-or-
     substring) resolve only in `perform`, never in `validate_batch` - and
@@ -1210,15 +1233,16 @@ def apply_batch(root, text: str, dry_run: bool = False,
     # cache that outlives this call (R4.8.1a) - the `with` block is the
     # command's whole lifetime.
     with tree.for_command(root):
-        plans = validate_batch(root, text)
-        # R11.1a/A17: `apply` is a write verb outside a batch's early returns
-        # too - even a comment-only batch that ends up writing nothing must
-        # still refuse outside a repository, the same as every other write
-        # verb (fix round 1, L6). Checked before EITHER early return below,
-        # not just the empty-batch one, since `--dry-run` is still a mode of
-        # a write verb.
-        git.require_repo(root)
         if dry_run:
+            # `--dry-run` writes nothing, so it must not take the lock (a
+            # read must not block a writer) - `validate_batch` runs
+            # un-locked here, same as it always has.
+            plans = validate_batch(root, text)
+            # R11.1a/A17: `apply` is a write verb outside a batch's early
+            # returns too - even a comment-only batch that ends up writing
+            # nothing must still refuse outside a repository, the same as
+            # every other write verb (fix round 1, L6).
+            git.require_repo(root)
             return Result(
                 "{} line(s), nothing written".format(len(plans)),
                 (),
@@ -1227,10 +1251,27 @@ def apply_batch(root, text: str, dry_run: bool = False,
                     for lineno, plan in plans
                 ],
             )
-        if not plans:
-            return Result("nothing to do", (), [])
 
+        # H1 (fix round 1): the lock must be held BEFORE `validate_batch`,
+        # not only around the write loop below. R4.8.2's own safety argument
+        # - "a write holds the lock (R11.7), so no other process can change
+        # the tree underneath a command in flight" - is only true if the
+        # SCAN happens inside the lock too. `validate_batch` is what forces
+        # the tree's first load (it resolves every reference site), so
+        # locking only around the writes left a window: another process
+        # could commit a change to an entity file between this batch's scan
+        # and its lock, and a verb writing through `entity.doc` (a snapshot
+        # read before the lock) would silently clobber it on `doc.save()`.
+        # Consequence, worth stating plainly: a second `brain apply` now
+        # refuses during the first's VALIDATION, not only during its writes
+        # - which is more correct, not less, since validation is already
+        # reading the tree the writes will be built from.
+        git.require_repo(root)
         with lock.held(root):
+            plans = validate_batch(root, text)
+            if not plans:
+                return Result("nothing to do", (), [])
+
             # A2: checkpoint before the first write, so a failure between two
             # writes - nothing committed, so no HEAD sha describes it -
             # restores the tree instead of leaving it half-applied.

@@ -71,6 +71,36 @@ class Tree:
             return None
         return {e.path for e in self._entities}
 
+    def refresh_path(self, path) -> None:
+        """Reload exactly the entity at `path` in place, replacing its cached
+        object with one read fresh from disk right now.
+
+        M3, fix round 1: `Project.status`/`.health`/`.program`/`.due` and
+        `Party.projects`/`.cadence`/`.last_met`/`.next_meeting` (entities.py)
+        are `_read()` snapshots taken once at construction, not properties -
+        so a cached `Entity` in a shared `Tree` goes stale the instant its
+        own file is written again (`status set`, `field set`, `link`'s
+        `program:`) within the same command, and a later line resolving that
+        same slug would get the OLD snapshot back. `perform` calls this -
+        instead of a full `invalidate()` - for a write that did not change
+        WHICH entities exist, so refreshing one written entity costs a
+        single-file reparse, not a full rescan of the other N-1 entities a
+        batch might still resolve (keeps
+        `tests/test_tree_cache.py::test_a_batch_loads_the_tree_once` at one
+        `load_root` call).
+        """
+        if self._entities is None:
+            return
+        path = Path(path)
+        for i, existing in enumerate(self._entities):
+            if Path(existing.path) == path:
+                fresh = entities.load(path)
+                if fresh is None:
+                    del self._entities[i]
+                else:
+                    self._entities[i] = fresh
+                return
+
 
 _active: "contextvars.ContextVar[Optional[Tree]]" = contextvars.ContextVar(
     "brain_active_tree", default=None
