@@ -52,8 +52,13 @@ def _unquote(text: str) -> str:
     return text
 
 
-def _split_flow(inner: str):
-    """Split a flow list on commas that are not inside quotes."""
+def _flow_items_raw(inner: str):
+    """Split a flow list on commas that are not inside quotes, WITHOUT
+    unquoting the pieces. `_split_flow` (below) is this plus `_unquote`;
+    `_subset_is_complete` needs the raw, still-quoted token to judge whether
+    a quoted item is safe for the subset to unquote itself - `_unquote`
+    already having thrown away the quotes and any escaping is exactly the
+    information that judgement needs."""
     items, buf, quote, esc = [], "", None, False
     for ch in inner:
         if esc:
@@ -74,7 +79,12 @@ def _split_flow(inner: str):
         else:
             buf += ch
     items.append(buf)
-    return [_unquote(p) for p in items if p.strip()]
+    return [p.strip() for p in items if p.strip()]
+
+
+def _split_flow(inner: str):
+    """Split a flow list on commas that are not inside quotes."""
+    return [_unquote(p) for p in _flow_items_raw(inner)]
 
 
 def _parse_subset(lines):
@@ -132,7 +142,8 @@ def parse_front_matter(lines):
 
 # Scalars YAML would reinterpret as something other than a string. `brain` is
 # the only writer of this format (R3.1), so a value it emits must read back as
-# the value it was given - on BOTH parser paths (R3.4).
+# the value it was given - on BOTH parser paths (R3.4), and these are the
+# user's own words (R4.6.1).
 _YAML_KEYWORDS = frozenset(
     ["true", "false", "yes", "no", "on", "off", "null", "none", "~", "y", "n"]
 )
@@ -147,61 +158,116 @@ def _looks_numeric(text: str) -> bool:
     return True
 
 
-def _numeric_round_trips(text: str) -> bool:
-    """True when a bare numeric-looking scalar means the same thing to the
-    subset parser (a literal string) and to YAML's implicit int/float
-    resolver, i.e. re-stringifying the resolved number reproduces `text`
-    exactly. YAML 1.1 reads a leading-zero run as octal (`007` -> `int(7)`,
-    which normalises back to `"7"`, not `"007"`) and treats `_` as a digit
-    separator - both change the string. A plain int or a float already in
-    its canonical decimal form does not, so those are safe to leave to the
-    subset parser (R4.8.2)."""
-    try:
-        return str(int(text)) == text
-    except ValueError:
-        pass
-    try:
-        return str(float(text)) == text
-    except ValueError:
-        return False
+# YAML 1.1's own implicit-resolver patterns for int, float and timestamp
+# (core schema), copied from PyYAML's `resolver.py` rather than approximated,
+# because `_looks_numeric`'s plain `float()` cast misses every one of these:
+# a sexagesimal (`12:30` -> 750), a hex/octal/binary literal (`0x10` -> 16,
+# `0b101` -> 5), `.inf`/`.nan`, and a full timestamp (`2026-09-08T10:00:00Z`
+# -> a `datetime` that normalises to a different string). The timestamp
+# pattern below is deliberately only PyYAML's second alternative (date AND
+# time) - the date-only alternative is left alone, because a bare
+# `2026-09-08` already round-trips through `_normalise` (`str(date(...))`
+# reproduces the same text) and quoting it would be a needless format change.
+_YAML_INT = re.compile(r"""^(?:[-+]?0b[0-1_]+
+                |[-+]?0[0-7_]+
+                |[-+]?(?:0|[1-9][0-9_]*)
+                |[-+]?0x[0-9a-fA-F_]+
+                |[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+)$""", re.X)
+_YAML_FLOAT = re.compile(r"""^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?
+                |\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?
+                |[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*
+                |[-+]?\.(?:inf|Inf|INF)
+                |\.(?:nan|NaN|NAN))$""", re.X)
+_YAML_TIMESTAMP = re.compile(r"""^[0-9][0-9][0-9][0-9]-[0-9][0-9]?-[0-9][0-9]?
+                 (?:[Tt]|[ \t]+)[0-9][0-9]?
+                 :[0-9][0-9]:[0-9][0-9](?:\.[0-9]*)?
+                 (?:[ \t]*(?:Z|[-+][0-9][0-9]?(?::[0-9][0-9])?))?$""", re.X)
+
+
+def _quoted_scalar_is_safe(token: str) -> bool:
+    """True when a `"..."`/`'...'` token can be trusted to `_unquote` to the
+    same value a real YAML parser would produce.
+
+    `_unquote` only reverses the two escapes `_quote` ever emits (`\\\\`
+    and `\\"`); a double-quoted value carrying any OTHER backslash escape -
+    `\\n`, `\\t`, a `\\uXXXX` - is not one `_quote` wrote, and `_unquote`
+    would mangle it (`"a\\nb"` comes back as `'anb'`, not a newline). A
+    single-quoted value folds a doubled `''` into one literal `'` under real
+    YAML; `_unquote` does not, so `'it''s'` comes back as `"it''s"`, not
+    `"it's"`.
+    """
+    inner = token[1:-1]
+    if token[0] == '"':
+        i = 0
+        while i < len(inner):
+            if inner[i] == "\\":
+                if i + 1 < len(inner) and inner[i + 1] in "\\\"":
+                    i += 2
+                    continue
+                return False
+            i += 1
+        return True
+    return "''" not in inner
 
 
 def _subset_is_complete(lines) -> bool:
     """True when `_parse_subset` is known to agree with a real YAML parser.
 
-    Every non-blank, non-comment line must be `key: value` at column zero
-    with no continuation or indentation - the subset has no notion of block
-    scalars or nested mappings. And no value may be one YAML reinterprets:
-    the subset parser always returns a string, so a bare `yes`, `null` or
-    `007` would come back as a bool, `None` or an int under real YAML (the
-    same `_YAML_KEYWORDS` and numeric-reinterpretation risk that
-    `_needs_quoting` already guards on the write side - reused here rather
-    than duplicated, so the two directions cannot drift apart). Declining
-    here is cheap; guessing is not (R4.8.2).
+    Every non-blank, non-comment line must be `key: value` at column zero -
+    an indented line already fails the `_KEY` match below, so there is
+    nothing separate to check for continuations or nested blocks.
+
+    Every value is then run through `_needs_quoting` INVERTED: anything that
+    would need quoting to survive a write is, symmetrically, a value the
+    subset cannot be trusted to have read correctly, because either
+    direction disagreeing on the same content is the one risk R4.8.2 cares
+    about. This is deliberate parity by construction (the same move that
+    worked in milestone 3c): the read guard and the write guard share one
+    predicate, so they cannot drift apart the way two hand-maintained lists
+    could.
+
+    `_needs_quoting` does not cover three risks on its own, so each is
+    checked directly:
+    - A `"..."`/`'...'` token `_unquote` cannot be trusted to unquote
+      correctly (see `_quoted_scalar_is_safe`).
+    - An anchor (`&x`) or a tag (`!!str`) is not a value the subset models
+      at all. `_LEADING` already declines both (`&` and `!` are in it) via
+      `_needs_quoting`, so this duplicates that on purpose rather than
+      depending on `_LEADING`'s exact contents.
+    - A flow list whose inner text still contains a stray `[`, `]`, `{` or
+      `}` cannot have been split correctly in the first place -
+      `_flow_items_raw` does not track bracket nesting (`[a, [b, c]]` comes
+      back as three garbled pieces, not one nested list) - so the whole line
+      is declined before any per-item check runs.
+
+    Declining here is cheap; guessing is not (R4.8.2).
     """
     for raw in lines:
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
-        if raw != raw.lstrip():
-            return False  # indented: a continuation or nested block
         match = _KEY.match(raw)
         if match is None:
             return False
         rest = match.group("rest").strip()
         if rest.startswith("[") and rest.endswith("]"):
             inner = rest[1:-1].strip()
-            values = _split_flow(inner) if inner else []
+            if any(c in inner for c in "[]{}"):
+                return False
+            values = _flow_items_raw(inner) if inner else []
+            in_list = True
         else:
             values = [rest]
+            in_list = False
         for value in values:
             if value == "":
                 continue
-            # A quoted scalar is unambiguous to a real YAML parser too.
             if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                if not _quoted_scalar_is_safe(value):
+                    return False
                 continue
-            if value.lower() in _YAML_KEYWORDS:
+            if value[:1] in "&*!":
                 return False
-            if _looks_numeric(value) and not _numeric_round_trips(value):
+            if _needs_quoting(value, in_list=in_list):
                 return False
     return True
 
@@ -216,6 +282,11 @@ def _needs_quoting(text: str, in_list: bool = False) -> bool:
     if text.lower() in _YAML_KEYWORDS:
         return True
     if _looks_numeric(text):
+        return True
+    # R4.6.1: the user typed these. `12:30` is a sexagesimal int (-> 750),
+    # `0x10`/`0b101` are hex/binary, `.inf`/`.nan` are YAML's float keywords,
+    # and a full timestamp reads back as a `datetime`, not the text given.
+    if _YAML_INT.match(text) or _YAML_FLOAT.match(text) or _YAML_TIMESTAMP.match(text):
         return True
     if in_list and ("," in text or "]" in text or "[" in text):
         return True
