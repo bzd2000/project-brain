@@ -9,6 +9,7 @@ types would buy nothing and would make the two parsers disagree.
 from __future__ import annotations
 
 import re
+from datetime import date
 
 try:  # pragma: no cover - depends on the environment
     import yaml as _pyyaml
@@ -52,13 +53,8 @@ def _unquote(text: str) -> str:
     return text
 
 
-def _flow_items_raw(inner: str):
-    """Split a flow list on commas that are not inside quotes, WITHOUT
-    unquoting the pieces. `_split_flow` (below) is this plus `_unquote`;
-    `_subset_is_complete` needs the raw, still-quoted token to judge whether
-    a quoted item is safe for the subset to unquote itself - `_unquote`
-    already having thrown away the quotes and any escaping is exactly the
-    information that judgement needs."""
+def _split_flow(inner: str):
+    """Split a flow list on commas that are not inside quotes."""
     items, buf, quote, esc = [], "", None, False
     for ch in inner:
         if esc:
@@ -79,12 +75,7 @@ def _flow_items_raw(inner: str):
         else:
             buf += ch
     items.append(buf)
-    return [p.strip() for p in items if p.strip()]
-
-
-def _split_flow(inner: str):
-    """Split a flow list on commas that are not inside quotes."""
-    return [_unquote(p) for p in _flow_items_raw(inner)]
+    return [_unquote(p) for p in items if p.strip()]
 
 
 def _parse_subset(lines):
@@ -183,62 +174,80 @@ _YAML_TIMESTAMP = re.compile(r"""^[0-9][0-9][0-9][0-9]-[0-9][0-9]?-[0-9][0-9]?
                  :[0-9][0-9]:[0-9][0-9](?:\.[0-9]*)?
                  (?:[ \t]*(?:Z|[-+][0-9][0-9]?(?::[0-9][0-9])?))?$""", re.X)
 
+# `tag:yaml.org,2002:merge` (`<<`) and `tag:yaml.org,2002:value` (`=`): two
+# more of PyYAML's implicit resolvers, each matching one exact scalar rather
+# than a shape. Neither constructs to a plain string outside the mapping
+# context they exist for, so `yaml.safe_load` raises `ConstructorError` on
+# either appearing as a bare value - a fix-round-2 finding (m4).
+_YAML_EXACT = frozenset(["<<", "="])
 
-def _quoted_scalar_is_safe(token: str) -> bool:
-    """True when a `"..."`/`'...'` token can be trusted to `_unquote` to the
-    same value a real YAML parser would produce.
+# Fix round 2 (m4): the date-only branch of PyYAML's timestamp resolver -
+# deliberately excluded from `_YAML_TIMESTAMP` above so a valid date stays
+# unquoted - still resolves `YYYY-MM-DD`, and `SafeConstructor` raises
+# `ValueError` building an actual `datetime.date` from one that is not a
+# real calendar date (`2026-02-30`). `brain` never writes an invalid one
+# (`date.today().isoformat()` always is one), so a value with this shape
+# that is NOT a real date can only be a hand edit - the one place the
+# round-trip byte-match cannot tell "safe to leave unquoted" apart from
+# "PyYAML's constructor will raise on this", because both reproduce the
+# same bytes.
+_YAML_DATE_ONLY = re.compile(r"^([0-9]{4})-([0-9]{2})-([0-9]{2})$")
 
-    `_unquote` only reverses the two escapes `_quote` ever emits (`\\\\`
-    and `\\"`); a double-quoted value carrying any OTHER backslash escape -
-    `\\n`, `\\t`, a `\\uXXXX` - is not one `_quote` wrote, and `_unquote`
-    would mangle it (`"a\\nb"` comes back as `'anb'`, not a newline). A
-    single-quoted value folds a doubled `''` into one literal `'` under real
-    YAML; `_unquote` does not, so `'it''s'` comes back as `"it''s"`, not
-    `"it's"`.
-    """
-    inner = token[1:-1]
-    if token[0] == '"':
-        i = 0
-        while i < len(inner):
-            if inner[i] == "\\":
-                if i + 1 < len(inner) and inner[i + 1] in "\\\"":
-                    i += 2
-                    continue
-                return False
-            i += 1
+
+def _is_invalid_calendar_date(text: str) -> bool:
+    match = _YAML_DATE_ONLY.match(text)
+    if not match:
+        return False
+    try:
+        date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
         return True
-    return "''" not in inner
+    return False
 
 
 def _subset_is_complete(lines) -> bool:
-    """True when `_parse_subset` is known to agree with a real YAML parser.
+    """True when `_parse_subset` is known to reproduce every line of `lines`
+    byte for byte.
 
-    Every non-blank, non-comment line must be `key: value` at column zero -
-    an indented line already fails the `_KEY` match below, so there is
-    nothing separate to check for continuations or nested blocks.
+    Fix round 2: predicting what PyYAML would make of an arbitrary value is
+    an unbounded problem - round 1 found sexagesimals, hex/binary literals,
+    `.inf`/`.nan` and timestamps; the next adversarial pass found `status:
+    active` written without the space, a stray NBSP, and a value carrying a
+    second, unescaped quote - each a new corner of YAML 1.1, because trying
+    to predict a full YAML parser from the outside never stops finding one.
+    We do not need to: `brain` is the only writer of this format (R3.1), and
+    after `_needs_quoting`'s fix-round-1 extensions it quotes everything
+    dangerous. So the fast path only has to recognise OUR OWN output, which
+    is bounded and provable - reconstruct `key + ": " + render_value(value)`
+    from what the subset extracted and compare it to the original line byte
+    for byte. Anything `brain` wrote satisfies that by construction.
+    Anything it did not - a hand edit, a missing space after the colon, a
+    trailing space, a stray NBSP, a badly escaped quote, a single-quoted
+    value (`_quote` only ever emits double quotes), an anchor, a tag, a
+    mis-split nested flow list - fails to reproduce and falls to PyYAML,
+    which is exactly where it belongs.
 
-    Every value is then run through `_needs_quoting` INVERTED: anything that
-    would need quoting to survive a write is, symmetrically, a value the
-    subset cannot be trusted to have read correctly, because either
-    direction disagreeing on the same content is the one risk R4.8.2 cares
-    about. This is deliberate parity by construction (the same move that
-    worked in milestone 3c): the read guard and the write guard share one
-    predicate, so they cannot drift apart the way two hand-maintained lists
-    could.
+    This subsumes three round-1 special cases that used to live here
+    (quoted-scalar escape safety, anchors/tags, nested-flow bracket
+    detection): each of those is now just a value the round-trip fails to
+    reproduce, so none of them could be reddened by a mutation once this
+    landed. Per "test it or delete it" (the same policy that removed the
+    dead indentation guard last round), they are gone rather than kept as
+    untested defence in depth. `_needs_quoting`'s regex extensions stay -
+    they are the WRITE side, load-bearing for `render_value`, and this
+    function calls `render_value` to do the reconstructing.
 
-    `_needs_quoting` does not cover three risks on its own, so each is
-    checked directly:
-    - A `"..."`/`'...'` token `_unquote` cannot be trusted to unquote
-      correctly (see `_quoted_scalar_is_safe`).
-    - An anchor (`&x`) or a tag (`!!str`) is not a value the subset models
-      at all. `_LEADING` already declines both (`&` and `!` are in it) via
-      `_needs_quoting`, so this duplicates that on purpose rather than
-      depending on `_LEADING`'s exact contents.
-    - A flow list whose inner text still contains a stray `[`, `]`, `{` or
-      `}` cannot have been split correctly in the first place -
-      `_flow_items_raw` does not track bracket nesting (`[a, [b, c]]` comes
-      back as three garbled pieces, not one nested list) - so the whole line
-      is declined before any per-item check runs.
+    Two things the round-trip cannot see, because they are about the KEY,
+    which reconstructs identically either way:
+    - A key YAML resolves specially: `on: x` round-trips to `on: x` whether
+      `on` means the string `"on"` or the value gets filed under boolean
+      `True` - reuses `_YAML_KEYWORDS`, the same list already checked for
+      values, rather than a second one.
+    - A duplicate key: checked directly against PyYAML (`a: 1` twice, mixed
+      types, a list overriding a scalar, a same-letter-different-case pair)
+      - both parsers silently keep the last occurrence and agree on which
+      one that is in every case tried, so no extra handling was needed here;
+      recorded so the next person does not have to re-derive it.
 
     Declining here is cheap; guessing is not (R4.8.2).
     """
@@ -248,27 +257,17 @@ def _subset_is_complete(lines) -> bool:
         match = _KEY.match(raw)
         if match is None:
             return False
+        key = match.group("key")
+        if key.lower() in _YAML_KEYWORDS:
+            return False
         rest = match.group("rest").strip()
         if rest.startswith("[") and rest.endswith("]"):
             inner = rest[1:-1].strip()
-            if any(c in inner for c in "[]{}"):
-                return False
-            values = _flow_items_raw(inner) if inner else []
-            in_list = True
+            value = _split_flow(inner) if inner else []
         else:
-            values = [rest]
-            in_list = False
-        for value in values:
-            if value == "":
-                continue
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                if not _quoted_scalar_is_safe(value):
-                    return False
-                continue
-            if value[:1] in "&*!":
-                return False
-            if _needs_quoting(value, in_list=in_list):
-                return False
+            value = _unquote(rest)
+        if key + ": " + render_value(value) != raw:
+            return False
     return True
 
 
@@ -287,6 +286,18 @@ def _needs_quoting(text: str, in_list: bool = False) -> bool:
     # `0x10`/`0b101` are hex/binary, `.inf`/`.nan` are YAML's float keywords,
     # and a full timestamp reads back as a `datetime`, not the text given.
     if _YAML_INT.match(text) or _YAML_FLOAT.match(text) or _YAML_TIMESTAMP.match(text):
+        return True
+    # Fix round 2 (m4): `<<`/`=` construct-error on their own (see
+    # `_YAML_EXACT`); a control character (a stray `\t` included) is not
+    # legal inside an unquoted YAML scalar at all and PyYAML's reader raises
+    # on it; and a date-shaped value that is not a real calendar date is the
+    # one place a plain value round-trips byte for byte while still being
+    # unsafe to leave unquoted (see `_is_invalid_calendar_date`).
+    if text in _YAML_EXACT:
+        return True
+    if any(ord(ch) < 0x20 for ch in text):
+        return True
+    if _is_invalid_calendar_date(text):
         return True
     if in_list and ("," in text or "]" in text or "[" in text):
         return True

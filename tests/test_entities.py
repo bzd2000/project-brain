@@ -1,5 +1,6 @@
 import pytest
 
+from brain import _yaml
 from brain.entities import Board, Note, Program, Project, Stakeholder, load, load_notes, load_root
 
 
@@ -176,3 +177,40 @@ def test_notes_carry_their_line_span_and_header(brain_tree):
     for note in load_notes(brain_tree / "inbox.md"):
         assert lines[note.start] == note.header
         assert lines[note.start + 1:note.end] == note.body
+
+
+def test_hand_edited_invalid_date_is_flagged_at_load_root(tmp_path):
+    """Fix round 2 (m6): nothing outside `tests/test_yaml_fast_path.py`
+    constrained `_subset_is_complete` - mutating it to `return True` reddened
+    30 tests, all in that one file. This is the actual surface a broken
+    guard damages: a hand-edited entity file loaded through `load_root`, the
+    same path `entities.load` and (once built) `index.py`/`brain check` use.
+
+    `due: 2026-02-30` is round-trip-identical whichever parser reads it (the
+    round-trip guard cannot see that Feb 30 is not a real day - see
+    `_is_invalid_calendar_date`), so a guard that forgot that check would
+    silently accept the file instead of falling to PyYAML and picking up
+    its `ValueError` (R4.2.4: tolerant loading must still flag it, or
+    `brain check` has nothing to surface). Needs PyYAML: the subset fallback
+    has no calendar-validity check of its own - the whole point is that
+    PyYAML's constructor is the thing that notices - so without PyYAML
+    there is nothing to fall back TO and no problem to report."""
+    if not _yaml.HAVE_PYYAML:
+        pytest.skip("PyYAML not installed; the subset fallback cannot validate a date")
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    path = projects / "bad-date.md"
+    path.write_text(
+        "---\n"
+        "project: Bad date\n"
+        "status: active\n"
+        "due: 2026-02-30\n"
+        "---\n\n"
+        "## Summary\n\n## Next actions\n\n"
+        "## Open questions\n\n## Decisions\n\n## Log\n",
+        encoding="utf-8",
+    )
+    entities = load_root(tmp_path)
+    project = next(e for e in entities if e.slug == "bad-date")
+    assert project.due == "2026-02-30"  # R4.2.4: recovered anyway
+    assert any("front matter" in p for p in project.problems), project.problems
