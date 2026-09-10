@@ -32,15 +32,6 @@ def _normalise(value):
     return str(value)
 
 
-# Fix round 3 (M1): PyYAML's SCANNER folds `\x85` (NEL), U+2028 (LS) and
-# U+2029 (PS) as line breaks even INSIDE a double-quoted scalar, so quoting
-# alone does not protect them - `_quote` escapes them with YAML's own
-# `\N`/`\L`/`\P` (see `_quote` below), and this is the reverse table
-# `_unquote` needs for those three, on top of the two `_quote` already
-# emitted (`\\` and `\"`).
-_ESCAPE_DECODE = {"N": "\x85", "L": "\u2028", "P": "\u2029"}
-
-
 def _unquote(text: str) -> str:
     text = text.strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
@@ -49,12 +40,24 @@ def _unquote(text: str) -> str:
             return inner
         # Reverse _quote's escaping in ONE left-to-right pass. A sequence of
         # .replace() calls cannot do this correctly: unescaping \\ first turns
-        # \\" into ", and unescaping \" first turns \\" into \".
+        # \\" into ", and unescaping \" first turns \\" into \". `_MNEMONIC_UNESCAPE`
+        # and `_HEX_ESCAPE_LEN` (fix round 4, defined near `_quote` below,
+        # which emits everything this reverses) extend this past the
+        # original `\\`/`\"` pair.
         out, i = [], 0
         while i < len(inner):
             if inner[i] == "\\" and i + 1 < len(inner):
                 nxt = inner[i + 1]
-                out.append(_ESCAPE_DECODE.get(nxt, nxt))
+                hexlen = _HEX_ESCAPE_LEN.get(nxt)
+                if hexlen is not None and i + 2 + hexlen <= len(inner):
+                    digits = inner[i + 2:i + 2 + hexlen]
+                    try:
+                        out.append(chr(int(digits, 16)))
+                        i += 2 + hexlen
+                        continue
+                    except ValueError:
+                        pass  # not valid hex after all - fall through
+                out.append(_MNEMONIC_UNESCAPE.get(nxt, nxt))
                 i += 2
             else:
                 out.append(inner[i])
@@ -92,7 +95,18 @@ def _parse_subset(lines):
     """The fallback: `key: scalar` and `key: [a, b]`, one per line."""
     fields, problems = {}, []
     for raw in lines:
-        if not raw.strip() or raw.lstrip().startswith("#"):
+        # Fix round 4 (M2): YAML's own definition of "blank"/"space" is
+        # space and tab (its s-white production) - NOT Python's `.strip()`,
+        # which also treats `\xa0` (NBSP) and a dozen other Unicode
+        # whitespace characters as blank. A line that is nothing but an
+        # NBSP is not blank to a real YAML parser: it is non-blank content,
+        # indented enough to fold into the PREVIOUS key's value as a block-
+        # scalar continuation. Treating it as blank here made `_parse_subset`
+        # silently skip it instead of reporting it as unparseable, and made
+        # `_subset_is_complete` (same fix, below) accept a line the fast
+        # path was not entitled to - the guard cannot see a continuation it
+        # already decided to ignore.
+        if not raw.strip(" ") or raw.lstrip(" ").startswith("#"):
             continue
         match = _KEY.match(raw)
         if match is None:
@@ -293,7 +307,12 @@ def _subset_is_complete(lines) -> bool:
     Declining here is cheap; guessing is not (R4.8.2).
     """
     for raw in lines:
-        if not raw.strip() or raw.lstrip().startswith("#"):
+        # Fix round 4 (M2): same fix as `_parse_subset`, same reason - see
+        # its comment. A line the guard treats as blank is a line it never
+        # checks against `_KEY` at all, so a real continuation line hiding
+        # behind Unicode whitespace passed as "nothing to see here" instead
+        # of forcing a decline.
+        if not raw.strip(" ") or raw.lstrip(" ").startswith("#"):
             continue
         match = _KEY.match(raw)
         if match is None:
@@ -339,41 +358,92 @@ def _needs_quoting(text: str, in_list: bool = False) -> bool:
     if any(ord(ch) < 0x20 for ch in text):
         return True
     # Fix round 3 (M1/m1): `_NON_PRINTABLE` is the reader-level printability
-    # gate (see its own comment above); `_LINE_BREAK_LIKE` is narrower and
-    # separate - `\x85` IS reader-printable, but the scanner folds it (and
-    # U+2028/U+2029) as a line break even inside a double-quoted scalar, so
-    # `_quote` escapes those three explicitly (see `_quote` below) rather
-    # than relying on quoting alone.
+    # gate (see its own comment above); `_MNEMONIC_ESCAPE` (defined near
+    # `_quote` below, since that is where it is used to escape) is narrower
+    # and separate - `\x85` IS reader-printable, but the scanner folds it
+    # (and U+2028/U+2029, and `\n`/`\r`) as a line break even inside a
+    # double-quoted scalar, so `_quote` escapes those explicitly rather than
+    # relying on quoting alone. `\n`/`\r` are already caught by
+    # `ord(ch) < 0x20` above; this line only adds new coverage for the
+    # three that are not.
     if _NON_PRINTABLE.search(text):
         return True
-    if any(ch in _LINE_BREAK_LIKE for ch in text):
+    if any(ch in _MNEMONIC_ESCAPE for ch in text):
         return True
     if _is_invalid_calendar_date(text):
         return True
-    # m2: a flow-list item containing `{`, `}` or `?` (in addition to the
-    # existing `,`/`]`/`[`) makes `yaml.safe_load` raise `ParserError` on
-    # the WHOLE list - pre-existing at 4e60bb6, silent now that PyYAML no
-    # longer runs to surface it once the fast path wrongly accepts it.
-    # `{`, `}` and `?` are flow-context indicators: PyYAML raises a ParserError
-    # on `tags: [a?b]`, so without them `brain` would WRITE a list it cannot
-    # read back (m2). Pre-existing before this milestone, silent since the
-    # fast path stopped surfacing PyYAML's error.
-    if in_list and any(c in text for c in ",[]{}?"):
+    # m2 (fix round 3): `{`, `}` and `?` are flow-context indicators -
+    # PyYAML raises `ParserError` on `tags: [a?b]` - so without them (in
+    # addition to the pre-existing `,`/`]`/`[`) `brain` would WRITE a list
+    # it cannot read back. Pre-existing at 4e60bb6, silent once the fast
+    # path stopped surfacing PyYAML's error.
+    # M3 (fix round 4): `'`/`"` join them for a different reason - the FLOW
+    # LIST SPLITTER (`_split_flow`) opens a quote on either character
+    # wherever it appears, not just at the start of an item. An unquoted
+    # `it's fine` as a list item is read back by `_split_flow` as an
+    # UNCLOSED quote that swallows the rest of the list (the comma before
+    # the next item looks like it is "inside quotes"), silently merging two
+    # tags into one - PyYAML rescues today's `render_value` output because
+    # it is never actually wrong about what such an item MEANS, only about
+    # whether `brain`'s own subset parser can read it back, so the visible
+    # symptom is only that this shape is permanently stuck on the slow
+    # path; on the no-PyYAML fallback (R3.4) there is nothing to rescue it.
+    if in_list and any(c in text for c in ",[]{}?'\""):
         return True
     return False
 
 
-# Fix round 3 (M1): the three characters `_ESCAPE_DECODE` above reverses -
-# PyYAML's scanner folds them as line breaks even inside a double-quoted
-# scalar, so they must be escaped, not just quoted.
-_LINE_BREAK_LIKE = {"\x85": "\\N", "\u2028": "\\L", "\u2029": "\\P"}
+# Fix round 4 (MAJOR): what `_quote` escapes beyond the closing quote and
+# backslash itself, and what `_unquote` reverses via `_MNEMONIC_UNESCAPE`
+# below - short YAML mnemonic escapes, not just quoting. Round 3 added
+# `\x85`/LS/PS because PyYAML's SCANNER folds them as line breaks even
+# inside a double-quoted scalar - quoting alone does not protect them.
+# `\n`/`\r` join that table for the same fold reason (round 3 found `\r`
+# folds too and reported it rather than patching it - fixed here as the
+# same class) AND because embedding either RAW would break `Doc`'s
+# one-string-per-line model regardless of what PyYAML does with it: a
+# `Doc.lines` entry containing a literal newline is no longer one line once
+# written to disk.
+_MNEMONIC_ESCAPE = {
+    '\n': 'n',  # LF
+    '\r': 'r',  # CR
+    '\x85': 'N',  # NEL
+    '\u2028': 'L',  # LS
+    '\u2029': 'P',  # PS
+}
+_MNEMONIC_UNESCAPE = {mnemonic: char for char, mnemonic in _MNEMONIC_ESCAPE.items()}
+
+# `\x`/`\u`/`\U`: YAML's hex escapes, 2/4/8 digits. `_quote` uses these for
+# anything `_NON_PRINTABLE` (above) rejects and no mnemonic above covers -
+# fix round 4's MAJOR finding: quoting a DEL, a C1 control, a lone
+# surrogate or a non-character does not make `yaml.safe_load` accept it -
+# the READER scans the whole stream for printability before the PARSER
+# runs, quoted or not, so only escaping survives. At `4e60bb6` such a value
+# was written unquoted and came back flagged (`front matter: ReaderError`);
+# fix round 3 made it silent by quoting without escaping - this closes that.
+_HEX_ESCAPE_LEN = {"x": 2, "u": 4, "U": 8}
 
 
 def _quote(text: str) -> str:
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-    for char, replacement in _LINE_BREAK_LIKE.items():
-        escaped = escaped.replace(char, replacement)
-    return '"' + escaped + '"'
+    out = []
+    for ch in text:
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch in _MNEMONIC_ESCAPE:
+            out.append("\\" + _MNEMONIC_ESCAPE[ch])
+        elif _NON_PRINTABLE.match(ch):
+            cp = ord(ch)
+            if cp <= 0xFF:
+                out.append("\\x{:02X}".format(cp))
+            elif cp <= 0xFFFF:
+                out.append("\\u{:04X}".format(cp))
+            else:
+                out.append("\\U{:08X}".format(cp))
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
 
 
 def _scalar(text, in_list: bool = False) -> str:

@@ -27,6 +27,32 @@ hand edit, a missing space, an odd quote - fails and falls to PyYAML.
 natural extensions of "byte for byte" (an unquoted value that only differs
 by trailing whitespace, a single-quoted value - `_quote` never emits single
 quotes).
+
+Fix round 3 bounded the plain-scalar half of the guard too (see
+`_subset_is_complete`'s own docstring) - a fuzz over the round-3 code found
+one genuine value-mismatch class (a bare CR folding inside a quoted scalar,
+reported rather than patched then) and closed the rest.
+
+Fix round 4 (STANDING RULE - apply this to every test in this file, new or
+old): a self-comparing test is not a test. Two of ours were:
+- **A write-side or round-trip test must call `yaml.safe_load` directly,
+  never `_yaml._parse_with_pyyaml`.** The latter falls back to
+  `_parse_subset` on ANY exception, so an assertion built on its return
+  value compares the subset parser to itself whenever real PyYAML would
+  have raised - exactly the case these tests exist to catch.
+  `test_field_set_round_trips_dangerous_values_through_both_parsers` and
+  `test_a_list_item_needing_quotes_is_written_quoted` were both wrong this
+  way; `test_a_list_item_needing_quotes_is_written_quoted` stayed green
+  when `{`/`}`/`?` were removed from `_needs_quoting`'s in-list check for
+  exactly this reason.
+- **The differential test compares `problems`, not just `fields`.** The
+  same fallback means `_parse_with_pyyaml`'s FIELDS can match the subset
+  parser's even when PyYAML actually raised - but its `problems` list will
+  not be empty in that case, so checking `problems == []` (not calling
+  `yaml.safe_load` directly) is enough where a test's whole point is
+  comparing the two parsers' agreement rather than proving brain's own
+  output survives. The divergence has twice lived in `problems` while
+  `fields` matched (fix round 1 finding 5, fix round 2 finding m4).
 """
 import pytest
 
@@ -120,7 +146,19 @@ ROUND3_CASES = [
     'tags: [ab}, x]',  # m2: ParserError on the whole list
 ]
 
-CASES = BENIGN_CASES + DANGEROUS_CASES + ROUND2_CASES + ROUND3_CASES
+# Fix round 4: the MAJOR finding (quoting a NON_PRINTABLE character does
+# not make it readable - only escaping does) and M3 (an unquoted quote
+# character inside a list item breaks `_split_flow`).
+ROUND4_CASES = [
+    'owner: "a\x7fb"',  # MAJOR: hand-quoted DEL - quoting alone did not save it
+    'v: "a\x01b"',  # MAJOR: hand-quoted control character
+    'v: "a\x9fb"',  # MAJOR: hand-quoted C1 control
+    'v: "a\ufffeb"',  # MAJOR: hand-quoted non-character
+    "tags: [it's fine, ok]",  # M3: unquoted apostrophe opens an unclosed quote
+    'tags: [he said "hi", ok]',  # M3: unquoted double quote, same failure
+]
+
+CASES = BENIGN_CASES + DANGEROUS_CASES + ROUND2_CASES + ROUND3_CASES + ROUND4_CASES
 
 
 @pytest.mark.parametrize("line", CASES)
@@ -137,15 +175,25 @@ def test_the_two_parsers_agree_or_the_subset_declines(line):
     Declining is always an acceptable answer; `test_brain_written_front_matter_takes_the_fast_path`
     below carries the other half - that the guard still says yes for what
     `brain` actually writes, so "decline everything" cannot pass silently.
+
+    Fix round 4 (M1's standing rule): also assert `yaml_problems == []`
+    when `complete`. `_parse_with_pyyaml` falls back to `_parse_subset` on
+    ANY exception, so `subset_fields == yaml_fields` can hold even when real
+    PyYAML would have raised - but that fallback always APPENDS a problem
+    string, so `problems` still catches what `fields` alone would miss,
+    without needing a second, raw `yaml.safe_load` call here (this test's
+    whole point is comparing the two parsers, not proving brain's own
+    output survives - see the module docstring's standing rule).
     """
     if not _yaml.HAVE_PYYAML:
         pytest.skip("PyYAML not installed; nothing to compare against")
     lines = [line]
     subset_fields, _ = _yaml._parse_subset(lines)
     complete = _yaml._subset_is_complete(lines)
-    yaml_fields, _ = _yaml._parse_with_pyyaml(lines)
+    yaml_fields, yaml_problems = _yaml._parse_with_pyyaml(lines)
     if complete:
         assert subset_fields == yaml_fields, (line, subset_fields, yaml_fields)
+        assert yaml_problems == [], (line, yaml_problems)
     else:
         assert not complete
 
@@ -275,6 +323,22 @@ DANGEROUS_FIELD_VALUES = [
     "a\u2028b",
     "a\u2029b",
     "a\x85\u2028b\u2029c",  # more than one, in one value
+    # Fix round 4 (MAJOR): the whole `_NON_PRINTABLE` class, hex-escaped,
+    # plus `\n`/`\r`, mnemonic-escaped (structural: a raw one breaks
+    # `Doc`'s one-string-per-line model; also YAML's scanner folds `\r`
+    # inside a quoted scalar, the class round 3 reported for `\r` and did
+    # not fix).
+    "a\x7fb",   # DEL
+    "a\x9fb",   # a C1 control
+    "a\x0bb",   # vertical tab
+    "a\x1bb",   # ESC
+    "a\ufffeb",  # a non-character
+    "a\uffffb",  # a non-character
+    # `\n`/`\r` are NOT here: R6.4b's grammar refuses a command line
+    # containing an embedded line break before `field set`'s free text ever
+    # reaches `render_value` (GrammarError, "a command is one line") - not
+    # reachable through the CLI. Covered directly against `render_value`
+    # instead, see `test_render_value_escapes_embedded_line_breaks` below.
 ]
 
 
@@ -285,7 +349,15 @@ def test_field_set_round_trips_dangerous_values_through_both_parsers(value, brai
     fix, `brain field set ann slot -- 12:30` wrote an unquoted `slot: 12:30`
     that PyYAML reads back as `750`. After writing, the actual bytes on disk
     must read back as the value the user typed, through EITHER parser -
-    not just whichever one `parse_front_matter` happens to pick."""
+    not just whichever one `parse_front_matter` happens to pick.
+
+    Fix round 4 (m1's standing rule): for `a\x01b` this used to call
+    `_yaml._parse_with_pyyaml`, which falls back to `_parse_subset` on ANY
+    exception - so the "through either parser" assertion was comparing the
+    subset parser to itself whenever real PyYAML raised, which is exactly
+    the failure mode `_needs_quoting`'s printability additions exist to
+    prevent. `yaml.safe_load` is called directly now, so a real
+    `ReaderError` here is a real test failure."""
     c.execute(brain_repo, gr.parse_line(
         "field set acme-migration slot -- {}".format(value)))
     path = brain_repo / "projects" / "acme-migration.md"
@@ -296,8 +368,9 @@ def test_field_set_round_trips_dangerous_values_through_both_parsers(value, brai
     subset_fields, _ = _yaml._parse_subset([raw_line])
     assert subset_fields["slot"] == value, (raw_line, subset_fields)
     if _yaml.HAVE_PYYAML:
-        yaml_fields, _ = _yaml._parse_with_pyyaml([raw_line])
-        assert yaml_fields["slot"] == value, (raw_line, yaml_fields)
+        import yaml as pyyaml
+        loaded = pyyaml.safe_load(raw_line)
+        assert loaded["slot"] == value, (raw_line, loaded)
 
 
 @pytest.mark.parametrize("key", ["on", "off", "yes", "no", "true", "false", "null", "ON", "Yes"])
@@ -339,14 +412,30 @@ def test_a_flow_indicator_inside_a_list_item_declines(line):
 
 def test_a_list_item_needing_quotes_is_written_quoted():
     """The write half of the same rule: whatever `brain` puts in a flow list
-    must read back as what it put in (R4.6.1)."""
-    for value in ("a?b", "a{b", "ab}", "a,b", "a[b"):
+    must read back as what it put in (R4.6.1).
+
+    Fix round 4 (m1's standing rule): this test used `_parse_with_pyyaml`
+    until the reviewer pointed out that made it self-comparing - remove
+    `{`/`}`/`?` from `_needs_quoting`'s in-list check and it STAYED GREEN,
+    because `_parse_with_pyyaml` swallows the `ParserError` PyYAML raises on
+    an unquoted `a?b` in a flow list and falls back to `_parse_subset`,
+    which was never wrong about `a?b` on its own - only about whether
+    `brain`'s OWN reader (the fast path) could read back what `brain`'s own
+    writer produced. Calling `yaml.safe_load` directly here means a real
+    `ParserError` is a real test failure, not a fallback into agreement with
+    itself. `"it's fine"`/`'he said "hi"'` are M3's addition - an unquoted
+    apostrophe or double quote inside a list item makes `_split_flow` open
+    a quote it never closes, silently merging the rest of the list into one
+    item."""
+    for value in ("a?b", "a{b", "ab}", "a,b", "a[b", "it's fine", 'he said "hi"'):
         rendered = _yaml.render_value([value])
-        fields, _ = _yaml._parse_subset(["tags: " + rendered])
+        line = "tags: " + rendered
+        fields, _ = _yaml._parse_subset([line])
         assert fields["tags"] == [value], (value, rendered)
         if _yaml.HAVE_PYYAML:
-            py, _ = _yaml._parse_with_pyyaml(["tags: " + rendered])
-            assert py["tags"] == [value], (value, rendered)
+            import yaml as pyyaml
+            loaded = pyyaml.safe_load(line)
+            assert loaded["tags"] == [value], (value, rendered)
 
 
 def test_duplicate_keys_do_not_need_special_handling():
@@ -357,9 +446,17 @@ def test_duplicate_keys_do_not_need_special_handling():
     occurrence, and agree on which one that is even when the two
     occurrences have different shapes (scalar then list) or differ only in
     key case. So `_subset_is_complete` adds no duplicate-key check - this
-    pins that finding so nobody has to re-derive it."""
+    pins that finding so nobody has to re-derive it.
+
+    Fix round 4 (m1's standing rule): this docstring already claimed "a
+    real `yaml.safe_load`" while the test called `_parse_with_pyyaml`,
+    which is not the same thing - the latter falls back to `_parse_subset`
+    on any exception, so if PyYAML ever DID raise for some duplicate-key
+    shape, this test would not have noticed. Calls `yaml.safe_load`
+    directly now, matching what it always claimed to do."""
     if not _yaml.HAVE_PYYAML:
         pytest.skip("PyYAML not installed; nothing to compare against")
+    import yaml as pyyaml
     cases = [
         ["a: 1", "a: 2"],
         ["a: x", "a: [y, z]"],
@@ -368,7 +465,8 @@ def test_duplicate_keys_do_not_need_special_handling():
     ]
     for lines in cases:
         subset_fields, _ = _yaml._parse_subset(lines)
-        yaml_fields, _ = _yaml._parse_with_pyyaml(lines)
+        loaded = pyyaml.safe_load("\n".join(lines))
+        yaml_fields = {str(k): _yaml._normalise(v) for k, v in loaded.items()}
         assert subset_fields == yaml_fields, (lines, subset_fields, yaml_fields)
 
 
@@ -389,3 +487,57 @@ def test_quote_and_unquote_stay_symmetric_for_line_break_like_codepoints():
         assert _yaml._subset_is_complete([line]) is True
         subset_fields, _ = _yaml._parse_subset([line])
         assert subset_fields["v"] == value
+
+
+# --- Fix round 4, M2: line classification -------------------------------
+# `_parse_subset` and `_subset_is_complete` decide what counts as a blank or a
+# comment line. They used Python's `str.strip()`, whose notion of whitespace
+# includes U+00A0, U+2000 and friends; YAML's is space and tab only. Every
+# residual read-side divergence the round-3 review found traced back here.
+
+
+def test_a_unicode_space_continuation_line_is_not_treated_as_blank():
+    """The one FIELDS divergence in a 500k-sample fuzz, and it is only visible
+    across lines: to YAML a line holding a non-breaking space continues the
+    previous scalar, so the value gains ` \xa0`. Treating it as blank drops
+    that silently, and `_subset_is_complete` said the block was fine."""
+    lines = ["title: Acme portal", "  \xa0"]
+    complete = _yaml._subset_is_complete(lines)
+    if not complete:
+        return  # declining is always acceptable
+    subset_fields, _ = _yaml._parse_subset(lines)
+    if _yaml.HAVE_PYYAML:
+        import yaml as pyyaml
+
+        loaded = pyyaml.safe_load("\n".join(lines))
+        assert subset_fields == loaded, (subset_fields, loaded)
+
+
+@pytest.mark.parametrize("line", ["\t", "\xa0", " ", "\xa0#,-A"])
+def test_a_line_yaml_does_not_consider_blank_is_not_skipped(line):
+    """R4.2.4's "flagged" half. PyYAML rejects each of these; skipping them as
+    blank means `brain check` never hears about a malformed block."""
+    assert _yaml._subset_is_complete([line]) is False
+
+
+# --- Fix round 4, M3: flow-list tokenisation ----------------------------
+
+
+@pytest.mark.parametrize("value", ["it's fine", 'say "hi"', "o'clock"])
+def test_a_quote_inside_a_list_item_round_trips_as_one_item(value):
+    """`_split_flow` opens a quoted region on any `'` or `"`, so an apostrophe
+    in a tag used to merge it with the next item - `[it's fine, ok]` read back
+    as ONE tag. PyYAML rescued it, so the only visible symptom was that
+    brain's own file sat on the slow path forever; with PyYAML absent (R3.4)
+    the tags merged silently, with no problem reported.
+
+    Calls `yaml.safe_load` directly per the module docstring's standing rule.
+    """
+    rendered = _yaml.render_value([value, "ok"])
+    subset_fields, _ = _yaml._parse_subset(["tags: " + rendered])
+    assert subset_fields["tags"] == [value, "ok"], (rendered, subset_fields)
+    if _yaml.HAVE_PYYAML:
+        import yaml as pyyaml
+
+        loaded = pyyaml.safe_load("tags: " + rendered)
+        assert loaded["tags"] == [value, "ok"], (rendered, loaded)
