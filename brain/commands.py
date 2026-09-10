@@ -13,7 +13,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
-from . import digest, git, grammar, lock, tree
+from . import digest
+from . import search, git, grammar, lock, tree
 from .entities import HEALTHS, KINDS, NOTE_TYPES, STATUSES, load_notes
 from .errors import (
     AmbiguousReference,
@@ -715,6 +716,21 @@ def _context(root, positional, flags, text):
     active = tree.current() or tree.Tree(root)
     out = digest.context(active, flags.get("for"))
     return Result(out, [], None)
+
+
+@verb("search", needs_text=True, writes=False, arity=(0, 0))
+def _search(root, positional, flags, text):
+    """R6.7: tokens matched case-insensitively against slug, title, tags and
+    section text, grouped by kind, one line each.
+
+    R8.4.1: this is a human's verb and the TUI's `/`. No agent job calls it,
+    and making it faster saves no tokens - so it is a linear scan over the
+    tree this command already loaded, and `--json` is offered because the TUI
+    consumes it, unlike `context`, whose reader is a model at a terminal.
+    """
+    active = tree.current() or tree.Tree(root)
+    hits = search.find(active, text)
+    return Result(search.render(hits), [], hits)
 
 
 class Plan(NamedTuple):
