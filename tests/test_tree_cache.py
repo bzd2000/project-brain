@@ -34,9 +34,21 @@ def test_a_batch_loads_the_tree_once(brain_repo, monkeypatch):
     assert calls["n"] == 1, "expected one scan for the whole batch"
 
 
-def test_a_single_verb_loads_the_tree_once(brain_repo, monkeypatch):
+def test_a_single_verb_with_two_reference_sites_loads_the_tree_once(brain_repo,
+                                                                   monkeypatch):
+    """`raise` resolves BOTH its positional (a stakeholder or board) and its
+    `--ref` (a project), so before this change it scanned the tree twice.
+
+    A verb with one reference site cannot test this: it loaded once before and
+    loads once now, so no cache-disabling mutation can redden it. The first
+    version of this test used `log`, and the implementer reported it was
+    unfalsifiable rather than leaving it to be found.
+    """
     calls = _count_loads(monkeypatch)
-    c.execute(brain_repo, grammar.parse_line("log acme-migration -- a line"))
+    c.execute(
+        brain_repo,
+        grammar.parse_line("raise ann --ref acme-migration -- needs sign-off"),
+    )
     assert calls["n"] == 1
 
 
