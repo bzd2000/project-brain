@@ -38,15 +38,72 @@ def test_a_project_line_carries_status_health_program_tags_and_open_count(brain_
     assert "open:" in line
 
 
-def test_the_digest_contains_no_file_body(brain_repo):
+# Short fields the digest is SUPPOSED to carry, so they are not leaks.
+_ALLOWED_IN_DIGEST = {"active", "blocked", "idea", "next", "paused", "done",
+                      "green", "amber", "red", "client", "infra", "internal"}
+
+
+def _section_text(path, name):
+    """The prose under one `## ` heading, whitespace-normalised."""
+    lines, keep = path.read_text(encoding="utf-8").split("\n"), False
+    out = []
+    for line in lines:
+        if line.startswith("## "):
+            keep = line.strip() == "## " + name
+            continue
+        if keep and line.strip():
+            out.append(line.strip())
+    return " ".join(" ".join(out).split())
+
+
+def _body_lines(root):
+    """Every line of every entity file, as the digest must never reproduce."""
+    for kind in ("projects", "programs", "stakeholders", "boards"):
+        for path in (root / kind).glob("*.md"):
+            for line in path.read_text(encoding="utf-8").split("\n"):
+                text = " ".join(line.strip().lstrip("-# |").split())
+                if len(text) > 25 and text not in _ALLOWED_IN_DIGEST:
+                    yield path.name, text
+
+
+@pytest.mark.parametrize("mode", ["bare", "for"])
+def test_the_digest_contains_no_file_body(brain_repo, mode):
     """A3, and invariant 4. The moment a body appears here the cost design is
-    gone, and nothing else would signal it."""
-    out = _context(brain_repo)
+    gone, and nothing else would signal it.
+
+    The first version of this test skipped any line starting with `-` - and
+    every action and every `## Log` entry in this format IS a `- ` bullet, so
+    a mutation dumping every project's actions and log into the digest left it
+    green. It also never ran with `--for`, the one path that deliberately
+    prints the user's text. Both halves are covered now: the check is a
+    substring test over normalised whitespace, with an allow-list for the
+    short fields the digest is meant to carry.
+    """
+    if mode == "bare":
+        out = " ".join(_context(brain_repo).split())
+        for name, text in _body_lines(brain_repo):
+            assert text not in out, (
+                "{} leaked a body line into the bare digest: {!r}"
+                .format(name, text[:60])
+            )
+        return
+
+    # `--for` is a deliberate exception: R6.3 says it adds that entity's open
+    # actions, questions and last three log lines, and those ARE body lines.
+    # What invariant 4 forbids is printing a WHOLE file, so the rule here is
+    # boundedness, not absence - and the Summary prose is never included,
+    # because nothing in R6.3 asks for it.
     for path in (brain_repo / "projects").glob("*.md"):
-        for line in path.read_text(encoding="utf-8").split("\n"):
-            body = line.strip()
-            if len(body) > 40 and not body.startswith(("#", "-", "|", "---")):
-                assert body not in out, "a file body line reached the digest"
+        out = " ".join(_context(brain_repo, path.stem).split())
+        own = [t for name, t in _body_lines(brain_repo) if name == path.name]
+        reproduced = [t for t in own if t in out]
+        assert len(reproduced) <= 12, (
+            "--for {} reproduced {} body lines; that is a file, not a digest"
+            .format(path.stem, len(reproduced))
+        )
+        summary = _section_text(path, "Summary")
+        if summary:
+            assert summary not in out, "the Summary prose reached --for"
 
 
 def test_a3_the_digest_is_under_1kb_for_20_entities(brain_repo):
