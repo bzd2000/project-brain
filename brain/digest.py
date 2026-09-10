@@ -111,7 +111,11 @@ def _project_lines(projects, show_tags: bool) -> List[str]:
     exactly what a 20-entity brain cannot afford (A3)."""
     if not projects:
         return []
-    w_slug = max(len(p.slug) for p in projects)
+    # Padding is capped: aligning to the longest slug means one 130-character
+    # outlier adds that much to EVERY other row, and those bytes are paid for
+    # by dropping real entities (A3). The reader is a model; alignment past a
+    # point buys nothing.
+    w_slug = min(max(len(p.slug) for p in projects), 28)
     w_stat = max(len(_status(p)) for p in projects)
     lines = []
     for p in projects:

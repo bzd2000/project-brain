@@ -116,16 +116,43 @@ def test_a3_the_digest_is_under_1kb_for_20_entities(brain_repo):
     than a 25-entity one (design ruling, milestone 4 task 3).
     """
     for n in range(15):
-        _run(brain_repo, "new project -- Filler {}".format(n))
+        _run(brain_repo, "new project -- Customer data platform migration "
+                         "phase {}".format(n))
+        _run(brain_repo, "field set customer-data-platform-migration-phase-{} "
+                         "tags -- client,infra,reporting".format(n))
+    for n in range(30):                      # R8.4's own scenario: a day of notes
+        _run(brain_repo, "note add note -- captured line {}".format(n))
     out = _context(brain_repo)
     assert len(out.encode("utf-8")) < 1024, len(out)
+
+    # A3 alone cannot tell "fits" from "fits by hiding entities", which is why
+    # the earlier version of this test - short untagged fillers landing at 879
+    # bytes - never reached the truncation ladder at all. If entities are
+    # hidden, the digest must SAY so, so an agent knows to narrow rather than
+    # concluding they do not exist (the milestone-4 ruling: existence is never
+    # negotiable, detail always is).
+    named = sum(1 for line in out.split("\n") if line.startswith("  ")
+                and "open:" in line)
+    if named < 17:
+        assert "more projects" in out, (
+            "{} of 17 projects shown with no `+N more` - an agent would "
+            "conclude the rest do not exist".format(named)
+        )
 
 
 def test_for_adds_that_entity_and_stays_within_the_cap(brain_repo):
     """R6.3: `--for` adds open actions, questions and the last three log lines.
     A3 binds it too - an uncapped detail path is how invariant 4 erodes."""
+    bare = _context(brain_repo)
     out = _context(brain_repo, "acme-migration")
-    assert "acme-migration" in out
+    # `acme-migration` appears in the BARE digest too, so asserting its
+    # presence proved nothing: making `--for` a complete no-op left the
+    # original version of this test green. What has to be true is that
+    # `--for` added the block R6.3 describes, and that the result still fits.
+    assert out != bare, "--for added nothing"
+    assert "for acme-migration:" in out
+    for label in ("actions:", "questions:", "log:"):
+        assert label in out, label
     assert len(out.encode("utf-8")) < 1024
 
 
