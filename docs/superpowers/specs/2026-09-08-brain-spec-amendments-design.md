@@ -175,3 +175,52 @@ on purpose. A18 pins this.
 The split this forces on the implementation is worth having anyway: validation
 becomes a pure function of the parsed batch, with no lock held and no disk
 writes, which is also what `--dry-run` needs.
+
+## Milestone 4 — what actually keeps processing cheap (2026-09-10)
+
+The question that started this: *"why do we need this cache?"* Measuring it
+turned up two internal contradictions and one wrong number.
+
+**R4.8.2's estimate was wrong by ~20×.** It said a linear scan is half a
+millisecond, five hundred entities five. Measured on generated brains: 8.4 ms at
+40 entities, **107 ms at 500**. And ~90% of it is PyYAML parsing front matter,
+not file I/O. The subset parser of R3.4 does the same work 8.5× faster and is
+currently tried second.
+
+**`_index.json` saves no tokens, and R4.8.1 claimed otherwise.** R8.4.1 already
+established the principle — tokens are what crosses into the prompt, never what
+it costs us to find locally. `_index.json` never crosses into the prompt. So
+R4.8.1's "this is the file that keeps processing cheap" contradicted R8.4.1
+directly. `brain context` is the cost lever; the index file is a local speed
+optimisation for a cost that was mis-measured.
+
+Deferred rather than deleted: §3.3 keeps `index.py` in the module map, because
+the TUI may yet want it. But it is built when something needs it and can show a
+measurement, not because §4.8 named it. C3 makes that free — the index is
+derived and disposable, so adding it later touches no note.
+
+The real cost was elsewhere and is not a storage problem: resolution re-reads the
+whole tree per reference site, so an eight-line batch scans sixteen times. Scan
+once per command and reuse it in memory. That is safe **by construction** rather
+than by invalidation — a write holds the lock (R11.7), so nothing can change the
+tree underneath a command in flight. This is the distinction R4.8.2 was reaching
+for: a cache scoped to one command cannot go stale; a cache that outlives the
+command must be invalidated, and invalidation is what R4.8.2 rightly fears.
+
+**R8.4 said two shell invocations; R9.1 needs three.** The digest carries note
+ids and types, never bodies, so `process inbox` must fetch the bodies it is asked
+to process. R8.4 corrected to three, which R9.0 permits.
+
+**A3 can only catch a digest that is too big.** Invariant 4's stated failure is
+the agent reaching for entity files because the digest is inadequate — and a
+digest that is too thin passes A3 perfectly, because A3 is a size cap. The
+symptom appears as file reads, not as a red test. **A19** is the other half:
+every §9 job must be answerable from the digest. Neither test is sufficient alone.
+
+**Roll-ups are the one derived thing inside the source of truth.** C3's
+"everything derived is disposable" does not protect them: a stale `## Roll-up`
+is a wrong answer in a committed file that the user reads. Regenerating only on
+an explicit `brain build` would leave every brain carrying stale roll-ups between
+builds with nothing to say so — the same silent-staleness failure R4.8.2 argues
+against, but in the one place it actually matters. R4.3.1a makes the write that
+invalidates a roll-up regenerate it in the same commit.
