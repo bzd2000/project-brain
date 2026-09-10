@@ -90,15 +90,7 @@ def test_a15_a_second_apply_refuses_while_the_lock_is_held(brain_repo):
     assert "Traceback" not in done.stderr
 
 
-def _long_batch(lines: int = 40) -> str:
-    """A batch big enough that the writer still holds the lock when the second
-    process starts. One line is not: interpreter startup dwarfs the write."""
-    return "".join(
-        "log acme-migration -- steering note {}\n".format(n) for n in range(lines)
-    )
-
-
-def test_a15_two_real_processes_race_for_the_lock(brain_repo):
+def test_a15_two_real_processes_race_for_the_lock(brain_repo, tmp_path):
     """A15's own two load-bearing clauses, pinned against two REAL `brain
     apply` processes - not one process holding `lock.held` in-test while a
     second is invoked (the test above), which only proves the refusal path
@@ -107,22 +99,62 @@ def test_a15_two_real_processes_race_for_the_lock(brain_repo):
     zero either way. Two-*process* contention for one lock file (R11.7) is
     the one part of A15 that cannot be expressed below the process boundary.
 
-    The reviewer confirmed this behaviour is correct by racing two real
-    processes, so this pins it rather than discovering it."""
+    The previous version of this test started the first process with a
+    40-line batch and waited for `.brain.lock` to exist before starting the
+    second, on the theory that 40 lines of work would keep the first process
+    busy - and therefore the lock held - long enough for the second to reach
+    `lock.held` too. That is a margin, not a guarantee: a whole Python
+    interpreter has to start for the second process between the lock file
+    appearing and the second process actually contending for it, and R4.8.2's
+    front-matter speedup roughly halved the first process's runtime, eating
+    the margin and making this test fail outright rather than flake.
+
+    A test whose correctness depends on the code under test being slow is not
+    a fixed test. So instead of a bigger margin, this uses a real barrier:
+    `git.commit` runs *inside* `lock.held` (see `commands.py`), so a
+    `pre-commit` hook that blocks until this test releases it holds the lock
+    for exactly as long as the test chooses - no timing, no margin. The
+    second process is then run to COMPLETION while the first is provably
+    still holding the lock, not merely started and hoped to still be racing.
+    """
     before = _commit_count(brain_repo)
+
+    # A pre-commit hook that will not let `git commit` return until this test
+    # creates `sentinel`. Runs under the current interpreter (an absolute
+    # shebang, not `/usr/bin/env`, so it does not depend on PATH) and gives up
+    # after a generous timeout so a bug here fails this test instead of
+    # hanging the suite forever.
+    sentinel = tmp_path / "release-commit"
+    hooks_dir = brain_repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook_path = hooks_dir / "pre-commit"
+    hook_path.write_text(
+        "#!{python}\n"
+        "import os, sys, time\n"
+        "sentinel = {sentinel!r}\n"
+        "deadline = time.time() + 10\n"
+        "while not os.path.exists(sentinel):\n"
+        "    if time.time() > deadline:\n"
+        "        sys.stderr.write('pre-commit test hook: sentinel never appeared\\n')\n"
+        "        sys.exit(1)\n"
+        "    time.sleep(0.01)\n".format(python=sys.executable, sentinel=str(sentinel)),
+        encoding="utf-8",
+    )
+    hook_path.chmod(0o755)
+
     results = {}
 
     def run(name, batch):
         results[name] = _apply(brain_repo, batch)
 
-    # Starting both threads and hoping they overlap is not a race, it is a
-    # coin toss: under load the winner can finish and release before the loser
-    # has finished starting a Python interpreter, and then BOTH succeed. That
-    # failed roughly one full-suite run in seven. So make the contention real -
-    # give the first process enough work to still be holding the lock, and do
-    # not start the second until the lock file actually exists.
-    first = threading.Thread(target=run, args=("a", _long_batch()))
+    first = threading.Thread(target=run, args=("a", FIVE_GOOD))
     first.start()
+
+    # The lock file appears the instant `lock.held` opens it, well before the
+    # writer reaches `git commit` and blocks in the hook above - so this poll
+    # is only evidence contention was possible, not the thing that makes it
+    # certain. The certainty comes from running the second process to
+    # completion below, while the hook still has not been released.
     lock_path = brain_repo / lock.LOCK_NAME
     deadline = time.time() + 10
     while not lock_path.exists() and time.time() < deadline:
@@ -131,10 +163,15 @@ def test_a15_two_real_processes_race_for_the_lock(brain_repo):
         "the first process never took the lock, so there was no contention to "
         "observe and this test would have proved nothing"
     )
-    second = threading.Thread(target=run, args=("b", FIVE_GOOD))
-    second.start()
+
+    # The first process is now either still writing or already blocked inside
+    # the hook - either way it cannot reach `git commit`'s return, and so
+    # cannot release the lock, until `sentinel` exists below. Running the
+    # second process to completion here is therefore a guaranteed observation
+    # of real contention, not a race against how fast the first one runs.
+    results["b"] = _apply(brain_repo, FIVE_GOOD)
+    sentinel.write_text("go", encoding="utf-8")
     first.join()
-    second.join()
 
     codes = [results["a"].returncode, results["b"].returncode]
     assert codes.count(0) == 1, ("exactly one apply must succeed", results)
