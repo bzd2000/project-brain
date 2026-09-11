@@ -910,7 +910,18 @@ def _modeline_text(app: "BrainApp") -> Text:
     the far edge (it gives way to the last notice)."""
     t = Text()
     right = Text()
-    if app.mode == INSERT:
+    if app.mode == INSERT and app.prompt == "edit:":
+        # 06-editing.png: the text is in the detail pane, where the line
+        # sits; the modeline names the keys and what the commit does.
+        t.append("-- INSERT --", style="bold " + GREEN)
+        t.append("  ")
+        t.append("edit:", style=DIM)
+        t.append("  ⏎", style=DIM)
+        t.append(" commit   ", style=DIM)
+        t.append("Esc", style=TEAL)
+        t.append(" cancel", style=DIM)
+        hint = "one line is rewritten — nothing else in the file moves"
+    elif app.mode == INSERT:
         t.append("-- INSERT --", style="bold " + GREEN)
         t.append("  ")
         if app.prompt:
@@ -1155,9 +1166,16 @@ def _right_col(parts: List[Tuple[str, str]]) -> Optional[Text]:
     return t
 
 
-def _task_row(task: Task, lineno: int, width: int) -> Row:
+EDIT_GROUND = "#1d2b2a"   # 06-editing.png: the line being edited, in place
+
+
+def _task_row(task: Task, lineno: int, width: int, editing: Optional[str] = None) -> Row:
     """`○` teal for open, `✓` green with the text dimmed for done; owner in
-    `--mut` and the due date coloured by urgency at the right edge."""
+    `--mut` and the due date coloured by urgency at the right edge. While
+    `e` has the line (R10.10: "the line becomes an INSERT buffer where it
+    sits"), `editing` is that buffer and is drawn in the text's place -
+    06-editing.png's boxed line - with the owner and due date untouched
+    beside it."""
     t = Text()
     if task.done:
         t.append("✓ ", style=GREEN)
@@ -1167,6 +1185,14 @@ def _task_row(task: Task, lineno: int, width: int) -> Row:
         style = FG
     right = _right_col([(task.owner or "", MUTED),
                         (_relative(task.due) if task.due else "", _due_style(task.due))])
+    if editing is not None:
+        avail = width - 2 - (right.cell_len + 2 if right is not None else 0)
+        t.append(_tail(editing, avail - 1), style="underline {} on {}".format(FG, EDIT_GROUND))
+        t.append_text(_cursor(TEAL))
+        if right is not None:
+            t.append(" " * max(2, width - t.cell_len - right.cell_len))
+            t.append_text(right)
+        return Row(t, lineno, task)
     _hanging(t, task.text, style, width, 2, right)
     return Row(t, lineno, task)
 
@@ -1992,14 +2018,28 @@ class BrainApp(App, inherit_bindings=False):
             siblings = self._by_program.get(self.selected.slug, [])
         rows = _header_block(self.selected, width, siblings) + _body_rows(self.selected, width)
         self._detail_lines = [(r.lineno, r.task) for r in rows]
+        editing = self._editing_row(rows)
         combined = Text()
         for idx, row in enumerate(rows):
             is_cursor = idx == self._detail_cursor
             if row.gap:
                 combined.append("\n")
+            if editing is not None and idx == editing:
+                row = _task_row(row.task, row.lineno, width, editing=self.buffer)
+                is_cursor = False   # the boxed line is the focus (06-editing.png)
             combined.append_text(_band(row.text, is_cursor, width))
             combined.append("\n")
         widget.update(combined)
+
+    def _editing_row(self, rows) -> Optional[int]:
+        """The row `e` is editing in place, while it is: the cursor row,
+        when it holds the open action the pending edit names."""
+        if self.mode != INSERT or self._pending is None or self._pending[0] != "edit":
+            return None
+        idx = self._detail_cursor
+        if idx is None or idx >= len(rows) or rows[idx].task is None:
+            return None
+        return idx if rows[idx].task.text == self._pending[2] else None
 
     def _render_raw_source(self, widget) -> None:
         """`E` (R10.11, R10.11b): the file exactly as `Doc.lines` holds it,
@@ -2007,11 +2047,35 @@ class BrainApp(App, inherit_bindings=False):
         here (`_run_command` refuses `:w` by name while this is up), so
         there is nothing to address by line - `focused_line` stays empty."""
         self._detail_lines = []
+        width = self._detail_width()
         text = Text()
-        text.append("{}  ·  raw source, view only (R10.11b)\n\n".format(self.selected.slug),
-                    style=DIM)
-        for line in self.selected.doc.lines:
-            text.append(line, style=FG)
+        try:
+            shown = str(Path(self.selected.path).relative_to(self.root)).replace(os.sep, "/")
+        except (ValueError, TypeError, AttributeError):
+            shown = self.selected.slug
+        head = Text(shown, style=DIM)
+        tag = Text("raw · view only (R10.11b)", style=DIM)
+        head.append(" " * max(2, width - head.cell_len - tag.cell_len))
+        head.append_text(tag)
+        text.append_text(_band(head, False, width))
+        text.append("\n\n")
+        fm = self.selected.doc.fm_range
+        for i, line in enumerate(self.selected.doc.lines):
+            row = Text()
+            if fm and fm[0] <= i <= fm[1]:
+                if line.strip() == "---":
+                    row.append(line, style=VIOLET)
+                elif ":" in line:
+                    key, _, value = line.partition(":")
+                    row.append(key + ":", style=VIOLET)
+                    row.append(value, style=MUTED)
+                else:
+                    row.append(line, style=MUTED)
+            elif line.startswith("#"):
+                row.append(line, style=DIM)
+            else:
+                row.append(line, style=MUTED)
+            text.append_text(_band(_fit(row, width), False, width))
             text.append("\n")
         widget.update(text)
 
@@ -2221,6 +2285,8 @@ class BrainApp(App, inherit_bindings=False):
                 self.buffer = self.buffer[:-1]
             elif event.is_printable:
                 self.buffer += event.character
+            if self.prompt == "edit:":
+                self._render_detail()   # the line is drawn where it sits
         else:
             if key == "backspace":
                 self.command = self.command[:-1]
@@ -2231,6 +2297,8 @@ class BrainApp(App, inherit_bindings=False):
     def _pasted(self, text: str) -> None:
         if self.mode == INSERT:
             self.buffer += text
+            if self.prompt == "edit:":
+                self._render_detail()
         elif self.mode == COMMAND:
             self.command += text
         self._render_modeline()
