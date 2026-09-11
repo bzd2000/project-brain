@@ -497,57 +497,110 @@ class CaptureScreen(Screen):
         self.query_one("#capture-foot", Static).update(foot)
 
 
+HELP_KEY_COLUMN = 16   # 11-help.png: the key, then the description at cell 16
+
+HELP_SECTIONS = [
+    ("NORMAL — MOVING", [
+        ("j k", "move the selection"),
+        ("h l", "collapse / expand a program"),
+        ("g G", "top / bottom"),
+        ("Tab", "focus the detail pane, then j k within it"),
+        ("/ n N", "search · next · previous match"),
+    ]),
+    ("NORMAL — CAPTURE", [
+        ("i", "start a note in the modeline"),
+        ("o", "open the full-screen pane, for meeting notes"),
+        ("t", "cycle type: note → meeting → action → decision"),
+    ]),
+    ("NORMAL — ACTING", [
+        ("e", "edit the focused action, in place"),
+        ("E", "show the file as raw source"),
+        ("x", "tick the focused action"),
+        ("d s H", "due date · status · health"),
+        ("u", "undo — a git commit, reverted"),
+        ("Q", "queue a job for the agent in _request.md"),
+        (":", "run a brain command"),
+        ("?", "this screen"),
+        ("ZZ", "quit"),
+    ]),
+    ("INSERT", [
+        ("Esc", "back to NORMAL, keeping what you typed"),
+        ("⏎", "capture the note, or commit the line edit"),
+    ]),
+    ("COMMAND :", [
+        (":log", "log against the selection"),
+        (":status blocked", "set a field"),
+        (":agenda ann", "build a stakeholder or board agenda"),
+        (":met ann", "record that the meeting happened"),
+        (":inbox", "list what is waiting to be processed"),
+    ]),
+]
+
+# 11-help.png: MOVING and CAPTURE in the left column, the rest in the right.
+HELP_LEFT = ("NORMAL — MOVING", "NORMAL — CAPTURE")
+
+
+def _help_column(names, width: int = 10_000) -> Text:
+    """§10.3's key map, one column of 11-help.png: the section name dimmed,
+    each key in teal padded to the description column, the description in
+    `--mut` - wrapped under itself when the column is narrower than the
+    canvas (a hanging indent, never a cropped word). Read by a human at a
+    terminal, never a model - nothing here is truncated for a token budget
+    the way `context` is (invariant 4 does not apply). The whole map is
+    shown; the screen scrolls if it must."""
+    t = Text()
+    first = True
+    for title, rows in HELP_SECTIONS:
+        if title not in names:
+            continue
+        if not first:
+            t.append("\n")
+        first = False
+        t.append(title + "\n", style=DIM)
+        for key, desc in rows:
+            row = Text()
+            row.append("{:<{w}}".format(key, w=HELP_KEY_COLUMN), style=TEAL)
+            row.append(desc, style=MUTED)
+            t.append_text(_fit(row, width, HELP_KEY_COLUMN))
+            t.append("\n")
+    t.rstrip()
+    return t
+
+
+HELP_RIGHT = tuple(n for n, _ in HELP_SECTIONS if n not in HELP_LEFT)
+
+
 def _help_text() -> Text:
-    """The `?` screen (11-help.png), §10.3's key map verbatim. Read by a
-    human at a terminal, never a model - nothing here is truncated for a
-    token budget the way `context` is (invariant 4 does not apply)."""
-    sections = [
-        ("NORMAL — MOVING", [
-            ("j k", "move the selection"),
-            ("h l", "collapse / expand a program"),
-            ("g G", "top / bottom"),
-            ("Tab", "focus the detail pane, then j k within it"),
-            ("/ n N", "search · next · previous match"),
-        ]),
-        ("NORMAL — CAPTURE", [
-            ("i", "start a note in the modeline"),
-            ("o", "open the full-screen capture pane"),
-            ("t", "cycle type: note → meeting → action → decision"),
-        ]),
-        ("NORMAL — ACTING", [
-            ("e", "edit the focused action in place"),
-            ("E", "show the file as raw source (view only, R10.11b)"),
-            ("x", "tick the focused action"),
-            ("d s H", "due date · status · health"),
-            ("u", "undo — a git commit reverted (redo: not yet, R10.7a)"),
-            ("Q", "queue a job for the agent in _request.md"),
-            (":", "run a brain command"),
-            ("?", "this screen"),
-            ("ZZ", "quit"),
-        ]),
-        ("INSERT", [
-            ("Esc", "back to NORMAL, keeping what you typed"),
-            ("⏎", "capture the note, or send the verb"),
-        ]),
-        ("COMMAND", [
-            (":log", "log against the selection"),
-            (":status set", "set a field"),
-            (":agenda ann", "build a stakeholder or board agenda"),
-            (":met ann", "record that the meeting happened"),
-            (":inbox", "list what is waiting to be processed"),
-        ]),
-    ]
+    """Both columns as one text - what a test reads through `#help-body`."""
+    t = _help_column(HELP_LEFT)
+    t.append("\n\n")
+    t.append_text(_help_column([n for n, _ in HELP_SECTIONS if n not in HELP_LEFT]))
+    return t
+
+
+def _help_heading() -> Text:
     t = Text()
     t.append("Keys", style="bold " + FG)
-    t.append("   modal, like vim - single letters in NORMAL; i types; Esc always comes back\n\n",
-             style=MUTED)
-    for title, rows in sections:
-        t.append(title + "\n", style="bold " + MUTED)
-        for key, desc in rows:
-            t.append("  {:<8}".format(key), style=TEAL)
-            t.append("  " + desc + "\n", style=FG)
-        t.append("\n")
-    t.append("any key returns", style=DIM)
+    t.append("  ?", style=DIM)
+    return t
+
+
+def _help_subtitle() -> Text:
+    t = Text()
+    t.append("Modal, like vim. Single letters in NORMAL; ", style=MUTED)
+    t.append("i", style=TEAL)
+    t.append(" types; ", style=MUTED)
+    t.append("Esc", style=TEAL)
+    t.append(" always comes back. No chords to learn.", style=MUTED)
+    return t
+
+
+def _help_footer() -> Text:
+    t = Text()
+    t.append("Nothing here calls a model. The agent lives in the bottom pane and "
+             "is driven by what you type there, or by the jobs ", style=MUTED)
+    t.append("Q", style=TEAL)
+    t.append(" queues in _request.md.", style=MUTED)
     return t
 
 
@@ -558,21 +611,77 @@ class HelpScreen(Screen):
     `tab` are *priority* bindings (R10.3, R10.8): Textual resolves those
     before the event ever bubbles down to a screen's own `on_key`, so this
     screen closing on "any key" needs both paths covered.
+
+    Laid out as the PNG draws it: the heading and a one-line subtitle, then
+    a bordered panel (`--line2`) holding two columns - MOVING and CAPTURE
+    left, ACTING, INSERT and COMMAND right - and, under a rule, the footer.
+    `#help-body` holds the whole map as one text for a test to read; the
+    two column widgets are what is shown.
     """
 
     DEFAULT_CSS = """
     HelpScreen {
-        background: #14161b;
-        color: #e6e6e6;
+        background: #100f0e;
+        color: #ded7cb;
     }
-    #help-body {
-        padding: 1 2;
+    #help-scroll {
+        padding: 1 2 0 2;
+        scrollbar-size-vertical: 1;
+        scrollbar-background: #100f0e;
+        scrollbar-color: #2b2823;
     }
+    #help-heading, #help-subtitle {
+        height: 1;
+        padding: 0 1;
+    }
+    #help-heading { margin-bottom: 1; }
+    #help-subtitle { margin-bottom: 1; }
+    #help-panel {
+        height: auto;
+        border: round #3a352e;
+        padding: 1 1 0 1;
+    }
+    #help-columns {
+        height: auto;
+    }
+    #help-left, #help-right {
+        width: 1fr;
+        height: auto;
+        padding: 0 1;
+    }
+    #help-footer {
+        height: auto;
+        margin-top: 1;
+        padding: 1 1 1 1;
+        border-top: solid #2b2823;
+    }
+    #help-body { display: none; }
     """
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll():
+        with VerticalScroll(id="help-scroll"):
+            yield Static(_help_heading(), id="help-heading", markup=False)
+            yield Static(_help_subtitle(), id="help-subtitle", markup=False)
+            with Vertical(id="help-panel"):
+                with Horizontal(id="help-columns"):
+                    yield Static(_help_column(HELP_LEFT), id="help-left", markup=False)
+                    yield Static(_help_column(HELP_RIGHT), id="help-right", markup=False)
+                yield Static(_help_footer(), id="help-footer", markup=False)
             yield Static(_help_text(), id="help-body", markup=False)
+
+    def on_resize(self, event) -> None:  # noqa: D401 - Textual event hook
+        self._fit_columns()
+
+    def on_mount(self) -> None:
+        self.call_after_refresh(self._fit_columns)
+
+    def _fit_columns(self) -> None:
+        """Wrap each column's descriptions to the width it has now."""
+        for ident, names in (("#help-left", HELP_LEFT), ("#help-right", HELP_RIGHT)):
+            widget = self.query_one(ident, Static)
+            width = widget.content_size.width
+            if width > HELP_KEY_COLUMN + 10:
+                widget.update(_help_column(names, width))
 
     @_guarded
     def on_key(self, event) -> None:
