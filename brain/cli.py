@@ -73,6 +73,17 @@ def main(argv=None) -> int:
 
         where = root.find_root(args.root)
 
+        if args.rest[0] == "tui":
+            # A lazy import, not a module-level one: `textual` is the `tui`
+            # extra, not `dev` (R3.3), and cli.py is one of the modules
+            # `tests/test_stdlib_only.py` imports with `textual` blocked. The
+            # import only runs when `tui` is the verb actually invoked, so
+            # every other verb keeps working on a machine that never
+            # installed it.
+            from .tui import BrainApp
+            BrainApp(where).run()
+            return 0
+
         if args.rest[0] == "apply":
             # `apply`'s input is a whole document read from stdin, not one
             # line of argv, so it is handled here rather than falling through
@@ -144,10 +155,11 @@ def main(argv=None) -> int:
         cut = args.rest.index("--") if "--" in args.rest else len(args.rest)
         left, text_part = args.rest[:cut], args.rest[cut:]
 
-        # `check` has one mode in 3b, so `--authored` is a spelling of it
-        # rather than a flag. Milestone 8's `--fix` is a second mode and
-        # needs a real one.
-        left = [a for a in left if a != "--authored"]
+        # `--authored` used to be stripped here and never reached the grammar
+        # (milestone 3's workaround, before `check` declared it a boolean
+        # flag). R10.8a: it is now a real grammar flag - `check`'s
+        # `bool_flags` - so both front doors (the shell and, at milestone 5,
+        # COMMAND mode) go through the one `validate` that knows it.
 
         # `--json` after the verb, which is where the TUI and an agent will
         # write it - argparse's REMAINDER swallows it before `--json` above
@@ -178,8 +190,13 @@ def main(argv=None) -> int:
             # has happened tells a caller the operation failed when it
             # succeeded - and a script that retries on exit 1 captures the note
             # twice. `find_verb` answers this without running anything.
-            positional, _ = grammar.split_flags(parsed.tokens)
-            found, _rest = commands.find_verb(positional)
+            # `find_verb` directly on `parsed.tokens`, not through
+            # `grammar.split_flags` first: the verb name is always the
+            # leading tokens (nothing in it starts with `--`), and calling
+            # `split_flags` here with no `bool_flags` would wrongly reject a
+            # boolean flag with no value - `check --authored --json` being
+            # exactly that case (R10.8a).
+            found, _rest = commands.find_verb(parsed.tokens)
             if found.writes:
                 raise VerbError(
                     "--json is for read verbs; `{}` answers in one line".format(

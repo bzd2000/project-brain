@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Status: milestone 4 done
+## Status: milestone 5 done — stop here and use it
 
 `brain/model.py` (the `Doc` class), `brain/entities.py` (the four entity types
 plus notes), `brain/_yaml.py` (front-matter parsing), `brain/git.py` (commit,
@@ -31,9 +31,20 @@ crosses into the prompt, so it saves milliseconds and not one token, and
 nothing an agent reads is served from a cache. The TUI is its only plausible
 consumer - build it there against a measured need, or not at all.
 
-`tui.py`, `AGENTS.md` + `process inbox`, agendas, and `tidy`/`review`/`rewrite`
-are unbuilt - **milestone 5 is the TUI, and START-HERE says to stop there and
-use it for a week with no agent at all before writing a line of `AGENTS.md`.** Known gap, deferred to
+Milestone 5 added `brain/tui.py` — the only module that imports `textual`
+(R3.3). Three modes, the modeline as the whole application state, capture via
+`note add -f -` on stdin, `:` COMMAND mode through the same grammar as the
+shell, `x`/`e`/`d`/`s`/`H`/`u`/`Q`/`/`/`?`/`ZZ`, mtime polling. **Every write
+goes through one function, `BrainApp.run_brain`, which spawns `brain`; the
+TUI never touches a `Doc`.** Deliberately not built, each with a spec
+requirement saying why: raw-source *save* (R10.11b — needs `brain check`),
+redo (R10.7a — `Ctrl+R` is unbound, not bound to "not yet"), `e` on
+non-action lines (R10.10a — only `action edit` exists).
+
+**This is where §12 says to stop.** `AGENTS.md` + `process inbox`, agendas,
+and `tidy`/`review`/`rewrite` are unbuilt, on purpose: use the TUI for a week
+with no agent at all first. Everything from milestone 6 on is tuned against
+real captured notes, and there are none yet. Known gap, deferred to
 milestone 6: `note add` does not yet refuse a body line that itself matches
 the `## <id> · <date> · <type>` header shape, so such a line is read back as a
 real note and advances the id counter - not reachable until `process inbox`
@@ -62,12 +73,14 @@ them in commit messages, tests and code comments.
 
 ```bash
 pip install -e ".[yaml,dev]"     # PyYAML and pytest, both pinned (C1)
+pip install -e ".[yaml,dev,tui]" # + textual, for the TUI only - the suite must pass without it (A11)
 python -m pytest                 # everything
 python -m pytest tests/test_doc_tasks.py -v          # one file
 python -m pytest tests/test_doc_tasks.py::test_toggle_task_changes_exactly_one_line -v
 python -m pytest tests/test_stdlib_only.py -v        # the R3.3 seam
 
 .venv/bin/python -m brain init ~/mybrain
+.venv/bin/python -m brain --root ~/mybrain tui       # or cd ~/mybrain && brain tui
 .venv/bin/python -m brain --root ~/mybrain new project -- Acme portal rebuild
 .venv/bin/python -m brain --root ~/mybrain new stakeholder -- Ann Peeters
 .venv/bin/python -m brain --root ~/mybrain action add acme-portal-rebuild -- Draft the kickoff deck

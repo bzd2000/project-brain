@@ -16,6 +16,12 @@ brain = "brain.cli:main"
 # C1: vetted and pinned exactly. textual is added at milestone 5, not before.
 yaml = ["PyYAML==6.0.2"]
 dev = ["pytest==8.3.3"]
+# R3.3: confined to brain/tui.py. Not in `dev` - the suite must pass without
+# it (A11), which tests/test_stdlib_only.py enforces by blocking the import.
+# pytest-asyncio rides along here rather than in `dev`: it exists only to run
+# `tests/test_tui.py`'s Pilot coroutines, which `pytest.importorskip` skips
+# outright when textual is absent (A11), so `dev` alone never needs it.
+tui = ["textual==8.2.8", "pytest-asyncio==0.24.0"]
 
 [tool.setuptools.packages.find]
 include = ["brain*"]
@@ -26,3 +32,13 @@ addopts = "-q"
 # Put the repo root on sys.path so `import brain` works before the package is
 # installed. pytest only inserts tests/ on its own, which is not enough.
 pythonpath = ["."]
+# pytest-asyncio (the `tui` extra) runs tests/test_tui.py's Pilot coroutines.
+# Two keys, or it warns once per collected test per fixture - nineteen
+# thousand lines on one run, which would bury any real warning. The second
+# filter is pytest-asyncio 0.24 itself using an asyncio API Python 3.14
+# deprecates; not ours to fix, and not a signal.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "ignore::DeprecationWarning:pytest_asyncio",
+]

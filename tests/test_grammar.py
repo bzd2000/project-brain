@@ -1,7 +1,8 @@
 import pytest
 
+from brain import commands as c
 from brain import grammar as gr
-from brain.errors import GrammarError
+from brain.errors import GrammarError, VerbError
 
 
 def test_a_plain_verb_line():
@@ -106,3 +107,16 @@ def test_a_command_is_one_line(bad):
     with pytest.raises(GrammarError) as excinfo:
         gr.parse_line(bad)
     assert "one line" in str(excinfo.value)
+
+
+def test_check_authored_works_through_the_grammar(brain_repo):
+    """R10.8a: what the TUI's COMMAND mode will send. This was a grammar
+    error before milestone 5, which R10.8 forbids."""
+    result = c.execute(brain_repo, gr.parse_line("check --authored"))
+    assert "authored" in result.message.lower() or result.data is not None
+
+
+def test_a_boolean_flag_followed_by_a_value_is_not_swallowed():
+    """`check --authored foo` must not read `foo` as the flag's value."""
+    with pytest.raises(VerbError):
+        c.validate(gr.parse_line("check --authored foo"))
