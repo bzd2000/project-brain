@@ -818,7 +818,7 @@ def _modeline_text(app: "BrainApp") -> Text:
     elif app.mode == COMMAND:
         t.append("-- COMMAND --", style="bold " + VIOLET)
         t.append("  ")
-        t.append(":", style=VIOLET)
+        t.append(":", style=FG)
         t.append(" ")
         t.append(_tail(app.command, app.size.width - 4 - t.cell_len - 22), style=FG)
         t.append_text(_cursor(TEAL))
@@ -837,8 +837,10 @@ def _modeline_text(app: "BrainApp") -> Text:
             t.append("  RAW", style="bold " + AMBER)
         right.append_text(_chip(app.note_type))
         right.append("  ")
+        # 03-modes.png: dimmed here, whatever the count - the title bar is
+        # where the count is live (teal), the modeline only repeats it.
         n = app._unprocessed_count
-        right.append("{} unprocessed".format(n), style=(TEAL if n else DIM))
+        right.append("{} unprocessed".format(n), style=DIM)
         right.append(" · ", style=DIM)
         hint = "? help"
     if app.notice is not None:
