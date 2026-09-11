@@ -8,6 +8,7 @@ an invariant the rest of the system assumes.
 """
 from __future__ import annotations
 
+import itertools
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -84,6 +85,12 @@ class Verb(NamedTuple):
     # gain. Every other read verb keeps `--json` (R6.1), so this defaults
     # True rather than something each of them has to opt into.
     json_ok: bool = True
+    # Flags that take no value (R10.8a) - `check --authored` being the one.
+    # `split_flags` does not know the verb (it is called before `find_verb`
+    # can run), so `validate` looks this up from the verb it just found and
+    # passes it into `split_flags` itself; declared here so both sides read
+    # the same tuple rather than each spelling the flag name separately.
+    bool_flags: Tuple[str, ...] = ()
 
 
 VERBS: Dict[Tuple[str, ...], Verb] = {}
@@ -95,7 +102,8 @@ def verb(*name, needs_text: bool = False, writes: bool = True,
          ref_kinds: Optional[Tuple[str, ...]] = None,
          flag_refs: Optional[Dict[str, Tuple[str, ...]]] = None,
          value_choices: Optional[Tuple[int, Tuple[str, ...]]] = None,
-         batchable: bool = True, json_ok: bool = True):
+         batchable: bool = True, json_ok: bool = True,
+         bool_flags: Tuple[str, ...] = ()):
     """Register a verb.
 
     `arity` is (min, max) positionals AFTER the verb's own words, and
@@ -110,6 +118,7 @@ def verb(*name, needs_text: bool = False, writes: bool = True,
             optional_text=optional_text, ref_kinds=ref_kinds,
             flag_refs=flag_refs, value_choices=value_choices,
             batchable=batchable, json_ok=json_ok,
+            bool_flags=tuple(bool_flags),
         )
         return func
     return register
@@ -233,6 +242,21 @@ def _action_done(root, positional, flags, text):
     doc.touch()
     doc.save()
     return Result("ticked {} in {}".format(task.text, project.slug), (rel,))
+
+
+@verb("action", "edit", needs_text=True, arity=(2, 2), ref_kinds=("project",))
+def _action_edit(root, positional, flags, text):
+    """R10.10a: the TUI's `e` on an action line. The selector is positional -
+    an index into the open actions or a unique substring - because the free
+    text after ` -- ` is the new description and may itself contain ` -- `,
+    which would make a free-text selector (`action edit <project> -- <old
+    words> -- <new words>`) ambiguous with `action done`'s own grammar."""
+    project, doc, rel = _project_and_doc(root, positional[0])
+    task = resolve_action(project, positional[1])
+    doc.edit_task(task.lineno, text)
+    doc.touch()
+    doc.save()
+    return Result("edited an action on {}".format(project.slug), (rel,))
 
 
 @verb("action", "due", arity=(1, 2), allowed_flags=("to",), optional_text=True,
@@ -683,10 +707,13 @@ def _undo(root, positional, flags, text):
     return Result("undid {}".format(sha[:7]))
 
 
-@verb("check", writes=False, arity=(0, 0), allowed_flags=())
+@verb("check", writes=False, arity=(0, 0), allowed_flags=(),
+      bool_flags=("authored",))
 def _check(root, positional, flags, text):
     """R3.2/R11.6: report any file whose last change did not come through
-    `brain`, so a violation is visible rather than silent."""
+    `brain`. `check` has one mode (R10.8a); `--authored` is a boolean-flag
+    spelling of it, not a second one, so `flags` is read by nothing here -
+    `check` and `check --authored` do exactly the same thing."""
     offenders = git.unauthored(root)
     return Result(
         "all {} file(s) authored by brain".format(len(git.brain_paths(root)))
@@ -794,8 +821,22 @@ def validate(parsed) -> Optional[Plan]:
     `None` for `parsed is None` (a blank or comment line, R6.4)."""
     if parsed is None:
         return None
-    positional, flags = split_flags(parsed.tokens)
-    found, rest = find_verb(positional)
+    # `split_flags` does not know the verb, so a bare boolean flag
+    # (`--authored`, R10.8a) can't be recognised until the verb is - but the
+    # verb name is always the run of tokens BEFORE the first `--flag` (no
+    # verb word starts with `--`), so it can be read off `parsed.tokens`
+    # directly, without splitting flags first. `find_verb` raises on an
+    # unknown verb here exactly as it would have on the post-split
+    # `positional` list, since flags never precede the verb name.
+    head = list(itertools.takewhile(lambda t: not t.startswith("--"), parsed.tokens))
+    found, _ = find_verb(head)
+    positional, flags = split_flags(parsed.tokens, bool_flags=found.bool_flags)
+    # `positional`'s leading tokens are exactly `head` (flag removal never
+    # touches what comes before the first flag), so `found.name`'s length
+    # is where the verb's own words end and its arguments begin - the same
+    # split `find_verb(positional)` would have produced, without asking it
+    # a second time.
+    rest = positional[len(found.name):]
 
     low, high = found.arity
     if not low <= len(rest) <= high:
@@ -808,7 +849,9 @@ def validate(parsed) -> Optional[Plan]:
                 " ".join(rest) or "none",
             )
         )
-    unknown = sorted(f for f in flags if f not in found.allowed_flags)
+    unknown = sorted(
+        f for f in flags if f not in found.allowed_flags and f not in found.bool_flags
+    )
     if unknown:
         raise VerbError(
             "`{}` does not take {}. It accepts: {}".format(

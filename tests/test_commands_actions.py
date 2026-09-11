@@ -106,6 +106,45 @@ def test_action_verbs_refuse_a_done_action(brain_repo):
         _run(brain_repo, "action done acme-migration -- Migrate the reporting")
 
 
+def test_action_edit_changes_exactly_one_line(brain_repo):
+    """R10.10/R10.10a: the TUI's `e` on an action. Same selector rules as
+    `action done`; the write goes through `Doc.edit_task`."""
+    before = snapshot(brain_repo)
+    _run(brain_repo, "action edit acme-migration 1 -- Confirm the cutover window with Sara today")
+    after = snapshot(brain_repo)
+    changed = {i for i, (a, b) in enumerate(
+        zip(before["projects/acme-migration.md"], after["projects/acme-migration.md"]))
+        if a != b}
+    rollup_changed = {i for i, (a, b) in enumerate(
+        zip(before["programs/cloud-migration.md"], after["programs/cloud-migration.md"]))
+        if a != b}
+    assert_only_changed(before, after, {
+        "projects/acme-migration.md": changed,
+        "programs/cloud-migration.md": rollup_changed,   # R4.3.1a: Next column
+    })
+    assert len(changed) == 2, "the action line and updated:, nothing else"
+    assert "with Sara today" in _project(brain_repo).doc.tasks()[0].text
+
+
+def test_action_edit_keeps_owner_due_and_state(brain_repo):
+    """`Doc.edit_task` replaces the description and keeps metadata. Editing
+    an action by a positional index (not free text - see the module
+    docstring/task brief: a free-text selector is ambiguous with the new
+    text after ` -- `, so `action edit`'s selector is positional)."""
+    _run(brain_repo, "action add acme-migration --owner sara --due 2026-10-01 -- Old words")
+    _run(brain_repo, "action edit acme-migration 2 -- New words")
+    task = [t for t in _project(brain_repo).doc.tasks() if "New words" in t.text][0]
+    assert task.owner == "sara" and task.due == "2026-10-01" and not task.done
+
+
+def test_action_edit_text_is_the_users_words(brain_repo):
+    """Twenty-eighth guard: the new text is free text after ` -- ` and may
+    contain anything, including a second ` -- `, a `#` and a `|`."""
+    words = "ship it -- then # celebrate | loudly"
+    _run(brain_repo, "action edit acme-migration 1 -- " + words)
+    assert _project(brain_repo).doc.tasks()[0].text == words
+
+
 def test_decision_add_is_newest_first(brain_repo):
     _run(brain_repo, "decision add acme-migration -- 2026-09-09 - Terraform over ARM")
     body = _project(brain_repo).doc.section_lines("Decisions")

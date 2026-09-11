@@ -23,6 +23,7 @@ EXPECTED_REF_KINDS = {
     ("action", "add"): ("project",),
     ("action", "done"): ("project",),
     ("action", "due"): ("project",),
+    ("action", "edit"): ("project",),
     ("decision", "add"): ("project",),
     ("question", "add"): ("project",),
     ("field", "set"): (),           # any kind

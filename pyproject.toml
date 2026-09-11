@@ -16,6 +16,9 @@ brain = "brain.cli:main"
 # C1: vetted and pinned exactly. textual is added at milestone 5, not before.
 yaml = ["PyYAML==6.0.2"]
 dev = ["pytest==8.3.3"]
+# R3.3: confined to brain/tui.py. Not in `dev` - the suite must pass without
+# it (A11), which tests/test_stdlib_only.py enforces by blocking the import.
+tui = ["textual==8.2.8"]
 
 [tool.setuptools.packages.find]
 include = ["brain*"]

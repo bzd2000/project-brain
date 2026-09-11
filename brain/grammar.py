@@ -73,12 +73,23 @@ def parse_line(line: str) -> Optional[ParsedLine]:
     return ParsedLine(tokens=tokens, text=text, raw=raw)
 
 
-def split_flags(tokens) -> Tuple[List[str], Dict[str, str]]:
+def split_flags(
+    tokens, bool_flags: Tuple[str, ...] = ()
+) -> Tuple[List[str], Dict[str, str]]:
     """Separate `--flag value` pairs from positional tokens.
 
     Values never contain spaces: R6.0 makes every non-free-text argument either
     enumerated, a bare integer, or a flag, precisely so that this needs no
     quoting.
+
+    `bool_flags` (R10.8a) names flags that take no value at all - `check
+    --authored` being the one today. This function does not know which verb
+    it is splitting for (that is discovered from the leading tokens, by
+    `validate` in `commands.py`, before this is called), so a caller that
+    wants `--authored` to be legal passes the verb's own `Verb.bool_flags` in;
+    every other caller gets the default `()` and today's strict behaviour,
+    unchanged - which is why the flag-parsing tests that call this directly
+    with one argument still pass.
     """
     positional: List[str] = []
     flags: Dict[str, str] = {}
@@ -89,6 +100,15 @@ def split_flags(tokens) -> Tuple[List[str], Dict[str, str]]:
             name = token[2:]
             if not name:
                 raise GrammarError("a bare `--` is not a flag")
+            if name in bool_flags:
+                # Takes no value, full stop - not "a value if one happens to
+                # follow": `check --authored foo` must not read `foo` as the
+                # flag's value (R10.8a). Leaving `foo` as a positional means
+                # the verb's own arity check reports it, the same as any
+                # other unexpected argument.
+                flags[name] = "true"
+                index += 1
+                continue
             if index + 1 >= len(tokens):
                 raise GrammarError("--{} needs a value".format(name))
             value = tokens[index + 1]
