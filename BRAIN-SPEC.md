@@ -964,6 +964,17 @@ buffer where it sits; `⏎` commits, `Esc` cancels. The write goes through the s
 `Doc` methods as everything else, so **exactly one line changes**. This is the
 common case: fixing a typo, sharpening an action, correcting a log entry.
 
+**R10.10a `e` needs a verb, and at milestone 5 it is `action edit`.** The TUI
+never calls `Doc` itself (R3.1, invariant 1); it shells out. No §6.1 verb
+edits an arbitrary line by position, and one that did would be fragile — line
+numbers move under the agent's writes in the other pane. So milestone 5 adds
+**`brain action edit <project> <selector> -- <text>`**, resolving the action the
+way `action done` does and writing through `Doc.edit_task`, which is R10.10's
+common case ("sharpening an action"). `e` on any other line shows a modeline
+message naming what is editable. Log and decision lines are appended
+newest-first and are rarely corrected; when a week of use shows otherwise,
+they get a verb of their own rather than a line-number escape hatch.
+
 **R10.11 `E` — raw source.** The pane shows the file as text, editable, with
 front matter highlighted. `:w` saves, `Esc` or `E` returns to rendered. The save
 is **validated before it is written**: front matter must parse, the five sections
