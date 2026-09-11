@@ -1408,6 +1408,105 @@ def _body_rows(entity, width: int) -> List[Row]:
     return rows
 
 
+SEARCH_SECTION_TITLES = {
+    "Next actions": "OPEN ACTIONS",
+    "Log": "LOG & DECISIONS",
+    "Decisions": "LOG & DECISIONS",
+    "Open questions": "OPEN QUESTIONS",
+}
+SEARCH_GROUP_ORDER = ("PROJECTS", "PROGRAMS", "STAKEHOLDERS", "BOARDS",
+                      "OPEN ACTIONS", "LOG & DECISIONS", "OPEN QUESTIONS")
+ENTITY_WHERE = ("slug", "title", "tag")
+
+
+def _search_group_of(hit: dict) -> str:
+    where = hit.get("where", "")
+    if where in ENTITY_WHERE:
+        return hit.get("kind", "").upper() + "S"
+    return SEARCH_SECTION_TITLES.get(where, where.upper())
+
+
+def _search_groups(hits: List[dict]) -> List[Tuple[str, List[dict]]]:
+    """07-search.png's grouping: the entity hits under their kind, then the
+    sections in the PNG's order, then any other section by its own name.
+    An entity that matched on several of slug, title and tag is one row."""
+    by_group: Dict[str, List[dict]] = {}
+    seen_entities = set()
+    for hit in hits:
+        group = _search_group_of(hit)
+        if hit.get("where") in ENTITY_WHERE:
+            key = (hit.get("kind"), hit.get("slug"))
+            if key in seen_entities:
+                continue
+            seen_entities.add(key)
+        by_group.setdefault(group, []).append(hit)
+    ordered = [(g, by_group.pop(g)) for g in SEARCH_GROUP_ORDER if g in by_group]
+    ordered.extend((g, by_group[g]) for g in by_group)
+    return ordered
+
+
+def _highlight(text: Text, query: str) -> Text:
+    for token in query.split():
+        text.highlight_regex("(?i)" + re.escape(token), "bold " + TEAL)
+    return text
+
+
+def _search_row(hit: dict, entity, query: str, width: int) -> Text:
+    """One hit as the PNG draws it: the glyph of what matched, the slug in
+    `--mut` padded to a column, the line with the query lit, and the right
+    column the row's kind carries."""
+    kind = hit.get("kind", "")
+    where = hit.get("where", "")
+    line = hit.get("line", "")
+    slug = hit.get("slug", "")
+    t = Text()
+    right: Optional[Text] = None
+    body = Text()
+    if where in ENTITY_WHERE:
+        if kind == "project":
+            status = getattr(entity, "status", None) or "unknown"
+            t.append("●  ", style=STATUS_COLORS.get(status, DIM))
+            right = Text(status, style=DIM)
+        elif kind == "program":
+            t.append("▾  ", style=DIM)
+        else:
+            t.append(KIND_GLYPHS.get(kind, "◆") + "  ", style=VIOLET)
+        body.append(getattr(entity, "title", None) or line, style=FG)
+    else:
+        task = parse_action(0, line)
+        when, text, tags = _split_bullet(line)
+        if task is not None:
+            if task.done:
+                t.append("✓  ", style=GREEN)
+                body.append(task.text, style=DIM)
+            else:
+                t.append("○  ", style=TEAL)
+                body.append(task.text, style=FG)
+            right = _right_col([(task.owner or "", DIM),
+                                (_relative(task.due) if task.due else "", _due_style(task.due))])
+        else:
+            t.append("·  ", style=DIM)
+            if when:
+                body.append(_fmt_short_date(when, pad=True) + "  ", style=DIM)
+            body.append(text, style=FG)
+            if tags:
+                right = Text(" ".join(tags), style=DIM)
+    t.append("{:<{w}}".format(slug, w=SEARCH_SLUG_COLUMN), style=DIM)
+    _highlight(body, query)
+    avail = width - t.cell_len - (right.cell_len + 2 if right is not None else 0)
+    if body.cell_len > avail > 4:
+        body.truncate(avail, overflow="ellipsis")
+    t.append_text(body)
+    if right is not None:
+        pad = width - t.cell_len - right.cell_len
+        t.append(" " * max(2, pad))
+        t.append_text(right)
+    return t
+
+
+SEARCH_SLUG_COLUMN = 20   # 07-search.png: the line starts 23 cells in
+
+
 def _band(text: Text, selected: bool, width: int) -> Text:
     """One detail row as the tree draws its rows: a teal bar at the left
     edge and a `--sel` ground across the whole width when selected, a
@@ -1484,6 +1583,13 @@ class BrainApp(App, inherit_bindings=False):
         background: #1c1a17;
         border-bottom: solid #2b2823;
         padding: 0 2;
+    }
+    #searchbar {
+        height: 2;
+        background: #1c1a17;
+        border-bottom: solid #2b2823;
+        padding: 0 2;
+        display: none;
     }
     #body {
         height: 1fr;
@@ -1564,6 +1670,7 @@ class BrainApp(App, inherit_bindings=False):
         self._focus_before = None
         self._slugs: List[str] = []
         self._by_program: Dict[str, list] = {}
+        self._entity_by_slug: Dict[str, object] = {}
         self._detail_lines: List[Tuple[Optional[int], Optional[Task]]] = []
         self._detail_cursor: Optional[int] = None
         self._mtimes: Dict[str, float] = {}
@@ -1624,6 +1731,7 @@ class BrainApp(App, inherit_bindings=False):
     # -- composition --------------------------------------------------
     def compose(self) -> ComposeResult:
         yield Static(id="title", markup=False)
+        yield Static(id="searchbar", markup=False)
         with Horizontal(id="body"):
             yield EntityTree(id="tree")
             with VerticalScroll(id="detail-scroll"):
@@ -1664,21 +1772,25 @@ class BrainApp(App, inherit_bindings=False):
         """R10.6: below 100 columns the tree fills the width and the
         detail pane collapses; the modeline is never hidden. Search results
         (07-search.png) take the whole width instead of the tree."""
-        narrow = self.size.width and self.size.width < NARROW_COLUMNS
+        searching = self.search_hits is not None
+        narrow = bool(self.size.width and self.size.width < NARROW_COLUMNS) and not searching
         tree_widget = self.query_one("#tree", Tree)
         detail_scroll = self.query_one("#detail-scroll")
         detail = self.query_one("#detail", DetailPane)
         detail_scroll.display = not narrow
         detail.display = not narrow
+        tree_widget.display = not searching
+        self.query_one("#searchbar", Static).display = searching
         tree_widget.styles.width = "100%" if narrow else TREE_WIDTH + 1
 
     def _detail_width(self) -> int:
         """Cells available to one detail row: the app width less the tree
         and its rule, the pane's padding and scrollbar gutter, and the
-        two-cell selection margin every row carries."""
+        two-cell selection margin every row carries. Search results have
+        the whole width (07-search.png: the tree gives way)."""
         total = self.size.width or 120
         narrow = total < NARROW_COLUMNS
-        tree = 0 if narrow else TREE_WIDTH + 1
+        tree = 0 if narrow or self.search_hits is not None else TREE_WIDTH + 1
         return max(20, total - tree - 2 - 1 - 2)
 
     def on_tree_node_expanded(self, event) -> None:
@@ -1728,6 +1840,7 @@ class BrainApp(App, inherit_bindings=False):
 
         self._slugs = sorted(e.slug for e in programs + projects + stakeholders + boards)
         self._by_program = by_program
+        self._entity_by_slug = {e.slug: e for e in programs + projects + stakeholders + boards}
 
         node_by_key = {}
         right = tree_widget.right
@@ -1903,36 +2016,54 @@ class BrainApp(App, inherit_bindings=False):
         widget.update(text)
 
     def _render_search_results(self, widget) -> None:
-        """`/` (R6.7, 07-search.png): hits grouped by kind, one line each -
-        the same grouping `brain search`'s own renderer uses, so the TUI and
-        the shell never disagree about what a match is."""
+        """`/` (R6.7, 07-search.png): the hits grouped by where they were
+        found - the entity itself under its kind, then OPEN ACTIONS, LOG &
+        DECISIONS, OPEN QUESTIONS and any other section by name - one row
+        each: glyph, slug, the line as written with the query in teal, and
+        at the right edge what the row's kind has to say (status, owner and
+        due). The same hits `brain search`'s own renderer prints, so the
+        TUI and the shell never disagree about what a match is."""
         self._detail_lines = []
         hits = self.search_hits
+        self._render_searchbar(len(hits))
+        width = self._detail_width()
         text = Text()
-        text.append("search ", style=MUTED)
-        text.append("/{}".format(self.search_query), style="bold " + TEAL)
-        text.append("   {} match(es)\n\n".format(len(hits)), style=MUTED)
         if not hits:
             text.append("no matches", style=DIM)
             widget.update(text)
             return
+        groups = _search_groups(hits)
         idx = 0
-        for kind in ("program", "project", "stakeholder", "board"):
-            group = [h for h in hits if h["kind"] == kind]
-            if not group:
-                continue
-            text.append("{}S\n".format(kind.upper()), style="bold " + MUTED)
+        first = True
+        for title, group in groups:
+            if not first:
+                text.append("\n")
+            first = False
+            text.append_text(_band(Text(title, style=DIM), False, width))
+            text.append("\n")
             for hit in group:
-                is_cursor = idx == self.search_cursor
-                text.append("▸ " if is_cursor else "  ",
-                            style=(TEAL if is_cursor else ""))
-                text.append(hit["slug"], style=TEAL)
-                text.append("  {}: ".format(hit["where"]), style=MUTED)
-                text.append(hit["line"], style=FG)
+                row = _search_row(hit, self._entity_by_slug.get(hit["slug"]),
+                                  self.search_query, width)
+                text.append_text(_band(row, idx == self.search_cursor, width))
                 text.append("\n")
                 idx += 1
-            text.append("\n")
         widget.update(text)
+
+    def _render_searchbar(self, n: int) -> None:
+        """The query line under the title bar: `/ cutover` and, at the right
+        edge, the count and the keys that move through the hits."""
+        bar = Text()
+        bar.append("/ ", style=TEAL)
+        bar.append(self.search_query, style=FG)
+        bar.append_text(_cursor(TEAL))
+        right = Text()
+        right.append("{} match{}".format(n, "" if n == 1 else "es"), style=DIM)
+        right.append(" · ", style=DIM)
+        right.append("n N to move, esc to close", style=DIM)
+        pad = max(0, self.size.width - 4) - bar.cell_len - right.cell_len
+        bar.append(" " * max(2, pad))
+        bar.append_text(right)
+        self.query_one("#searchbar", Static).update(bar)
 
     def _render_modeline(self) -> None:
         self.query_one("#modeline", Static).update(_modeline_text(self))
@@ -2043,6 +2174,7 @@ class BrainApp(App, inherit_bindings=False):
             return
         if self.search_hits is not None:
             self.search_hits = None
+            self._apply_layout()
             self._render_detail()
             self._render_modeline()
             self.query_one("#tree", Tree).focus()
@@ -2203,6 +2335,7 @@ class BrainApp(App, inherit_bindings=False):
         self.notice = Notice(
             "{} match(es) for {!r}".format(len(hits), query) if hits else "no matches", False)
         self._leave_to_normal()
+        self._apply_layout()
         self._render_detail()
 
     def _run_command(self) -> None:
