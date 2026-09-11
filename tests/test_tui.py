@@ -649,3 +649,25 @@ def test_no_binding_anywhere_uses_a_ctrl_modifier():
             key = binding.key if hasattr(binding, "key") else binding[0]
             for part in key.split(","):
                 assert "ctrl+" not in part, "{}: {!r}".format(cls.__name__, key)
+
+
+async def test_the_detail_cursor_survives_a_write(brain_repo, monkeypatch):
+    """R10.5: the user never loses their place. Every write reloads, and
+    resetting the cursor on reload made the very next `x`/`e`/`d` a silent
+    no-op - tick, undo, edit failed on the third key, with no message.
+    Found by driving the real app, not by a test."""
+    sent = []
+    def fake_run(self, argv, stdin=None):
+        sent.append(argv); return 0, "ok", ""
+    monkeypatch.setattr(BrainApp, "run_brain", fake_run)
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("j", "j", "tab")
+        for _ in range(12):
+            fl = pilot.app.focused_line
+            if fl and fl[2]:
+                break
+            await pilot.press("j")
+        assert pilot.app.focused_line[2] is not None, "no action under the cursor"
+        await pilot.press("x")
+        await pilot.press("x")   # the second one must ALSO know which action
+    assert len(sent) == 2 and sent[0][:2] == ["action", "done"] == sent[1][:2], sent

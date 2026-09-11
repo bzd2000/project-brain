@@ -1120,12 +1120,20 @@ class BrainApp(App, inherit_bindings=False):
             target_key = (default.kind, default.slug) if default is not None else None
 
         node = node_by_key.get(target_key) if target_key else None
+        # R10.5: "the user never loses their place". Every write reloads, and
+        # resetting the cursor here made the very next `x`/`e`/`d` a silent
+        # no-op - tick, undo, edit failed on the third key. Keep the index
+        # when the same entity is still selected; `_detail_lines` is rebuilt
+        # below and `focused_line` clamps if the file got shorter.
+        same_entity = (node is not None and previous is not None
+                       and (node.data.kind, node.data.slug) == previous)
+        kept_cursor = self._detail_cursor if same_entity else None
         if node is not None:
             tree_widget.move_cursor(node)
             self.selected = node.data
         else:
             self.selected = None
-        self._detail_cursor = None
+        self._detail_cursor = kept_cursor
 
         n_open, n_blocked, n_overdue = _counts(projects)
         self.query_one("#title", Static).update(
