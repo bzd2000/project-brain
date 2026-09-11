@@ -13,8 +13,9 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
-from . import git, grammar, lock
-from .entities import HEALTHS, NOTE_TYPES, STATUSES, load_notes
+from . import digest
+from . import search, git, grammar, lock, rollup, tree
+from .entities import HEALTHS, KINDS, NOTE_TYPES, STATUSES, load_notes
 from .errors import (
     AmbiguousReference,
     BrainError,
@@ -78,6 +79,11 @@ class Verb(NamedTuple):
     # writes files and lets its caller commit, so `True` is safe as the
     # default rather than something each declaration has to opt into.
     batchable: bool = True
+    # False only for `context`: R6.3's consumer is a model reading a
+    # terminal, and a JSON envelope around the digest costs tokens for no
+    # gain. Every other read verb keeps `--json` (R6.1), so this defaults
+    # True rather than something each of them has to opt into.
+    json_ok: bool = True
 
 
 VERBS: Dict[Tuple[str, ...], Verb] = {}
@@ -89,7 +95,7 @@ def verb(*name, needs_text: bool = False, writes: bool = True,
          ref_kinds: Optional[Tuple[str, ...]] = None,
          flag_refs: Optional[Dict[str, Tuple[str, ...]]] = None,
          value_choices: Optional[Tuple[int, Tuple[str, ...]]] = None,
-         batchable: bool = True):
+         batchable: bool = True, json_ok: bool = True):
     """Register a verb.
 
     `arity` is (min, max) positionals AFTER the verb's own words, and
@@ -103,7 +109,7 @@ def verb(*name, needs_text: bool = False, writes: bool = True,
             arity=arity, allowed_flags=tuple(allowed_flags),
             optional_text=optional_text, ref_kinds=ref_kinds,
             flag_refs=flag_refs, value_choices=value_choices,
-            batchable=batchable,
+            batchable=batchable, json_ok=json_ok,
         )
         return func
     return register
@@ -693,6 +699,62 @@ def _check(root, positional, flags, text):
     )
 
 
+@verb("context", writes=False, arity=(0, 0), allowed_flags=("for",),
+      json_ok=False)
+def _context(root, positional, flags, text):
+    """R6.3: the ~200-token digest an agent reads INSTEAD of entity files
+    (invariant 4). `--for <entity>` names one entity to add detail for -
+    R6.3's prose, not the stray `--for inbox` in its own worked example,
+    which names something that is not an entity (design ruling, milestone 4
+    task 3 brief).
+
+    `execute` always runs a read verb inside `with tree.for_command(root):`,
+    so `tree.current()` is the one scan this whole command made; falling
+    back to a fresh `Tree` only covers a caller that reaches this function
+    with no command in flight, which nothing in this codebase does today.
+    """
+    active = tree.current() or tree.Tree(root)
+    out = digest.context(active, flags.get("for"))
+    return Result(out, [], None)
+
+
+@verb("build", arity=(0, 0))
+def _build(root, positional, flags, text):
+    """R4.3.1a: regenerate every program's `## Roll-up`.
+
+    Every ordinary write already refreshes the roll-ups it invalidates, in
+    its own commit - so this exists for the case that bypasses them: a brain
+    edited outside `brain`, or one whose files arrived by `git pull`. It is
+    a write verb, so it goes through the same lock, checkpoint and commit as
+    anything else (R11.7, R6.5), and a program already correct is left
+    untouched rather than rewritten, so `build` on a clean brain is a no-op
+    and commits nothing.
+    """
+    active = tree.current() or tree.Tree(root)
+    every = [p.slug for p in active.entities(kinds=("program",))]
+    written = rollup.refresh_all(active, root, every)
+    if not written:
+        return Result("roll-ups already current", (), [])
+    return Result(
+        "rebuilt {} roll-up(s)".format(len(written)), written, list(written)
+    )
+
+
+@verb("search", needs_text=True, writes=False, arity=(0, 0))
+def _search(root, positional, flags, text):
+    """R6.7: tokens matched case-insensitively against slug, title, tags and
+    section text, grouped by kind, one line each.
+
+    R8.4.1: this is a human's verb and the TUI's `/`. No agent job calls it,
+    and making it faster saves no tokens - so it is a linear scan over the
+    tree this command already loaded, and `--json` is offered because the TUI
+    consumes it, unlike `context`, whose reader is a model at a terminal.
+    """
+    active = tree.current() or tree.Tree(root)
+    hits = search.find(active, text)
+    return Result(search.render(hits), [], hits)
+
+
 class Plan(NamedTuple):
     """One parsed, validated line, ready to run.
 
@@ -785,8 +847,60 @@ def perform(root, plan: "Plan") -> Result:
 
     The caller owns the git envelope, because a batch has ONE envelope for N
     lines (R6.5) and a single verb has one for one.
+
+    R6.5.1/A18: a batch can create an entity file on one line and reference
+    it on a later one (`new project -- Zeta thing` then `log zeta-thing --
+    ...`). If a command's `Tree` (R4.8.2) is active and already loaded, check
+    whether this write changed which paths exist under one of the four
+    entity directories - a `new` creating a file the `Tree` did not know
+    about, or (symmetrically, though nothing removes an entity file today) a
+    removal - and invalidate it so the next lookup rescans.
+
+    M3, fix round 1: an ordinary content edit (`log`, `status set`, `field
+    set`, `link`'s `program:` write, ...) touches a path the `Tree` already
+    knew about and leaves its EXISTENCE unchanged, so it does not invalidate
+    the whole tree - that is what keeps an eight-line batch to one scan
+    (`tests/test_tree_cache.py::test_a_batch_loads_the_tree_once`). But it
+    can still change that ONE entity's own fields, and `Project.status` /
+    `.health` / `.program` / `.due` and `Party.projects` / `.cadence` /
+    `.last_met` / `.next_meeting` (entities.py) are snapshots taken once at
+    construction, not properties - so the cached `Entity` object for that
+    path is now stale. `Tree.refresh_path` reloads exactly that one file (a
+    single-file reparse, not a full rescan), so a later line in the same
+    batch that resolves this slug again sees the write. Nothing in
+    `commands.py` reads a stale attribute today - every verb re-reads
+    `entity.doc`/`entity.fm` fresh - but Task 5's roll-ups read `.program`
+    and `.status` off the cached object `resolve` returns, so this closes
+    the gap before that lands rather than after.
     """
-    return plan.verb.run(root, plan.positional, plan.flags, plan.text)
+    active = tree.current()
+    result = plan.verb.run(root, plan.positional, plan.flags, plan.text)
+
+    # Ask the tree what it knows AFTER the verb ran, not before. A verb loads
+    # the tree itself, by resolving its own reference - so on the single-verb
+    # path the tree is still unloaded when `perform` starts, `known_paths()`
+    # is None, and capturing it up front skipped this whole block. That made
+    # `refresh_path` dead code for `execute`, which Task 5's roll-ups then
+    # read a stale `.health` through: `health set acme-migration amber`
+    # regenerated the roll-up with the OLD value and only caught up on the
+    # NEXT write.
+    known = active.known_paths() if active is not None else None
+    if known is not None:
+        entity_paths = [
+            full for full in (Path(root) / rel for rel in result.paths)
+            if full.parent.name in KINDS
+        ]
+        # A path the tree has never seen, or one that has stopped existing,
+        # changes WHICH entities there are, so the whole tree is invalid
+        # (R6.5.1/A18's forward reference depends on this). Anything else is
+        # a content edit to an entity already in the list, and costs one
+        # single-file reparse rather than a rescan.
+        if any((full in known) != full.exists() for full in entity_paths):
+            active.invalidate()
+        else:
+            for full in entity_paths:
+                active.refresh_path(full)
+    return result
 
 
 def execute(root, parsed, source: str = "cli") -> Result:
@@ -794,29 +908,45 @@ def execute(root, parsed, source: str = "cli") -> Result:
     plan = validate(parsed)
     if plan is None:
         return Result("")
-    if not plan.verb.writes:
-        return perform(root, plan)
+    # R4.8.2: one scan of the entity tree for this whole command, reused by
+    # every `resolve` call `perform` makes underneath it - not a cache that
+    # outlives the call (R4.8.1a), so a second `execute` in the same process
+    # must NOT see this one's tree (tested by
+    # `test_the_tree_does_not_outlive_the_command`).
+    with tree.for_command(root):
+        if not plan.verb.writes:
+            return perform(root, plan)
 
-    git.require_repo(root)
-    with lock.held(root):
-        # Checkpoint before the verb runs, not after: if `commit` fails once
-        # `Doc.save()` has already written, the edit would sit uncommitted and
-        # the NEXT verb's commit would sweep it up as though the user had asked
-        # for it. R6.5 builds this machinery for batches; a single verb has the
-        # same failure and deserves the same answer.
-        checkpoint = git.checkpoint(root, git.brain_paths(root), prune=True)
-        try:
-            result = perform(root, plan)
-            git.commit(root, result.paths, "brain: " + result.message, source=source)
-        except BaseException:
-            # BaseException, not Exception (fix round 1, M3): a Ctrl-C
-            # between the write and the commit must restore the checkpoint
-            # too, or the tree is left half-applied with no signal - exactly
-            # what R6.5's checkpoint exists to prevent, whatever interrupted
-            # it.
-            git.restore(root, checkpoint)
-            raise
-    return result
+        git.require_repo(root)
+        with lock.held(root):
+            # Checkpoint before the verb runs, not after: if `commit` fails once
+            # `Doc.save()` has already written, the edit would sit uncommitted and
+            # the NEXT verb's commit would sweep it up as though the user had asked
+            # for it. R6.5 builds this machinery for batches; a single verb has the
+            # same failure and deserves the same answer.
+            checkpoint = git.checkpoint(root, git.brain_paths(root), prune=True)
+            try:
+                result = perform(root, plan)
+                # R4.3.1a: a roll-up is derived data living in the SOURCE OF
+                # TRUTH, so a stale one is a wrong answer in a committed file.
+                # The write that invalidates it regenerates it, in the same
+                # commit. Last thing inside the envelope, because the tree is
+                # shared for the length of one command and nothing resolves
+                # against it after this point.
+                paths = tuple(result.paths) + rollup.refresh(
+                    tree.current(), root, result.paths)
+                git.commit(
+                    root, paths, "brain: " + result.message, source=source
+                )
+            except BaseException:
+                # BaseException, not Exception (fix round 1, M3): a Ctrl-C
+                # between the write and the commit must restore the checkpoint
+                # too, or the tree is left half-applied with no signal - exactly
+                # what R6.5's checkpoint exists to prevent, whatever interrupted
+                # it.
+                git.restore(root, checkpoint)
+                raise
+        return result
 
 
 class BatchError(VerbError):
@@ -1129,6 +1259,14 @@ def apply_batch(root, text: str, dry_run: bool = False,
     taken: nothing on disk changes, so there is nothing to check out of and
     nothing to hold the lock against.
 
+    A non-`--dry-run` batch takes the lock BEFORE `validate_batch`, not just
+    around the writes (H1, fix round 1): `validate_batch` is what forces the
+    R4.8.2 `Tree`'s first scan, and R4.8.2's safety argument - no other
+    process can change the tree under a command in flight - only holds if
+    that scan happens inside the lock too. One consequence worth knowing: a
+    second `brain apply` now refuses while the first is still VALIDATING,
+    not only while it is writing.
+
     A reference that resolved fine at validation time can still fail at
     write time - action selectors (`action done`/`action due`'s index-or-
     substring) resolve only in `perform`, never in `validate_batch` - and
@@ -1146,64 +1284,98 @@ def apply_batch(root, text: str, dry_run: bool = False,
     `Exception` - a Ctrl-C between two writes gets the same rollback as any
     other interruption.
     """
-    plans = validate_batch(root, text)
-    # R11.1a/A17: `apply` is a write verb outside a batch's early returns too
-    # - even a comment-only batch that ends up writing nothing must still
-    # refuse outside a repository, the same as every other write verb (fix
-    # round 1, L6). Checked before EITHER early return below, not just the
-    # empty-batch one, since `--dry-run` is still a mode of a write verb.
-    git.require_repo(root)
-    if dry_run:
-        return Result(
-            "{} line(s), nothing written".format(len(plans)),
-            (),
-            [
-                "line {}: {}".format(lineno, _dry_run_effect(plan))
-                for lineno, plan in plans
-            ],
-        )
-    if not plans:
-        return Result("nothing to do", (), [])
-
-    with lock.held(root):
-        # A2: checkpoint before the first write, so a failure between two
-        # writes - nothing committed, so no HEAD sha describes it - restores
-        # the tree instead of leaving it half-applied.
-        checkpoint = git.checkpoint(root, git.brain_paths(root), prune=True)
-        paths: List[str] = []
-        try:
-            messages: List[str] = []
-            for lineno, plan in plans:
-                try:
-                    result = perform(root, plan)
-                except BatchError:
-                    raise
-                except (BrainError, OSError) as exc:
-                    raise BatchError(lineno, plan.raw, str(exc))
-                messages.append(result.message)
-                for path in result.paths:
-                    if path not in paths:
-                        paths.append(path)
-            git.commit(
-                root, tuple(paths),
-                "brain: {} change(s) in one batch".format(len(plans)),
-                source=source, notes=messages,
+    # R4.8.2: one scan of the entity tree for the whole batch - shared by
+    # every reference site `validate_batch` resolves AND by every `resolve`
+    # call `perform` makes while writing, which is what takes an eight-line
+    # batch with nine reference sites from sixteen scans to one
+    # (`tests/test_tree_cache.py::test_a_batch_loads_the_tree_once`). Not a
+    # cache that outlives this call (R4.8.1a) - the `with` block is the
+    # command's whole lifetime.
+    with tree.for_command(root):
+        if dry_run:
+            # `--dry-run` writes nothing, so it must not take the lock (a
+            # read must not block a writer) - `validate_batch` runs
+            # un-locked here, same as it always has.
+            plans = validate_batch(root, text)
+            # R11.1a/A17: `apply` is a write verb outside a batch's early
+            # returns too - even a comment-only batch that ends up writing
+            # nothing must still refuse outside a repository, the same as
+            # every other write verb (fix round 1, L6).
+            git.require_repo(root)
+            return Result(
+                "{} line(s), nothing written".format(len(plans)),
+                (),
+                [
+                    "line {}: {}".format(lineno, _dry_run_effect(plan))
+                    for lineno, plan in plans
+                ],
             )
-        except BaseException:
-            # `git.commit` stages every path in `paths` before it can fail
-            # (a rejecting pre-commit hook, say), and `git.restore` only ever
-            # puts file CONTENT back - it never touches the index. Left
-            # alone, a failed commit leaves those paths staged against
-            # content `restore` just overwrote, so `brain check --authored`
-            # reports a path that no longer differs from HEAD as changed
-            # (fix round 1, M4). `git.undo` unstages in the analogous spot;
-            # this is the same fix for the batch path. Safe to call with
-            # nothing staged yet - `git reset -- <paths>` on unstaged paths
-            # is a no-op - so it runs unconditionally rather than only after
-            # `git.commit` was reached.
-            git._unstage(root, paths)
-            git.restore(root, checkpoint)
-            raise
-    return Result(
-        "applied {} line(s)".format(len(plans)), tuple(paths), messages
-    )
+
+        # H1 (fix round 1): the lock must be held BEFORE `validate_batch`,
+        # not only around the write loop below. R4.8.2's own safety argument
+        # - "a write holds the lock (R11.7), so no other process can change
+        # the tree underneath a command in flight" - is only true if the
+        # SCAN happens inside the lock too. `validate_batch` is what forces
+        # the tree's first load (it resolves every reference site), so
+        # locking only around the writes left a window: another process
+        # could commit a change to an entity file between this batch's scan
+        # and its lock, and a verb writing through `entity.doc` (a snapshot
+        # read before the lock) would silently clobber it on `doc.save()`.
+        # Consequence, worth stating plainly: a second `brain apply` now
+        # refuses during the first's VALIDATION, not only during its writes
+        # - which is more correct, not less, since validation is already
+        # reading the tree the writes will be built from.
+        git.require_repo(root)
+        with lock.held(root):
+            plans = validate_batch(root, text)
+            if not plans:
+                return Result("nothing to do", (), [])
+
+            # A2: checkpoint before the first write, so a failure between two
+            # writes - nothing committed, so no HEAD sha describes it -
+            # restores the tree instead of leaving it half-applied.
+            checkpoint = git.checkpoint(root, git.brain_paths(root), prune=True)
+            paths: List[str] = []
+            try:
+                messages: List[str] = []
+                for lineno, plan in plans:
+                    try:
+                        result = perform(root, plan)
+                    except BatchError:
+                        raise
+                    except (BrainError, OSError) as exc:
+                        raise BatchError(lineno, plan.raw, str(exc))
+                    messages.append(result.message)
+                    for path in result.paths:
+                        if path not in paths:
+                            paths.append(path)
+                # R4.3.1a, once for the whole batch rather than per line: a
+                # three-project batch would otherwise rewrite the program file
+                # three times and put that churn in the commit.
+                for rel in rollup.refresh(tree.current(), root, paths):
+                    if rel not in paths:
+                        paths.append(rel)
+                git.commit(
+                    root, tuple(paths),
+                    "brain: {} change(s) in one batch".format(len(plans)),
+                    source=source, notes=messages,
+                )
+            except BaseException:
+                # `git.commit` stages every path in `paths` before it can
+                # fail (a rejecting pre-commit hook, say), and `git.restore`
+                # only ever puts file CONTENT back - it never touches the
+                # index. Left alone, a failed commit leaves those paths
+                # staged against content `restore` just overwrote, so `brain
+                # check --authored` reports a path that no longer differs
+                # from HEAD as changed (fix round 1, M4). `git.undo`
+                # unstages in the analogous spot; this is the same fix for
+                # the batch path. Safe to call with nothing staged yet -
+                # `git reset -- <paths>` on unstaged paths is a no-op - so it
+                # runs unconditionally rather than only after `git.commit`
+                # was reached.
+                git._unstage(root, paths)
+                git.restore(root, checkpoint)
+                raise
+        return Result(
+            "applied {} line(s)".format(len(plans)), tuple(paths), messages
+        )

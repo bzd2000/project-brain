@@ -30,6 +30,19 @@ def test_action_add_without_metadata(brain_repo):
     assert task.owner is None and task.due is None and task.done is False
 
 
+def _rollup_lines(lines):
+    """Line numbers inside the program's `## Roll-up`, so a test can assert
+    regeneration stayed within the machine-owned section (R4.3.1)."""
+    out, inside = set(), False
+    for i, line in enumerate(lines):
+        if line.startswith("## "):
+            inside = line.strip() == "## Roll-up"
+            continue
+        if inside:
+            out.add(i)
+    return out
+
+
 def test_action_done_by_index_ticks_one_line(brain_repo):
     before = snapshot(brain_repo)
     _run(brain_repo, "action done acme-migration 1")
@@ -37,11 +50,30 @@ def test_action_done_by_index_ticks_one_line(brain_repo):
     changed = {i for i, (a, b) in enumerate(
         zip(before["projects/acme-migration.md"], after["projects/acme-migration.md"]))
         if a != b}
-    # The declared set is derived, so the harness call proves file ISOLATION -
-    # that nothing outside this file moved. The length assertion below is what
-    # proves the edit was surgical.
-    assert_only_changed(before, after, {"projects/acme-migration.md": changed})
+    # R4.3.1a: ticking an action changes the project's open-action count and
+    # its next action, both of which the program's `## Roll-up` reports - so
+    # the program file legitimately moves too, in this same commit. That is
+    # the point of R4.3.1a: a roll-up is derived data living in the source of
+    # truth, and regenerating it only on an explicit `brain build` would leave
+    # every brain carrying stale roll-ups with nothing to say so.
+    #
+    # This widens what the test DECLARES, never how `assert_only_changed`
+    # checks it: the harness call still proves nothing outside these two files
+    # moved, and the length assertions still prove each edit was surgical.
+    rollup_changed = {i for i, (a, b) in enumerate(
+        zip(before["programs/cloud-migration.md"],
+            after["programs/cloud-migration.md"])) if a != b}
+    assert_only_changed(before, after, {
+        "projects/acme-migration.md": changed,
+        "programs/cloud-migration.md": rollup_changed,
+    })
     assert len(changed) == 2, "the action line and updated:, nothing else"
+    assert rollup_changed, "the roll-up must have been regenerated"
+    section = _rollup_lines(after["programs/cloud-migration.md"])
+    assert rollup_changed <= section, (
+        "regeneration touched a line outside `## Roll-up`: {}"
+        .format(sorted(rollup_changed - section))
+    )
     assert _project(brain_repo).doc.tasks()[0].done is True
 
 
