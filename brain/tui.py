@@ -1233,7 +1233,8 @@ def _split_bullet(line: str) -> Tuple[Optional[str], str, List[str]]:
     return None, text, tags
 
 
-def _bullet_row(line: str, lineno: int, width: int, section: str) -> Row:
+def _bullet_row(line: str, lineno: int, width: int, section: str,
+                sitting: Optional[str] = None) -> Row:
     """A `- ` line: a `·` in `--dim`, then - when the line is dated - the
     date in `--dim` and the text in `--mut`. A wrapped line continues two
     cells in, under the date rather than under the text: 02-annotated.png's
@@ -1245,6 +1246,15 @@ def _bullet_row(line: str, lineno: int, width: int, section: str) -> Row:
     t = Text()
     t.append("· ", style=DIM)
     style = FG if section == "Pending" else MUTED
+    if section == "Pending" and when:
+        # 08/09: a pending item leads with its words; the project and the
+        # date it was raised sit at the right edge, the date dimmed.
+        right = _right_col([(" ".join(tags), MUTED), (_fmt_short_date(when, pad=True), DIM)])
+        when = None
+    if not when and sitting:
+        # 08-board.png: a minute under a `### 2026-08-20` sitting carries the
+        # sitting's date, the way a log line carries its own.
+        when = sitting
     if when:
         stamp = _fmt_short_date(when, pad=True)
         t.append(stamp + "  ", style=DIM)
@@ -1362,6 +1372,7 @@ def _body_rows(entity, width: int) -> List[Row]:
             del table[:]
 
     h1 = _h1_line(entity)
+    sitting: Optional[str] = None   # the `### <date>` a minute sits under
     i = start
     n = len(doc.lines)
     while i < n:
@@ -1373,6 +1384,7 @@ def _body_rows(entity, width: int) -> List[Row]:
             continue
         if not in_fence and line.startswith("## "):
             flush_table()
+            sitting = None
             name = line[3:].strip()
             current = doc.sections.get(name)
             is_known = name in known
@@ -1432,13 +1444,26 @@ def _body_rows(entity, width: int) -> List[Row]:
         if i in cache:
             rows.append(_task_row(cache[i], i, width))
         elif stripped.startswith("- "):
-            rows.append(_bullet_row(line, i, width, current.name))
+            rows.append(_bullet_row(line, i, width, current.name, sitting))
         elif numbered:
             rows.append(_numbered_row(numbered, i, width, current.name))
         elif stripped.startswith("#"):
             # A `### 2026-08-20` minutes sub-heading: the sitting's date.
+            # 08-board.png draws it on each minute under it (`· 20 Aug
+            # Approved…`) rather than as a row of its own - when there are
+            # minutes under it; a heading with nothing under it stays a
+            # row, so nothing is ever dropped (R10.12).
             head = stripped.lstrip("#").strip()
-            shown = _fmt_short_date(head, pad=True) if DATED_RE.match(head + " -") else head
+            dated = DATED_RE.match(head + " -") is not None
+            j = i + 1
+            while j < n and not doc.lines[j].strip():
+                j += 1
+            if dated and j < n and doc.lines[j].lstrip().startswith("- "):
+                sitting = head
+                i += 1
+                continue
+            sitting = None
+            shown = _fmt_short_date(head, pad=True) if dated else head
             rows.append(Row(Text(shown, style=MUTED), i, None))
         elif current.name in ("Summary", "Purpose", "Concerns"):
             t = Text()
