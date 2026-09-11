@@ -326,3 +326,39 @@ def test_run_brain_is_the_only_subprocess_and_nothing_else_writes():
         "tui.py reads the verb registry for Tab completion and nothing else from commands"
     for forbidden in (".save(", "Doc(", "git.commit", "execute(", "apply_batch(", "os.system", "os.popen"):
         assert forbidden not in source, forbidden
+
+
+# -- Task 3 review fixes: three R10.3 edges -------------------------------
+
+async def test_a_pane_line_starting_with_a_colon_is_kept_as_text(brain_repo, monkeypatch):
+    """`:30 late, sara joins` begins with a colon and is typed on an empty line
+    by definition, so the "only on an empty line" guard cannot help. An
+    unknown :command is the user's words and goes back where it was typed."""
+    monkeypatch.setattr(BrainApp, "run_brain", lambda self, argv, stdin=None: (0, "ok", ""))
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("o", *"first line", "enter", *":30 late, sara joins", "enter")
+        pane = pilot.app.screen
+        assert any(":30 late, sara joins" in l for l in pane.lines), pane.lines
+
+
+async def test_no_binding_reaches_a_ctrl_chord(brain_repo):
+    """R10.2/A11e. Textual's App ships ctrl+p (the command palette), ctrl+q
+    and ctrl+c; with the palette on, Esc could not close it. All off."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("ctrl+p")
+        assert pilot.app.screen.id != "--command-palette"
+        assert pilot.app.is_running
+
+
+async def test_a_failing_poll_does_not_take_the_app_down(brain_repo, monkeypatch):
+    """The one path where R10.3 could fail with no user action: a stat() on a
+    file the agent unlinked between glob and stat raised out of the timer and
+    killed the app with the buffer in it."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("i", *"precious")
+        def boom(self):
+            raise OSError("vanished under us")
+        monkeypatch.setattr(BrainApp, "_scan_mtimes", boom)
+        await pilot.pause(1.5)
+        assert pilot.app.is_running
+        assert pilot.app.buffer == "precious"

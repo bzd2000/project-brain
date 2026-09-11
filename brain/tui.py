@@ -302,7 +302,8 @@ class CaptureScreen(Screen):
         self._cmd_took_empty_line = not self.lines[-1] and len(self.lines) > 1
 
     def _run_cmd(self) -> None:
-        name = (self.cmd or "").strip()
+        self.cmd_raw = self.cmd or ""
+        name = self.cmd_raw.strip()
         took_empty = self._cmd_took_empty_line
         self.cmd = None
         if name in ("w", "wq"):
@@ -312,9 +313,14 @@ class CaptureScreen(Screen):
         elif name == "t":
             self.app.action_cycle_type()
         else:
+            # Not a command, so it was the user's words (R10.3: nothing typed
+            # is discarded without an explicit cancel). `:30 late, sara joins`
+            # begins with a colon and is typed on an empty line by definition -
+            # the guard that keeps `sara: thursday` as text cannot help here.
+            # Put the whole thing back where it was typed.
+            self.lines[-1] = ":" + (self.cmd_raw or name)
             self.notice = Notice(
-                "unknown command :{}  (:w saves, :t cycles the type, esc cancels)".format(name),
-                True)
+                "kept as text - :w saves, :t cycles the type, esc cancels", True)
 
     def body(self, drop_trailing_empty: bool = False) -> str:
         lines = list(self.lines)
@@ -754,6 +760,11 @@ def _default_entity(programs, by_program, flat, stakeholders, boards):
 
 
 class BrainApp(App):
+    # R10.2: no Ctrl chords anywhere. Textual's App ships ctrl+p (the
+    # command palette - which Esc could not close, because this app's
+    # priority escape binding pre-empts the palette's own), ctrl+q and
+    # ctrl+c. All three off; ZZ quits.
+    ENABLE_COMMAND_PALETTE = False
     """The TUI. `BrainApp(root).run()` for a live terminal;
     `BrainApp(root).run_test(...)` (Textual's `Pilot`) for tests.
 
@@ -1000,7 +1011,16 @@ class BrainApp(App):
         """R10.18: poll mtimes once a second, never cache across a redraw,
         never hold a file open. An agent in the other pane writes these same
         files; this is the only way we would know."""
-        current = self._scan_mtimes()
+        # Guarded like a key handler (R10.19), because this is the one path
+        # where R10.3 could fail with no user action at all: a file the agent
+        # unlinks between glob and stat - `git.restore` with prune does exactly
+        # that - raised out of the timer and took the app down, buffer and
+        # all. A poll that fails is a poll that is retried next second.
+        try:
+            current = self._scan_mtimes()
+        except OSError as exc:
+            self.notice = Notice("poll: {}".format(exc), True)
+            return
         if current != self._mtimes:
             self._changed_marker = True
             self.reload()
