@@ -725,8 +725,8 @@ def _fmt_short_date(iso: Optional[str], pad: bool = False) -> str:
 
 
 def _relative(iso: Optional[str], today: Optional[date] = None) -> str:
-    """A date as the design shows it (02-annotated.png): `today`, `1d ago`,
-    `in 1d`, `12d ago`; past about two months either way it falls back to
+    """A date as the design shows it (02-annotated.png): `today`,
+    `tomorrow`, `yesterday`, `in 4d`, `12d ago`; past about two months either way it falls back to
     the short date, because `93d ago` says less than `5 Jun`. An unparseable
     value is shown as it is - never dropped (R10.12)."""
     if not iso:
@@ -739,6 +739,10 @@ def _relative(iso: Optional[str], today: Optional[date] = None) -> str:
     n = (d - today).days
     if n == 0:
         return "today"
+    if n == 1:
+        return "tomorrow"    # 09-stakeholder.png: `next 8 Sep · tomorrow`
+    if n == -1:
+        return "yesterday"
     if abs(n) > 60:
         short = _fmt_short_date(iso)
         return short if d.year == today.year else "{} {}".format(short, d.year)
@@ -1275,9 +1279,13 @@ def _numbered_row(m, lineno: int, width: int, section: str) -> Row:
     indent = len(number) + 1
     reason = None
     if agenda:
-        split = DASH_SPLIT_RE.split(text, maxsplit=1)
-        if len(split) == 2:
-            text, reason = split
+        # The reason is what follows the LAST dash (09-stakeholder.png:
+        # `Q4 budget is unblocked — finance published the codes on the 7th
+        # — she chased this, she'll want to know`).
+        dashes = list(DASH_SPLIT_RE.finditer(text))
+        if dashes:
+            last = dashes[-1]
+            text, reason = text[: last.start()], text[last.end():]
     t.append(text, style=(FG if agenda else MUTED))
     if reason:
         t.append(" — ", style=DIM)
