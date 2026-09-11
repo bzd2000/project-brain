@@ -36,29 +36,42 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
+from textual.strip import Strip
 from textual.widgets import Static, Tree
+from textual._segment_tools import line_pad
+from rich.console import Console
+from rich.style import Style
 from rich.text import Text
 
 from . import entities as ent
 from . import grammar
 from . import tree as core_tree
 from .errors import BrainError
-from .model import FENCE, Task
+from .model import FENCE, Task, parse_action
 
 # -- colour (R10.16): one teal accent for anything live/interactive, violet
 # for people and boards, red/amber/green reserved strictly for state. Never
 # decorative - every colour below is used because it answers "what state is
-# this", not to brighten the screen.
-TEAL = "#2dd4bf"
-VIOLET = "#a78bfa"
-RED = "#f87171"
-AMBER = "#fbbf24"
-GREEN = "#34d399"
-DIM = "#5b6270"
-MUTED = "#8b93a1"
-FG = "#e6e6e6"
+# this", not to brighten the screen. The values are the design canvas's own
+# (`src/Main.dc.html`: the neutrals verbatim, the accents converted from its
+# OKLCH to sRGB), because `design/*.png` was rendered from them and screens
+# win on appearance.
+BG = "#100f0e"        # the ground
+PANEL = "#161512"     # the tree
+PANEL2 = "#1c1a17"    # title bar, modeline, capture head
+LINE = "#2b2823"      # dividers
+LINE2 = "#3a352e"     # a stronger divider; the chip border stand-in
+DIM = "#5a544c"       # dimmed source (R10.12), section headers, glyph rests
+MUTED = "#8d8479"     # muted labels, dates, secondary text
+FG = "#ded7cb"        # body text
+SEL = "#20302f"       # the selected row
+TEAL = "#5ebdbc"
+VIOLET = "#ad98d5"
+RED = "#df8074"
+AMBER = "#dbb06b"
+GREEN = "#87ba88"
 
 STATUS_COLORS = {
     "idea": VIOLET, "next": TEAL, "active": TEAL, "blocked": RED,
@@ -67,10 +80,23 @@ STATUS_COLORS = {
 HEALTH_COLORS = {"amber": AMBER, "red": RED, "green": GREEN, "unknown": DIM}
 
 NARROW_COLUMNS = 100  # R10.6
-GROUND = "#14161b"
+GROUND = BG
+TREE_WIDTH = 32       # 02-annotated.png: 238px of JetBrains Mono at 12.5px
 
 # 04-capture.png: one chip colour per note type, dark text on the colour.
 TYPE_COLORS = {"note": TEAL, "meeting": VIOLET, "action": AMBER, "decision": GREEN}
+# 08/09/10: the type chip on a non-project entity. Boards and people are
+# violet (R10.16); a program takes the same teal as its `PROGRAM` pill in
+# 10-program.png.
+KIND_COLORS = {"program": TEAL, "stakeholder": VIOLET, "board": VIOLET}
+KIND_GLYPHS = {"stakeholder": "◆", "board": "▣"}
+
+# `- 2026-09-03 - text`: a dated log/decision/history line (R4.2.1).
+DATED_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\s*[-–—]\s*(.*)$")
+NUMBERED_RE = re.compile(r"^(\d+)[.)]\s+(.*)$")
+TAG_RE = re.compile(r"\s+#([\w-]+)$")
+DASH_SPLIT_RE = re.compile(r"\s+[—–]\s+")
+GENERATED_RE = re.compile(r"^<!--\s*generated\b.*-->$")
 
 NORMAL, INSERT, COMMAND = "NORMAL", "INSERT", "COMMAND"
 
@@ -144,6 +170,7 @@ class Row(NamedTuple):
     text: Text
     lineno: Optional[int]
     task: Optional[Task]
+    gap: bool = False   # a blank line above - a section header (02-annotated.png)
 
 
 class DetailPane(Static):
@@ -172,6 +199,70 @@ class Modeline(Static):
     def on_paste(self, event) -> None:
         event.stop()
         self.app._pasted(event.text)
+
+
+class EntityTree(Tree):
+    """The `#tree` widget: Textual's `Tree` for its nodes, cursor, expand and
+    collapse; its own line renderer for the look of 02-annotated.png, which
+    the built-in cannot produce - the selected row is a `--sel` band across
+    the whole row with a teal bar at the left edge (the guide columns are
+    outside the built-in cursor style), a program's `▾`/`▸` sits inside the
+    indent rather than in front of it, and a project's count or a party's
+    next date is right-aligned at the pane's edge. No guide lines (R10.17)
+    and no `▶` toggles: the label carries the glyph, `right` carries the
+    column, and the row is assembled here at the width the pane has now."""
+
+    ICON_NODE = ""
+    ICON_NODE_EXPANDED = ""
+
+    DEFAULT_CSS = """
+    EntityTree {
+        background: #161512;
+        color: #ded7cb;
+        padding: 1 0 0 0;
+        scrollbar-size-vertical: 1;
+        scrollbar-background: #161512;
+        scrollbar-color: #2b2823;
+        scrollbar-color-hover: #3a352e;
+        scrollbar-color-active: #3a352e;
+    }
+    EntityTree:focus {
+        background-tint: transparent;
+    }
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__("brain", **kwargs)
+        self.show_root = False
+        self.show_guides = False
+        self.guide_depth = 2
+        self.right: Dict[int, Text] = {}   # node id -> the right-aligned column
+
+    def _render_line(self, y: int, x1: int, x2: int, base_style: Style) -> Strip:
+        lines = self._tree_lines
+        width = self.size.width
+        if y >= len(lines):
+            return Strip.blank(width, base_style)
+        line = lines[y]
+        node = line.node
+        is_cursor = y == self.cursor_line
+        row_style = base_style + Style(bgcolor=SEL) if is_cursor else base_style
+        row_style += Style(meta={"line": y})
+        row = Text(style=row_style, no_wrap=True)
+        row.append("▎" if is_cursor else " ", style=Style(color=TEAL))
+        depth = max(0, len(line.path) - 1)        # 0 a group, 1 an entity, 2 a nested project
+        row.append(" " + "  " * max(0, depth - 1))
+        row.append_text(node._label.copy())
+        right = self.right.get(node.id)
+        right_len = right.cell_len if right is not None else 0
+        pad = width - 2 - row.cell_len - right_len
+        row.append(" " * max(1, pad))
+        if right is not None:
+            row.append_text(right)
+        row.stylize(Style(meta={"node": node._id}))
+        segments = list(row.render(self.app.console))
+        segments = line_pad(segments, 0, max(0, width - row.cell_len), row_style)
+        return Strip(segments).crop(x1, x2)
 
 
 class CaptureScreen(Screen):
@@ -490,16 +581,39 @@ class HelpScreen(Screen):
         self.app.pop_screen()
 
 
-def _fmt_short_date(iso: Optional[str]) -> str:
+def _fmt_short_date(iso: Optional[str], pad: bool = False) -> str:
     """`2026-09-18` -> `18 Sep`, portably (no `%-d`, which Windows lacks -
-    C5 makes Windows the primary platform)."""
+    C5 makes Windows the primary platform). `pad` gives `07 Sep`, the form
+    the detail pane's dated lines use so their text column lines up."""
     if not iso:
         return ""
     try:
         d = date.fromisoformat(iso)
     except ValueError:
         return str(iso)
-    return "{} {}".format(d.day, d.strftime("%b"))
+    day = "{:02d}".format(d.day) if pad else str(d.day)
+    return "{} {}".format(day, d.strftime("%b"))
+
+
+def _relative(iso: Optional[str], today: Optional[date] = None) -> str:
+    """A date as the design shows it (02-annotated.png): `today`, `1d ago`,
+    `in 1d`, `12d ago`; past about two months either way it falls back to
+    the short date, because `93d ago` says less than `5 Jun`. An unparseable
+    value is shown as it is - never dropped (R10.12)."""
+    if not iso:
+        return ""
+    try:
+        d = date.fromisoformat(iso)
+    except ValueError:
+        return str(iso)
+    today = today or date.today()
+    n = (d - today).days
+    if n == 0:
+        return "today"
+    if abs(n) > 60:
+        short = _fmt_short_date(iso)
+        return short if d.year == today.year else "{} {}".format(short, d.year)
+    return "in {}d".format(n) if n > 0 else "{}d ago".format(-n)
 
 
 def _due_style(due: Optional[str]) -> str:
@@ -515,6 +629,84 @@ def _due_style(due: Optional[str]) -> str:
     if (d - today).days <= 3:
         return AMBER
     return MUTED
+
+
+def _pill(label: str, colour: str) -> Text:
+    """02-annotated.png's status pill: the word, one cell of padding each
+    side, in its colour on a `--line` ground - a terminal row has no room
+    for the 1px border the canvas draws, so the ground stands in for it."""
+    return Text(" {} ".format(label.upper()), style="bold {} on {}".format(colour, LINE))
+
+
+def _tag(label: str) -> Text:
+    """The `GENERATED` tag beside a machine-owned section header (R4.3.1)."""
+    return Text(" {} ".format(label), style="{} on {}".format(DIM, LINE))
+
+
+def _wrap(text: str, width: int) -> List[str]:
+    """Word-wrap one line to `width` cells, never dropping a word longer
+    than the width (it goes on its own line, overlong)."""
+    width = max(10, width)
+    out: List[str] = []
+    line = ""
+    for word in text.split():
+        if not line:
+            line = word
+        elif len(line) + 1 + len(word) <= width:
+            line += " " + word
+        else:
+            out.append(line)
+            line = word
+    out.append(line)
+    return out
+
+
+_MEASURE = Console(width=10_000, force_terminal=False, color_system=None)
+
+
+def _fit(text: Text, width: int, indent: int = 0) -> Text:
+    """Wrap a styled `Text` to `width` cells, continuation lines indented
+    by `indent`, styles kept. Lines that already fit come back as they
+    are, so a row built by `_hanging` is unchanged."""
+    if text.cell_len <= width and "\n" not in text.plain:
+        return text
+    out = Text()
+    first = True
+    for para in text.split("\n"):
+        for line in para.wrap(_MEASURE, max(10, width - (0 if first else indent)), overflow="fold"):
+            if not first:
+                out.append("\n" + " " * indent)
+            line.rstrip()
+            out.append_text(line)
+            first = False
+    return out
+
+
+def _hanging(t: Text, body: str, style: str, width: int, indent: int,
+             right: Optional[Text] = None) -> None:
+    """Append `body` to `t` wrapped at `width` with continuation lines
+    indented to `indent`, and `right` (owner, due, tags) right-aligned on
+    the first line when it fits there - else on its own line, so nothing is
+    ever cropped (R10.12)."""
+    avail = width - indent
+    lines = _wrap(body, avail)
+    if right is not None and len(lines) == 1 and len(lines[0]) + right.cell_len + 2 > avail:
+        # Make room on the first line by wrapping shorter, as the canvas
+        # does with its flex row; a very narrow pane just stacks them.
+        lines = _wrap(body, avail - right.cell_len - 2)
+    for i, line in enumerate(lines):
+        if i:
+            t.append("\n" + " " * indent)
+        t.append(line, style=style)
+        if right is not None and i == 0:
+            pad = avail - len(line) - right.cell_len
+            if pad >= 2:
+                t.append(" " * pad)
+                t.append_text(right)
+                right = None
+    if right is not None:
+        t.append("\n" + " " * (indent + max(0, avail - right.cell_len)))
+        t.append_text(right)
 
 
 def _counts(projects: list) -> Tuple[int, int, int]:
@@ -543,16 +735,16 @@ def _portfolio_summary(n_projects: int, n_open: int, n_blocked: int,
     is built from - `Project.open_actions()` and `entities.load_notes`,
     not a second tally."""
     t = Text()
-    t.append("PROJECT BRAIN", style="bold " + TEAL)
-    t.append("   ")
+    t.append("PROJECT BRAIN", style="bold " + FG)
+    t.append("  ")
     t.append("{} projects".format(n_projects), style=MUTED)
-    t.append("  ·  ", style=MUTED)
+    t.append(" · ", style=DIM)
     t.append("{} open".format(n_open), style=MUTED)
-    t.append("  ·  ", style=MUTED)
+    t.append(" · ", style=DIM)
     t.append("{} blocked".format(n_blocked), style=(RED if n_blocked else MUTED))
-    t.append("  ·  ", style=MUTED)
+    t.append(" · ", style=DIM)
     t.append("{} overdue".format(n_overdue), style=(RED if n_overdue else MUTED))
-    t.append("  ·  ", style=MUTED)
+    t.append(" · ", style=DIM)
     t.append("{} unprocessed".format(n_unprocessed),
               style=(TEAL if n_unprocessed else MUTED))
     return t
@@ -565,13 +757,28 @@ def _chip(note_type: str) -> Text:
                 style="bold {} on {}".format(GROUND, TYPE_COLORS.get(note_type, TEAL)))
 
 
+def _cursor(colour: str) -> Text:
+    return Text(" ", style="reverse " + colour)
+
+
+def _tail(text: str, width: int) -> str:
+    """The end of a line being typed, when the whole of it will not fit
+    beside the modeline's label and hint: the cursor end is the one the
+    user is looking at. The text itself is untouched (R10.3)."""
+    if width < 12 or len(text) <= width:
+        return text
+    return "…" + text[-(width - 1):]
+
+
 def _modeline_text(app: "BrainApp") -> Text:
     """R10.5: the modeline is the entire application state - mode, selection,
     the type `i` would capture as, what is waiting. 03-modes.png draws the
-    three variants; the right-hand hint gives way to the last notice."""
+    three variants: the label in its mode's colour, the right-hand hint at
+    the far edge (it gives way to the last notice)."""
     t = Text()
+    right = Text()
     if app.mode == INSERT:
-        t.append("-- INSERT --", style="bold " + TEAL)
+        t.append("-- INSERT --", style="bold " + GREEN)
         t.append("  ")
         if app.prompt:
             # Task 4's acting keys (e, d, s, H, Q, /) each name what they are
@@ -580,67 +787,83 @@ def _modeline_text(app: "BrainApp") -> Text:
             t.append(app.prompt, style="bold " + TEAL)
         else:
             t.append_text(_chip(app.note_type))
-        t.append("  ▸ ", style=TEAL)
-        t.append(app.buffer, style=FG)
-        t.append(" ", style="reverse " + TEAL)
+        t.append("  ▸ ", style=DIM)
+        t.append(_tail(app.buffer, app.size.width - 4 - t.cell_len - 20), style=FG)
+        t.append_text(_cursor(TEAL))
         hint = "⏎ send · esc" if app.prompt else "⏎ capture · esc"
     elif app.mode == COMMAND:
         t.append("-- COMMAND --", style="bold " + VIOLET)
-        t.append("  : ", style=MUTED)
-        t.append(app.command, style=FG)
-        t.append(" ", style="reverse " + VIOLET)
+        t.append("  ")
+        t.append(":", style=VIOLET)
+        t.append(" ")
+        t.append(_tail(app.command, app.size.width - 4 - t.cell_len - 22), style=FG)
+        t.append_text(_cursor(TEAL))
         hint = "⏎ run · esc cancel"
     else:
-        t.append("-- NORMAL --", style="bold " + MUTED)
-        t.append("   ")
+        t.append("-- NORMAL --", style="bold " + DIM)
+        t.append("  ")
         if app.selected is not None:
-            t.append("▸ ", style=TEAL)
+            t.append("▸ ", style=DIM)
             t.append(app.selected.slug, style=FG)
         else:
             t.append("(nothing selected)", style=DIM)
         if app._changed_marker:
-            t.append("    ⟳ changed on disk", style=AMBER)
+            t.append("  ⟳ changed on disk", style=AMBER)
         if app.raw_view:
-            t.append("    RAW", style="bold " + AMBER)
-        t.append("    ")
-        t.append_text(_chip(app.note_type))
-        t.append("  ")
+            t.append("  RAW", style="bold " + AMBER)
+        right.append_text(_chip(app.note_type))
+        right.append("  ")
         n = app._unprocessed_count
-        t.append("{} unprocessed".format(n), style=(TEAL if n else DIM))
+        right.append("{} unprocessed".format(n), style=(TEAL if n else DIM))
+        right.append(" · ", style=DIM)
         hint = "? help"
-    t.append("    ")
     if app.notice is not None:
-        t.append(app.notice.text, style=(RED if app.notice.error else MUTED))
+        right.append(app.notice.text, style=(RED if app.notice.error else MUTED))
     else:
-        t.append(hint, style=DIM)
+        right.append(hint, style=DIM)
+    width = max(0, app.size.width - 4)
+    pad = width - t.cell_len - right.cell_len
+    t.append(" " * max(2, pad))
+    t.append_text(right)
     return t
 
 
 def _group_label(name: str) -> Text:
-    return Text(name, style="bold " + MUTED)
+    return Text(name, style=DIM)
 
 
-def _program_label(prog) -> Text:
+def _program_label(prog, expanded: bool = True) -> Text:
     t = Text()
-    t.append("● ", style=STATUS_COLORS.get(prog.status, DIM))
-    t.append(prog.slug)
+    t.append("▾ " if expanded else "▸ ", style=DIM)
+    t.append(prog.slug, style=FG)
     return t
 
 
 def _project_label(p) -> Text:
     t = Text()
     t.append("● ", style=STATUS_COLORS.get(p.status, DIM))
-    t.append(p.slug)
-    open_actions = p.open_actions()
-    t.append("  {}".format(len(open_actions)), style=DIM)
-    overdue = any(
-        a.due and _is_overdue(a.due) for a in open_actions
-    )
-    if overdue:
-        t.append("  !", style=RED)
-    elif p.health in ("amber", "red"):
-        t.append("  ▲", style=HEALTH_COLORS.get(p.health, DIM))
+    t.append(p.slug, style=FG)
     return t
+
+
+def _project_right(p) -> Text:
+    """The tree's right column for a project: open actions, then `!` for
+    an overdue one, `~` for a stale project, `▲` for health at risk - the
+    order 12-legend.png gives them."""
+    t = Text()
+    open_actions = p.open_actions()
+    if open_actions:
+        t.append(str(len(open_actions)), style=DIM)
+    overdue = any(a.due and _is_overdue(a.due) for a in open_actions)
+    if overdue:
+        t.append(" !", style=RED)
+    elif p.health in ("amber", "red"):
+        t.append(" ▲", style=HEALTH_COLORS.get(p.health, DIM))
+    return t
+
+
+def _program_right(prog, children) -> Text:
+    return Text(str(len(children)) if children else "", style=DIM)
 
 
 def _is_overdue(due: str) -> bool:
@@ -652,131 +875,295 @@ def _is_overdue(due: str) -> bool:
 
 def _party_label(entity) -> Text:
     t = Text()
-    glyph = "◆ " if entity.kind == "stakeholder" else "▣ "
-    t.append(glyph, style=VIOLET)
-    t.append(entity.slug)
-    if entity.next_meeting:
-        t.append("  {}".format(_fmt_short_date(entity.next_meeting)), style=DIM)
+    t.append(KIND_GLYPHS.get(entity.kind, "◆") + " ", style=VIOLET)
+    t.append(entity.slug, style=FG)
     return t
 
 
-def _header_block(entity) -> List[Row]:
-    """Title, status chip / health / owner / updated / due, then program and
-    tags (R10.9) - synthetic rows (`lineno=None`): they summarise front
-    matter rather than naming one source line."""
+def _party_right(entity) -> Text:
+    if entity.next_meeting:
+        return Text(_fmt_short_date(entity.next_meeting), style=DIM)
+    return Text()
+
+
+def _header_block(entity, width: int, siblings=None) -> List[Row]:
+    """Title, then the meta line (type or status pill, health, owner, the
+    dates), then the relations line (program and tags; chair, members and
+    what a party is watching) - synthetic rows (`lineno=None`): they
+    summarise front matter rather than naming one source line (R10.9).
+    Laid out as 02/08/09/10 draw them: labels in `--dim`, values in
+    `--mut`, live things (the next meeting) in teal."""
     rows: List[Row] = []
+    kind = getattr(entity, "kind", "")
 
     title = Text()
-    title.append(entity.title, style="bold " + FG)
-    rows.append(Row(title, None, None))
-
-    chips = Text()
-    status = getattr(entity, "status", None)
-    if status:
-        chips.append(" {} ".format(status.upper()),
-                     style="bold " + STATUS_COLORS.get(status, DIM))
-    health = getattr(entity, "health", None)
-    if health in ("amber", "red"):
-        if len(chips):
-            chips.append("  ")
-        chips.append("▲ {}".format(health), style=HEALTH_COLORS.get(health, DIM))
-    owner = getattr(entity, "owner", None)
-    if owner:
-        if len(chips):
-            chips.append("  ")
-        chips.append(owner, style=FG)
-    role = getattr(entity, "role", None)
-    if role:
-        if len(chips):
-            chips.append("  ")
-        chips.append(role, style=FG)
-    chair = getattr(entity, "chair", None)
-    if chair:
-        if len(chips):
-            chips.append("  ")
-        chips.append("chair {}".format(chair), style=FG)
-    updated = getattr(entity, "updated", None)
-    if updated:
-        if len(chips):
-            chips.append("  ")
-        chips.append("updated {}".format(updated), style=MUTED)
-    due = getattr(entity, "due", None)
-    if due:
-        if len(chips):
-            chips.append("  ")
-        chips.append("due {}".format(due), style=_due_style(due))
-    next_meeting = getattr(entity, "next_meeting", None)
-    if next_meeting:
-        if len(chips):
-            chips.append("  ")
-        chips.append("next {}".format(next_meeting), style=TEAL)
-    cadence = getattr(entity, "cadence", None)
-    if cadence:
-        if len(chips):
-            chips.append("  ")
-        chips.append(cadence, style=MUTED)
-    if len(chips):
-        rows.append(Row(chips, None, None))
+    title.append(entity.title or entity.slug, style="bold " + FG)
+    rows.append(Row(title, _h1_line(entity), None))
 
     meta = Text()
+
+    def sep():
+        if len(meta):
+            meta.append("  ")
+
+    status = getattr(entity, "status", None)
+    if kind == "project" and status:
+        meta.append_text(_pill(status, STATUS_COLORS.get(status, DIM)))
+    elif kind in KIND_COLORS:
+        meta.append_text(_pill(kind, KIND_COLORS[kind]))
+    health = getattr(entity, "health", None)
+    if health in ("amber", "red"):
+        sep()
+        meta.append("▲ {}".format(health), style=HEALTH_COLORS.get(health, DIM))
+    role = getattr(entity, "role", None)
+    if role:
+        sep()
+        meta.append(role, style=MUTED)
+    owner = getattr(entity, "owner", None)
+    if owner:
+        sep()
+        meta.append(owner, style=MUTED)
+    cadence = getattr(entity, "cadence", None)
+    if cadence:
+        sep()
+        meta.append(cadence, style=MUTED)
+    if kind == "program" and siblings is not None:
+        n_open = sum(len(p.open_actions()) for p in siblings)
+        sep()
+        meta.append("{} projects".format(len(siblings)), style=MUTED)
+        sep()
+        meta.append("{} open actions".format(n_open), style=MUTED)
+    last_met = getattr(entity, "last_met", None)
+    if last_met:
+        sep()
+        meta.append("last met {}".format(_fmt_short_date(last_met)), style=DIM)
+    next_meeting = getattr(entity, "next_meeting", None)
+    if next_meeting:
+        sep()
+        meta.append("next {}".format(_fmt_short_date(next_meeting)), style=TEAL)
+        meta.append(" · ", style=DIM)
+        meta.append(_relative(next_meeting), style=TEAL)
+    updated = getattr(entity, "updated", None)
+    if updated:
+        sep()
+        meta.append("updated {}".format(_relative(updated)), style=MUTED)
+    due = getattr(entity, "due", None)
+    if due:
+        sep()
+        meta.append("due {}".format(_relative(due)), style=_due_style(due))
+    if len(meta):
+        rows.append(Row(_fit(meta, width), None, None))
+
+    rel = Text()
+
+    def pair(label: str, values: List[str], joiner: str = " "):
+        if not values:
+            return
+        if len(rel):
+            rel.append("  ")
+        rel.append(label + " ", style=DIM)
+        first = True
+        for v in values:
+            if not first:
+                rel.append(joiner, style=DIM)
+            rel.append(v, style=MUTED)
+            first = False
+
     program = getattr(entity, "program", None)
     if program:
-        meta.append("program ", style=MUTED)
-        meta.append(program, style=VIOLET)
-    tags = getattr(entity, "tags", None) or []
-    if tags:
-        if len(meta):
-            meta.append("   ")
-        meta.append("tags ", style=MUTED)
-        meta.append(" ".join(tags), style=FG)
-    projects = getattr(entity, "projects", None) or []
-    if projects:
-        if len(meta):
-            meta.append("   ")
-        meta.append("projects ", style=MUTED)
-        meta.append(" ".join(projects), style=FG)
+        pair("program", [program])
+    chair = getattr(entity, "chair", None)
+    if chair:
+        pair("chair", [chair])
     members = getattr(entity, "members", None) or []
-    if members:
-        if len(meta):
-            meta.append("   ")
-        meta.append("members ", style=MUTED)
-        meta.append(" ".join(members), style=FG)
-    if len(meta):
-        rows.append(Row(meta, None, None))
-
+    pair("members", list(members), " · ")
+    projects = getattr(entity, "projects", None) or []
+    tags = getattr(entity, "tags", None) or []
+    if kind in ("stakeholder", "board"):
+        pair("watching", list(projects) + ["#" + t for t in tags], " · ")
+    else:
+        pair("tags", list(tags))
+    if len(rel):
+        rows.append(Row(_fit(rel, width), None, None))
     return rows
 
 
-def _task_row(task: Task, lineno: int) -> Row:
+def _h1_line(entity) -> Optional[int]:
+    """The `# Title` line a file may carry before its first section: the
+    title row IS its rendering (it says nothing the front matter's title
+    does not), so the header row names it and `_body_rows` leaves it out
+    rather than showing it twice. Any other preamble stays dimmed source
+    (R10.12)."""
+    doc = entity.doc
+    start = doc.fm_range[1] + 1 if doc.fm_range else 0
+    for i in range(start, len(doc.lines)):
+        line = doc.lines[i]
+        if line.startswith("## "):
+            return None
+        if line.startswith("# "):
+            return i
+        if line.strip():
+            return None
+    return None
+
+
+def _right_col(parts: List[Tuple[str, str]]) -> Optional[Text]:
+    """`[(text, style), ...]` -> one right-aligned column, two cells apart."""
+    parts = [(s, st) for s, st in parts if s]
+    if not parts:
+        return None
+    t = Text()
+    for i, (s, st) in enumerate(parts):
+        if i:
+            t.append("  ")
+        t.append(s, style=st)
+    return t
+
+
+def _task_row(task: Task, lineno: int, width: int) -> Row:
+    """`○` teal for open, `✓` green with the text dimmed for done; owner in
+    `--mut` and the due date coloured by urgency at the right edge."""
     t = Text()
     if task.done:
         t.append("✓ ", style=GREEN)
-        t.append(task.text, style=DIM)
+        style = DIM
     else:
         t.append("○ ", style=TEAL)
-        t.append(task.text, style=FG)
-    if task.owner:
-        t.append("  {}".format(task.owner), style=MUTED)
-    if task.due:
-        t.append("  due {}".format(task.due), style=_due_style(task.due))
+        style = FG
+    right = _right_col([(task.owner or "", MUTED),
+                        (_relative(task.due) if task.due else "", _due_style(task.due))])
+    _hanging(t, task.text, style, width, 2, right)
     return Row(t, lineno, task)
 
 
-def _bullet_row(line: str, lineno: int) -> Row:
+def _split_bullet(line: str) -> Tuple[Optional[str], str, List[str]]:
+    """`- 2026-09-04 - text  #slug` -> (date or None, text, tags)."""
     stripped = line.lstrip()
     text = stripped[2:] if stripped.startswith("- ") else stripped
+    tags: List[str] = []
+    m = TAG_RE.search(text)
+    while m:
+        tags.insert(0, m.group(1))
+        text = text[: m.start()]
+        m = TAG_RE.search(text)
+    dated = DATED_RE.match(text)
+    if dated:
+        return dated.group(1), dated.group(2), tags
+    return None, text, tags
+
+
+def _bullet_row(line: str, lineno: int, width: int, section: str) -> Row:
+    """A `- ` line: a `·` in `--dim`, then - when the line is dated - the
+    date in `--dim` and the text in `--mut` with a hanging indent
+    (02-annotated.png's log and decisions). A trailing `#slug` moves to the
+    right edge, as a pending item's project does in 08-board.png."""
+    when, text, tags = _split_bullet(line)
+    right = _right_col([(" ".join(tags), MUTED)])
     t = Text()
-    t.append("· ", style=MUTED)
-    t.append(text, style=FG)
+    t.append("· ", style=DIM)
+    style = FG if section == "Pending" else MUTED
+    if when:
+        stamp = _fmt_short_date(when, pad=True)
+        t.append(stamp + "  ", style=DIM)
+        _hanging(t, text, style, width, 2 + len(stamp) + 2, right)
+    else:
+        _hanging(t, text, style, width, 2, right)
     return Row(t, lineno, None)
 
 
-def _body_rows(entity) -> List[Row]:
+def _numbered_row(m, lineno: int, width: int, section: str) -> Row:
+    """`1. text`: the number in `--dim` (a standing agenda) or violet (the
+    generated next agenda of a board or person, 08/09), the text and - after
+    an em dash - its reason, dimmed."""
+    number, text = m.group(1), m.group(2)
+    agenda = section == "Next agenda"
+    t = Text()
+    t.append("{} ".format(number), style=(VIOLET if agenda else DIM))
+    indent = len(number) + 1
+    reason = None
+    if agenda:
+        split = DASH_SPLIT_RE.split(text, maxsplit=1)
+        if len(split) == 2:
+            text, reason = split
+    t.append(text, style=(FG if agenda else MUTED))
+    if reason:
+        t.append(" — ", style=DIM)
+        t.append(reason, style=DIM)
+    return Row(_fit(t, width, indent), lineno, None)
+
+
+def _table_rows(lines: List[Tuple[int, str]], width: int) -> List[Row]:
+    """A markdown table inside `## Roll-up` (R4.3.1), laid out as
+    10-program.png draws it: header cells dimmed and upper-case, the
+    separator line as a rule, a status dot before the project, status and
+    health in their state colours. Any other table is shown as dimmed
+    source by the caller (R10.12)."""
+    parsed = [[c.strip() for c in text.strip().strip("|").split("|")] for _, text in lines]
+    ncol = max(len(r) for r in parsed)
+    is_sep = [all(set(c) <= set(":-") and c for c in r) for r in parsed]
+    widths = [0] * ncol
+    for r, sep in zip(parsed, is_sep):
+        if sep:
+            continue
+        for i, c in enumerate(r):
+            widths[i] = max(widths[i], len(c) + (2 if i == 0 else 0))
+    rows: List[Row] = []
+    header_seen = False
+    for (lineno, _), cells, sep in zip(lines, parsed, is_sep):
+        t = Text()
+        if sep:
+            t.append(" " * min(width, sum(widths) + 2 * (ncol - 1)), style="underline " + LINE2)
+            rows.append(Row(t, lineno, None))
+            continue
+        cells = cells + [""] * (ncol - len(cells))
+        for i, c in enumerate(cells):
+            if i:
+                t.append("  ")
+            low = c.lower()
+            if not header_seen:
+                t.append("{:<{w}}".format(c.upper(), w=widths[i]), style=DIM)
+            elif i == 0:
+                t.append("● ", style=STATUS_COLORS.get(cells[1].lower() if ncol > 1 else "", DIM))
+                t.append("{:<{w}}".format(c, w=widths[i] - 2), style=FG)
+            elif low in STATUS_COLORS:
+                t.append("{:<{w}}".format(c, w=widths[i]), style=STATUS_COLORS[low])
+            elif low in HEALTH_COLORS:
+                t.append("{:<{w}}".format(c, w=widths[i]), style=HEALTH_COLORS[low])
+            elif c.isdigit():
+                t.append("{:>{w}}".format(c, w=widths[i]), style="bold " + FG)
+            else:
+                t.append("{:<{w}}".format(c, w=widths[i]), style=MUTED)
+        header_seen = True
+        rows.append(Row(t, lineno, None))
+    return rows
+
+
+SECTION_NOTES = {
+    "Concerns": "your words, the only steer the agent gets",
+}
+
+
+def _section_row(name: str, i: int, entity, is_known: bool, generated: bool) -> Row:
+    t = Text()
+    t.append(name.upper(), style=(DIM if is_known else DIM))
+    if generated:
+        t.append(" ")
+        t.append_text(_tag("GENERATED"))
+    note = SECTION_NOTES.get(name)
+    if name == "Pending" and getattr(entity, "last_met", None):
+        note = "accumulated since {}".format(_fmt_short_date(entity.last_met))
+    if note:
+        t.append(" — " + note, style=DIM)
+    return Row(t, i, None, True)
+
+
+def _body_rows(entity, width: int) -> List[Row]:
     """Every section the file has, in the file's own order (R10.12,
     invariant 10). A section not in the entity's own `SECTIONS` - and a
     table, an image or a code fence anywhere - is content this renderer has
     no opinion about, so it is shown as its own source text, dimmed, never
-    dropped."""
+    dropped. The one table it does have an opinion about is a program's
+    generated `## Roll-up` (R4.3.1)."""
     doc = entity.doc
     known = set(type(entity).SECTIONS)
     rows: List[Row] = []
@@ -784,57 +1171,125 @@ def _body_rows(entity) -> List[Row]:
     in_fence = False
     current = None
     tasks_cache: Dict[str, Dict[int, Task]] = {}
+    table: List[Tuple[int, str]] = []
 
-    for i in range(start, len(doc.lines)):
+    def flush_table():
+        if table:
+            rows.extend(_table_rows(table, width))
+            del table[:]
+
+    h1 = _h1_line(entity)
+    i = start
+    n = len(doc.lines)
+    while i < n:
         line = doc.lines[i]
         stripped = line.lstrip()
 
+        if i == h1:
+            i += 1   # rendered as the title row
+            continue
         if not in_fence and line.startswith("## "):
+            flush_table()
             name = line[3:].strip()
             current = doc.sections.get(name)
             is_known = name in known
-            rows.append(Row(
-                Text(name.upper(), style="bold " + (MUTED if is_known else DIM)),
-                i, None,
-            ))
+            # The marker comment right under a machine-owned header
+            # (R4.3.1) is rendered as the header's GENERATED tag: shown,
+            # as a tag rather than as source.
+            j = i + 1
+            while j < n and not doc.lines[j].strip():
+                j += 1
+            generated = j < n and GENERATED_RE.match(doc.lines[j].strip()) is not None
+            rows.append(_section_row(name, i, entity, is_known, generated))
+            i = j + 1 if generated else i + 1
             continue
 
         if stripped.startswith(FENCE):
+            flush_table()
             in_fence = not in_fence
             rows.append(Row(Text(line, style=DIM), i, None))
+            i += 1
             continue
         if in_fence:
             rows.append(Row(Text(line, style=DIM), i, None))
+            i += 1
             continue
         if not line.strip():
+            flush_table()
+            i += 1
             continue
 
         is_known = current is not None and current.name in known
         if not is_known:
             # Preamble before the first section header, or a section the
             # entity's own shape (R4.5.3) does not expect.
+            flush_table()
             rows.append(Row(Text(line, style=DIM), i, None))
+            i += 1
             continue
-        if stripped.startswith("|") or stripped.startswith("!["):
-            # A table row or an image: no opinion, shown as source (R10.12).
+        if stripped.startswith("|"):
+            if current.name == "Roll-up":
+                table.append((i, line))
+            else:
+                # A table elsewhere: no opinion, shown as source (R10.12).
+                rows.append(Row(Text(line, style=DIM), i, None))
+            i += 1
+            continue
+        flush_table()
+        if stripped.startswith("!["):
             rows.append(Row(Text(line, style=DIM), i, None))
+            i += 1
             continue
 
         cache = tasks_cache.get(current.name)
         if cache is None:
             cache = {t.lineno: t for t in doc.tasks(current.name)}
             tasks_cache[current.name] = cache
+        numbered = NUMBERED_RE.match(stripped)
         if i in cache:
-            rows.append(_task_row(cache[i], i))
+            rows.append(_task_row(cache[i], i, width))
         elif stripped.startswith("- "):
-            rows.append(_bullet_row(line, i))
+            rows.append(_bullet_row(line, i, width, current.name))
+        elif numbered:
+            rows.append(_numbered_row(numbered, i, width, current.name))
         elif stripped.startswith("#"):
-            # A `### 2026-08-20` minutes sub-heading.
-            rows.append(Row(Text(stripped.lstrip("#").strip(), style="bold " + FG), i, None))
+            # A `### 2026-08-20` minutes sub-heading: the sitting's date.
+            head = stripped.lstrip("#").strip()
+            shown = _fmt_short_date(head, pad=True) if DATED_RE.match(head + " -") else head
+            rows.append(Row(Text(shown, style=MUTED), i, None))
+        elif current.name in ("Summary", "Purpose", "Concerns"):
+            t = Text()
+            _hanging(t, stripped, MUTED, width, 0)
+            rows.append(Row(t, i, None))
         else:
-            rows.append(Row(Text(line, style=FG), i, None))
+            t = Text()
+            _hanging(t, stripped, FG, width, 0)
+            rows.append(Row(t, i, None))
+        i += 1
 
+    flush_table()
     return rows
+
+
+def _band(text: Text, selected: bool, width: int) -> Text:
+    """One detail row as the tree draws its rows: a teal bar at the left
+    edge and a `--sel` ground across the whole width when selected, a
+    two-cell margin otherwise. Continuation lines of a wrapped row keep the
+    margin; the band covers them too."""
+    out = Text()
+    lines = text.split("\n") if "\n" in text.plain else [text]
+    for i, line in enumerate(lines):
+        row = Text()
+        row.append("▎" if (selected and i == 0) else " ", style=TEAL)
+        row.append(" ")
+        row.append_text(line)
+        if selected:
+            row.append(" " * max(0, width + 2 - row.cell_len))
+            row.stylize(Style(bgcolor=SEL))
+        if i:
+            out.append("\n")
+        out.append_text(row)
+    return out
 
 
 def _default_entity(programs, by_program, flat, stakeholders, boards):
@@ -877,45 +1332,50 @@ class BrainApp(App, inherit_bindings=False):
     COMMAND text), `note_type`, `notice`. Every write goes through
     `run_brain`, which a test stubs on the class."""
 
+    # 02-annotated.png: a title bar and a modeline on the raised `--panel2`
+    # ground, each parted from the body by a one-line rule in `--line`; the
+    # tree on `--panel` with a single vertical rule to the detail pane. No
+    # boxes anywhere (R10.17), and no colour that is not answering a
+    # question (R10.16): focus is shown by the selection band, not a border.
     CSS = """
     Screen {
-        background: #14161b;
-        color: #e6e6e6;
+        background: #100f0e;
+        color: #ded7cb;
     }
     #title {
-        height: 3;  /* one content row inside a one-row border each side */
-        border: ascii #2a2e37;
-        padding: 0 1;
+        height: 2;
+        background: #1c1a17;
+        border-bottom: solid #2b2823;
+        padding: 0 2;
     }
     #body {
         height: 1fr;
     }
     #tree {
-        width: 36;
-        border: ascii #2a2e37;
-        background: #14161b;
-    }
-    #tree:focus {
-        border: ascii #2dd4bf;
+        width: 33;
+        border-right: solid #2b2823;
     }
     #detail-scroll {
         width: 1fr;
-        border: ascii #2a2e37;
-    }
-    #detail-scroll:focus-within {
-        border: ascii #2dd4bf;
+        scrollbar-size-vertical: 1;
+        scrollbar-gutter: stable;
+        scrollbar-background: #100f0e;
+        scrollbar-color: #2b2823;
+        scrollbar-color-hover: #3a352e;
+        scrollbar-color-active: #3a352e;
     }
     #detail {
         width: 1fr;
         height: auto;
-        padding: 0 1;
+        padding: 1 2 1 0;
     }
     #modeline {
-        height: 1;
+        height: 2;
         dock: bottom;
-        background: #1b1e25;
-        color: #8b93a1;
-        padding: 0 1;
+        background: #1c1a17;
+        border-top: solid #2b2823;
+        color: #8d8479;
+        padding: 0 2;
     }
     """
 
@@ -966,6 +1426,7 @@ class BrainApp(App, inherit_bindings=False):
         self.notice: Optional[Notice] = None
         self._focus_before = None
         self._slugs: List[str] = []
+        self._by_program: Dict[str, list] = {}
         self._detail_lines: List[Tuple[Optional[int], Optional[Task]]] = []
         self._detail_cursor: Optional[int] = None
         self._mtimes: Dict[str, float] = {}
@@ -1027,7 +1488,7 @@ class BrainApp(App, inherit_bindings=False):
     def compose(self) -> ComposeResult:
         yield Static(id="title", markup=False)
         with Horizontal(id="body"):
-            yield Tree("brain", id="tree")
+            yield EntityTree(id="tree")
             with VerticalScroll(id="detail-scroll"):
                 yield DetailPane(id="detail", markup=False)
         yield Modeline(id="modeline", markup=False)
@@ -1050,9 +1511,6 @@ class BrainApp(App, inherit_bindings=False):
         return True
 
     def on_mount(self) -> None:
-        tree_widget = self.query_one("#tree", Tree)
-        tree_widget.show_root = False
-        tree_widget.guide_depth = 2
         self.reload(initial=True)
         self.query_one("#tree", Tree).focus()
         self.set_interval(1.0, self._poll)
@@ -1060,17 +1518,43 @@ class BrainApp(App, inherit_bindings=False):
 
     def on_resize(self, event) -> None:  # noqa: D401 - Textual event hook
         self._apply_layout()
+        # The detail pane wraps to its width and the modeline right-aligns
+        # its hint; both are laid out from `self.size` at render time.
+        self._render_detail()
+        self._render_modeline()
 
     def _apply_layout(self) -> None:
         """R10.6: below 100 columns the tree fills the width and the
-        detail pane collapses; the modeline is never hidden."""
+        detail pane collapses; the modeline is never hidden. Search results
+        (07-search.png) take the whole width instead of the tree."""
         narrow = self.size.width and self.size.width < NARROW_COLUMNS
         tree_widget = self.query_one("#tree", Tree)
         detail_scroll = self.query_one("#detail-scroll")
         detail = self.query_one("#detail", DetailPane)
         detail_scroll.display = not narrow
         detail.display = not narrow
-        tree_widget.styles.width = "100%" if narrow else 36
+        tree_widget.styles.width = "100%" if narrow else TREE_WIDTH + 1
+
+    def _detail_width(self) -> int:
+        """Cells available to one detail row: the app width less the tree
+        and its rule, the pane's padding and scrollbar gutter, and the
+        two-cell selection margin every row carries."""
+        total = self.size.width or 120
+        narrow = total < NARROW_COLUMNS
+        tree = 0 if narrow else TREE_WIDTH + 1
+        return max(20, total - tree - 2 - 1 - 2)
+
+    def on_tree_node_expanded(self, event) -> None:
+        self._refresh_program_label(event.node)
+
+    def on_tree_node_collapsed(self, event) -> None:
+        self._refresh_program_label(event.node)
+
+    def _refresh_program_label(self, node) -> None:
+        """A program's `▾`/`▸` follows its node's state (02-annotated.png)."""
+        data = node.data
+        if data is not None and getattr(data, "kind", None) == "program":
+            node.set_label(_program_label(data, expanded=node.is_expanded))
 
     # -- reading the tree on disk --------------------------------------
     def reload(self, initial: bool = False, mtimes=None) -> None:
@@ -1097,30 +1581,39 @@ class BrainApp(App, inherit_bindings=False):
             else:
                 flat.append(p)
 
-        tree_widget = self.query_one("#tree", Tree)
+        tree_widget = self.query_one("#tree", EntityTree)
         tree_widget.clear()
+        tree_widget.right.clear()
         programs_node = tree_widget.root.add(_group_label("PROGRAMS"), expand=True)
         projects_node = tree_widget.root.add(_group_label("PROJECTS"), expand=True)
         stakeholders_node = tree_widget.root.add(_group_label("STAKEHOLDERS"), expand=True)
         boards_node = tree_widget.root.add(_group_label("BOARDS"), expand=True)
 
         self._slugs = sorted(e.slug for e in programs + projects + stakeholders + boards)
+        self._by_program = by_program
 
         node_by_key = {}
+        right = tree_widget.right
         for prog in sorted(programs, key=lambda x: x.slug):
+            children = sorted(by_program.get(prog.slug, []), key=lambda x: x.slug)
             node = programs_node.add(_program_label(prog), data=prog, expand=True)
+            right[node.id] = _program_right(prog, children)
             node_by_key[("program", prog.slug)] = node
-            for p in sorted(by_program.get(prog.slug, []), key=lambda x: x.slug):
+            for p in children:
                 leaf = node.add_leaf(_project_label(p), data=p)
+                right[leaf.id] = _project_right(p)
                 node_by_key[("project", p.slug)] = leaf
         for p in sorted(flat, key=lambda x: x.slug):
             leaf = projects_node.add_leaf(_project_label(p), data=p)
+            right[leaf.id] = _project_right(p)
             node_by_key[("project", p.slug)] = leaf
         for s in sorted(stakeholders, key=lambda x: x.slug):
             leaf = stakeholders_node.add_leaf(_party_label(s), data=s)
+            right[leaf.id] = _party_right(s)
             node_by_key[("stakeholder", s.slug)] = leaf
         for b in sorted(boards, key=lambda x: x.slug):
             leaf = boards_node.add_leaf(_party_label(b), data=b)
+            right[leaf.id] = _party_right(b)
             node_by_key[("board", b.slug)] = leaf
 
         # Force Textual to (re)compute each node's line number: `add()` and
@@ -1243,14 +1736,18 @@ class BrainApp(App, inherit_bindings=False):
         if self.raw_view:
             self._render_raw_source(widget)
             return
-        rows = _header_block(self.selected) + _body_rows(self.selected)
+        width = self._detail_width()
+        siblings = None
+        if getattr(self.selected, "kind", None) == "program":
+            siblings = self._by_program.get(self.selected.slug, [])
+        rows = _header_block(self.selected, width, siblings) + _body_rows(self.selected, width)
         self._detail_lines = [(r.lineno, r.task) for r in rows]
         combined = Text()
         for idx, row in enumerate(rows):
             is_cursor = idx == self._detail_cursor
-            combined.append("▸ " if is_cursor else "  ",
-                            style=(TEAL if is_cursor else ""))
-            combined.append_text(row.text)
+            if row.gap:
+                combined.append("\n")
+            combined.append_text(_band(row.text, is_cursor, width))
             combined.append("\n")
         widget.update(combined)
 
