@@ -1046,8 +1046,12 @@ strictly for state (blocked/overdue, at-risk/stale, done). Never use a state
 colour decoratively — if everything is coloured, the colours stop meaning
 anything. `12-legend.png` is the reference.
 
-**R10.17** Terminal chrome is drawn with borders, not box-drawing glyphs, so it
-does not depend on the user's font having good `U+2500` coverage.
+**R10.17** ~~Terminal chrome is drawn with borders, not box-drawing glyphs, so it
+does not depend on the user's font having good `U+2500` coverage.~~ **Relaxed
+2026-09-11: box-drawing glyphs are allowed.** The user's terminal font covers
+`U+2500`, and the design's panels, chips and rules are drawn with them.
+Fidelity to `design/*.png` wins over the portability worry. If a glyph ever
+renders as a box on some machine, that is the moment to revisit, not before.
 
 ### 10.7 Concurrency and failure
 
