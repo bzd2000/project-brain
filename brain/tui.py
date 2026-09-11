@@ -661,7 +661,28 @@ def _wrap(text: str, width: int) -> List[str]:
     return out
 
 
-_MEASURE = Console(width=10_000, force_terminal=False, color_system=None)
+def _wrap_hanging(text: str, first: int, rest: int) -> List[str]:
+    """`_wrap` with a shorter first line: the words that fit in `first`
+    cells, then the remainder wrapped to `rest`."""
+    if first >= rest:
+        return _wrap(text, rest)
+    first = max(10, first)
+    words = text.split()
+    line = ""
+    i = 0
+    for i, word in enumerate(words):
+        if not line:
+            line = word
+        elif len(line) + 1 + len(word) <= first:
+            line += " " + word
+        else:
+            break
+    else:
+        return [line] if line else [""]
+    return [line] + _wrap(" ".join(words[i:]), rest)
+
+
+_MEASURE =Console(width=10_000, force_terminal=False, color_system=None)
 
 
 def _fit(text: Text, width: int, indent: int = 0) -> Text:
@@ -683,23 +704,26 @@ def _fit(text: Text, width: int, indent: int = 0) -> Text:
 
 
 def _hanging(t: Text, body: str, style: str, width: int, indent: int,
-             right: Optional[Text] = None) -> None:
+             right: Optional[Text] = None, first_offset: int = 0) -> None:
     """Append `body` to `t` wrapped at `width` with continuation lines
     indented to `indent`, and `right` (owner, due, tags) right-aligned on
     the first line when it fits there - else on its own line, so nothing is
-    ever cropped (R10.12)."""
+    ever cropped (R10.12). `first_offset` is what already sits on the first
+    line past the indent (a dated line's `07 Sep  `), so that line wraps
+    that much sooner while the continuation still starts at `indent`."""
     avail = width - indent
-    lines = _wrap(body, avail)
-    if right is not None and len(lines) == 1 and len(lines[0]) + right.cell_len + 2 > avail:
+    first_avail = avail - first_offset
+    lines = _wrap_hanging(body, first_avail, avail)
+    if right is not None and len(lines) == 1 and len(lines[0]) + right.cell_len + 2 > first_avail:
         # Make room on the first line by wrapping shorter, as the canvas
         # does with its flex row; a very narrow pane just stacks them.
-        lines = _wrap(body, avail - right.cell_len - 2)
+        lines = _wrap_hanging(body, first_avail - right.cell_len - 2, avail)
     for i, line in enumerate(lines):
         if i:
             t.append("\n" + " " * indent)
         t.append(line, style=style)
         if right is not None and i == 0:
-            pad = avail - len(line) - right.cell_len
+            pad = first_avail - len(line) - right.cell_len
             if pad >= 2:
                 t.append(" " * pad)
                 t.append_text(right)
@@ -1054,9 +1078,11 @@ def _split_bullet(line: str) -> Tuple[Optional[str], str, List[str]]:
 
 def _bullet_row(line: str, lineno: int, width: int, section: str) -> Row:
     """A `- ` line: a `·` in `--dim`, then - when the line is dated - the
-    date in `--dim` and the text in `--mut` with a hanging indent
-    (02-annotated.png's log and decisions). A trailing `#slug` moves to the
-    right edge, as a pending item's project does in 08-board.png."""
+    date in `--dim` and the text in `--mut`. A wrapped line continues two
+    cells in, under the date rather than under the text: 02-annotated.png's
+    `· 30 Aug  Terraform over ARM. Team already knows` / `  it.`. A trailing
+    `#slug` moves to the right edge, as a pending item's project does in
+    08-board.png."""
     when, text, tags = _split_bullet(line)
     right = _right_col([(" ".join(tags), MUTED)])
     t = Text()
@@ -1065,7 +1091,7 @@ def _bullet_row(line: str, lineno: int, width: int, section: str) -> Row:
     if when:
         stamp = _fmt_short_date(when, pad=True)
         t.append(stamp + "  ", style=DIM)
-        _hanging(t, text, style, width, 2 + len(stamp) + 2, right)
+        _hanging(t, text, style, width, 2, right, first_offset=len(stamp) + 2)
     else:
         _hanging(t, text, style, width, 2, right)
     return Row(t, lineno, None)
