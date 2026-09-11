@@ -279,30 +279,43 @@ class CaptureScreen(Screen):
     (R10.2): the editor is append-only typing, `⏎` and backspace.
     """
 
+    # 05-meeting-capture.png: the head on the raised `--panel2` ground, a
+    # rule under it and under the tags line, the body on the ground with a
+    # margin, and the foot docked on `--panel2` behind a rule. No box
+    # (R10.17); only the same rules the main screen draws.
     DEFAULT_CSS = """
     CaptureScreen {
-        background: #14161b;
-        color: #e6e6e6;
+        background: #100f0e;
+        color: #ded7cb;
     }
-    #capture-head, #capture-tags {
-        height: 1;
-        padding: 0 1;
-        background: #1b1e25;
+    #capture-head {
+        height: 2;
+        padding: 0 2;
+        background: #1c1a17;
+        border-bottom: solid #2b2823;
+    }
+    #capture-tags {
+        height: 2;
+        padding: 0 2;
+        border-bottom: solid #2b2823;
     }
     #capture-scroll {
         height: 1fr;
-        border: ascii #2a2e37;
+        scrollbar-size-vertical: 1;
+        scrollbar-background: #100f0e;
+        scrollbar-color: #2b2823;
     }
     #capture-body {
         height: auto;
-        padding: 0 1;
+        padding: 1 2;
     }
     #capture-foot {
-        height: 1;
+        height: 2;
         dock: bottom;
-        padding: 0 1;
-        background: #1b1e25;
-        color: #8b93a1;
+        padding: 0 2;
+        background: #1c1a17;
+        border-top: solid #2b2823;
+        color: #5a544c;
     }
     """
 
@@ -448,53 +461,60 @@ class CaptureScreen(Screen):
     # -- rendering ------------------------------------------------------
     def _redraw(self) -> None:
         app = self.app
+        width = max(0, self.size.width - 4)
         head = Text()
         head.append_text(_chip(app.note_type))
-        head.append("  new note", style=FG)
-        head.append("    {} · {}".format(self.preview_id, self.stamp), style=MUTED)
+        head.append("  new note", style=MUTED)
+        stamp = Text("{} · {}".format(self.preview_id, self.stamp), style=DIM)
+        head.append(" " * max(2, width - head.cell_len - stamp.cell_len))
+        head.append_text(stamp)
         self.query_one("#capture-head", Static).update(head)
 
         tags = Text()
-        tags.append("tags ", style=MUTED)
+        tags.append("tags ", style=DIM)
         seen = []
         for ref in REF_RE.findall(self.body()):
             if ref not in seen:
                 seen.append(ref)
         if seen:
             tags.append(" ".join(seen), style=TEAL)
-            tags.append("  ·  add more with @", style=DIM)
+            tags.append(" · add more with @, dates with !", style=DIM)
         else:
-            tags.append("none yet · add some with @", style=DIM)
+            tags.append("none yet · add some with @, dates with !", style=DIM)
         self.query_one("#capture-tags", Static).update(tags)
 
         body = Text(self.body(), style=FG)
-        body.append(" ", style="reverse " + TYPE_COLORS.get(app.note_type, TEAL))
+        body.append_text(_cursor(TEAL))
         self.query_one("#capture-body", Static).update(body)
 
         foot = Text()
+
+        def key(cap: str, label: str) -> None:
+            if len(foot):
+                foot.append("   ")
+            foot.append(" {} ".format(cap), style="{} on {}".format(MUTED, LINE2))
+            foot.append(" " + label, style=DIM)
+
         if self.confirming:
             foot.append("Discard this note?  ", style=AMBER)
-            foot.append("y", style="bold " + FG)
-            foot.append(" discard   ", style=MUTED)
-            foot.append("n", style="bold " + FG)
-            foot.append(" keep typing   ", style=MUTED)
-            foot.append(":", style="bold " + FG)
-            foot.append(" command", style=MUTED)
+            key("y", "discard")
+            key("n", "keep typing")
+            key(":", "command")
         elif self.cmd is not None:
-            foot.append(":", style=VIOLET)
+            foot.append(":", style=MUTED)
             foot.append(self.cmd, style=FG)
-            foot.append(" ", style="reverse " + VIOLET)
+            foot.append_text(_cursor(TEAL))
         else:
-            foot.append(":w", style="bold " + FG)
-            foot.append(" save   ", style=MUTED)
-            foot.append("esc", style="bold " + FG)
-            foot.append(" cancel   ", style=MUTED)
-            foot.append(":t", style="bold " + FG)
-            foot.append(" type", style=MUTED)
+            key(":w", "save")
+            key("Esc", "cancel")
+            key(":t", "type")
         if self.notice is not None:
             foot.append("    ")
             foot.append(self.notice.text, style=(RED if self.notice.error else MUTED))
         self.query_one("#capture-foot", Static).update(foot)
+
+    def on_resize(self, event) -> None:  # noqa: D401 - Textual event hook
+        self._redraw()
 
 
 HELP_KEY_COLUMN = 16   # 11-help.png: the key, then the description at cell 16
