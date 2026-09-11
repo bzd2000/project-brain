@@ -132,7 +132,16 @@ def _project_lines(projects, show_tags: bool) -> List[str]:
     return lines
 
 
-def _stakeholders_line(stakeholders) -> str:
+def _capped(parts: List[str], limit: Optional[int], noun: str) -> str:
+    """Join a flat list, never silently: past `limit`, say how many more.
+    An agent that cannot see an entity concludes it does not exist."""
+    if limit is None or len(parts) <= limit:
+        return ", ".join(parts)
+    return ", ".join(parts[:limit]) + ", +{} more {}".format(
+        len(parts) - limit, noun)
+
+
+def _stakeholders_line(stakeholders, limit: Optional[int] = None) -> str:
     if not stakeholders:
         return "stakeholders: none"
     parts = []
@@ -143,10 +152,10 @@ def _stakeholders_line(stakeholders) -> str:
         if s.next_meeting:
             bits.append("next {}".format(_safe(s.next_meeting, 10)))
         parts.append("{}({})".format(s.slug, ", ".join(bits)) if bits else s.slug)
-    return "stakeholders: " + ", ".join(parts)
+    return "stakeholders: " + _capped(parts, limit, "stakeholders")
 
 
-def _boards_line(boards) -> str:
+def _boards_line(boards, limit: Optional[int] = None) -> str:
     if not boards:
         return "boards: none"
     parts = []
@@ -157,20 +166,21 @@ def _boards_line(boards) -> str:
         if b.members:
             bits.append("members {}".format(",".join(_safe(m, 16) for m in b.members)))
         parts.append("{}({})".format(b.slug, ", ".join(bits)) if bits else b.slug)
-    return "boards: " + ", ".join(parts)
+    return "boards: " + _capped(parts, limit, "boards")
 
 
-def _notes_line(notes) -> str:
+def _notes_line(notes, limit: Optional[int] = None) -> str:
     """R6.3/R9.1: ids and types only, never a body — the agent fetches
     bodies itself with `note list --unprocessed --json` (R8.4's second
     call). `test_the_digest_never_prints_a_note_body` is the guard."""
     if not notes:
         return "notes: 0 unprocessed"
     parts = ["{} {}".format(_safe(n.id or "?", 8), _safe(n.type, 12)) for n in notes]
-    return "notes: {} unprocessed ({})".format(len(notes), ", ".join(parts))
+    return "notes: {} unprocessed ({})".format(len(notes), _capped(parts, limit, "notes"))
 
 
-def _bullet_group(label: str, items: List[str], limit: Optional[int] = None) -> List[str]:
+def _bullet_group(label: str, items: List[str], limit: Optional[int] = None,
+                  newest_first: bool = False) -> List[str]:
     """`items` are already full bullet lines (`"- ..."`) — every source is
     either a `Task` this module formats itself, or a raw section line that
     already carries its own leading `- `. `limit`, when given, keeps the
@@ -181,11 +191,21 @@ def _bullet_group(label: str, items: List[str], limit: Optional[int] = None) -> 
     if not items:
         lines.append("    (none)")
         return lines
-    shown = items if limit is None else items[:limit]
+    # Which end to keep depends on the section's order. `## Log` and
+    # `## History` are newest-first (R4.2.1), so the head IS the newest.
+    # `## Next actions`, `## Open questions` and `## Pending` APPEND, so the
+    # newest are at the tail - keeping the head there drops exactly the items
+    # an agenda most needs and then claims the opposite (M1).
+    if limit is None or len(items) <= limit:
+        shown, dropped = items, ""
+    elif newest_first:
+        shown, dropped = items[:limit], "oldest dropped"
+    else:
+        shown, dropped = items[-limit:], "oldest dropped, newest kept"
     lines.extend("    {}".format(_safe_text(i)) for i in shown)
     hidden = len(items) - len(shown)
     if hidden > 0:
-        lines.append("    (+{} more, oldest dropped)".format(hidden))
+        lines.append("    (+{} more, {})".format(hidden, dropped))
     return lines
 
 
@@ -202,7 +222,7 @@ def _section_bullets(doc, *names) -> List[str]:
     return [l.strip() for l in doc.section_lines(*names) if l.strip()]
 
 
-def _for_block(entity, log_limit: int, item_limit: int = 8) -> List[str]:
+def _for_block(entity, log_limit: int, item_limit: int) -> List[str]:
     """R6.3: `--for <entity>` adds open actions, open questions and the
     last three log lines. Only a project has actions/questions in its
     fixed sections (R4.2.1); a program has only a Log; a stakeholder or
@@ -219,20 +239,21 @@ def _for_block(entity, log_limit: int, item_limit: int = 8) -> List[str]:
         questions = _section_bullets(entity.doc, "Open questions")
         lines.extend(_bullet_group("questions", questions, limit=item_limit))
         log = _section_bullets(entity.doc, "Log")
-        lines.extend(_bullet_group("log", log, limit=log_limit))
+        lines.extend(_bullet_group("log", log, limit=log_limit, newest_first=True))
     elif entity.kind == "program":
         log = _section_bullets(entity.doc, "Log")
-        lines.extend(_bullet_group("log", log, limit=log_limit))
+        lines.extend(_bullet_group("log", log, limit=log_limit, newest_first=True))
     else:  # stakeholder or board
         pending = _section_bullets(entity.doc, "Pending")
         lines.extend(_bullet_group("pending", pending, limit=item_limit))
         history = _section_bullets(entity.doc, "History", "Minutes")
-        lines.extend(_bullet_group("history", history, limit=log_limit))
+        lines.extend(_bullet_group("history", history, limit=log_limit, newest_first=True))
     return lines
 
 
 def _render(programs, projects, stakeholders, boards, notes, target,
-            show_tags: bool, project_limit: int, log_limit: int) -> str:
+            show_tags: bool, project_limit: int, log_limit: int,
+            item_limit: int = 8, list_limit: Optional[int] = None) -> str:
     lines = ["today: {}".format(date.today().isoformat())]
     lines.append(_programs_line(programs))
     lines.append("projects:")
@@ -241,11 +262,11 @@ def _render(programs, projects, stakeholders, boards, notes, target,
     hidden = len(projects) - len(shown)
     if hidden > 0:
         lines.append("  +{} more projects".format(hidden))
-    lines.append(_stakeholders_line(stakeholders))
-    lines.append(_boards_line(boards))
-    lines.append(_notes_line(notes))
+    lines.append(_stakeholders_line(stakeholders, list_limit))
+    lines.append(_boards_line(boards, list_limit))
+    lines.append(_notes_line(notes, list_limit))
     if target is not None:
-        lines.extend(_for_block(target, log_limit))
+        lines.extend(_for_block(target, log_limit, item_limit))
     return "\n".join(lines)
 
 
@@ -272,19 +293,35 @@ def context(tree, for_ref: Optional[str] = None) -> str:
     # projects list does not fit - which "say what was dropped" already
     # covers, since that attempt still names every project it could not
     # show.
+    # Detail goes before existence, in this order: `--for`'s log, then its
+    # actions/questions/pending, then tags, then the flat lists' tails, and
+    # only then are projects hidden - always with a `+N more`. Every growable
+    # line has a rung here; one without is unbounded by the user's own data
+    # (H3: fifty open actions once produced a 6 KB digest).
     n = len(projects)
     trials = []
     for log_limit in (3, 2, 1, 0):
-        trials.append((True, n, log_limit))
-    trials.append((False, n, 0))
+        trials.append(dict(show_tags=True, project_limit=n, log_limit=log_limit))
+    for item_limit in (4, 2, 0):
+        trials.append(dict(show_tags=True, project_limit=n, log_limit=0,
+                           item_limit=item_limit))
+    trials.append(dict(show_tags=False, project_limit=n, log_limit=0, item_limit=0))
+    for list_limit in (12, 6, 3):
+        trials.append(dict(show_tags=False, project_limit=n, log_limit=0,
+                           item_limit=0, list_limit=list_limit))
     for limit in range(n - 1, -1, -1):
-        trials.append((False, limit, 0))
+        trials.append(dict(show_tags=False, project_limit=limit, log_limit=0,
+                           item_limit=0, list_limit=3))
 
     last = None
-    for show_tags, project_limit, log_limit in trials:
+    for knobs in trials:
         text = _render(programs, projects, stakeholders, boards, notes,
-                        target, show_tags, project_limit, log_limit)
+                        target, **knobs)
         last = text
         if len(text.encode("utf-8")) < CAP_BYTES:
             return text
-    return last
+    # Every rung exhausted and it still does not fit. Never return that
+    # silently: the reader is a model that trusts whatever it gets, so the
+    # last line says the digest is over budget and by how much.
+    over = len(last.encode("utf-8")) - CAP_BYTES
+    return last + "\n!! digest over budget by {} bytes".format(over)

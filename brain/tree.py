@@ -34,6 +34,13 @@ class Tree:
     """
 
     def __init__(self, root):
+        # Programs whose roll-up a write in this command invalidated by
+        # MOVING a project out of them. `link` and `field set … program`
+        # change a project's `program:`; reading it after the write finds only
+        # the destination, so the source was left claiming the project - both
+        # roll-ups then listed it (R4.3.1a's exact failure). `refresh_path`
+        # sees old and new side by side and records the old one here.
+        self.stale_programs = set()
         self.root = root
         self._entities: Optional[List] = None
 
@@ -95,6 +102,10 @@ class Tree:
         for i, existing in enumerate(self._entities):
             if Path(existing.path) == path:
                 fresh = entities.load(path)
+                was = getattr(existing, "program", None)
+                now = getattr(fresh, "program", None) if fresh else None
+                if was and was != now:
+                    self.stale_programs.add(was)
                 if fresh is None:
                     del self._entities[i]
                 else:

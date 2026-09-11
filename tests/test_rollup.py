@@ -117,3 +117,19 @@ def test_build_repairs_a_hand_edited_rollup(brain_repo):
     _run(brain_repo, "build")
     assert "WRONGSTATUS" not in path.read_text(encoding="utf-8")
     assert "| acme-migration | active |" in _rollup(brain_repo)
+
+
+def test_moving_a_project_between_programs_refreshes_both(brain_repo):
+    """H1 from the milestone-4 final review: `programs_touched` read the
+    project's `program:` AFTER the write, so only the destination was
+    refreshed and the source went on listing a project it no longer had -
+    both roll-ups claimed it. That is R4.3.1a's exact failure."""
+    _run(brain_repo, "new program -- Second wave")
+    _run(brain_repo, "link acme-migration --program second-wave")
+    old = (brain_repo / "programs" / "cloud-migration.md").read_text(encoding="utf-8")
+    new = (brain_repo / "programs" / "second-wave.md").read_text(encoding="utf-8")
+    assert "acme-migration" not in old.split("## Roll-up")[1].split("\n## ")[0]
+    assert "| acme-migration |" in new
+    touched = git.run(["show", "--name-only", "--format=", "HEAD"], brain_repo)
+    assert "programs/cloud-migration.md" in touched, "the OLD program must be in the commit"
+    assert "programs/second-wave.md" in touched

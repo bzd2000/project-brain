@@ -88,7 +88,12 @@ def refresh(tree, root, paths) -> Tuple[str, ...]:
     alone, so an unrelated write never widens a commit for nothing (R11.2).
     """
     written = []
-    for slug in programs_touched(tree, root, paths):
+    # The destination program, from the project's `program:` as it is NOW -
+    # plus any program a project was moved OUT of during this command, which
+    # only the tree saw (H1: `link` left the old roll-up still listing it).
+    slugs = set(programs_touched(tree, root, paths))
+    slugs |= getattr(tree, "stale_programs", set())
+    for slug in sorted(slugs):
         rel = _rewrite(tree, root, slug)
         if rel is not None:
             written.append(rel)
