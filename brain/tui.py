@@ -25,6 +25,7 @@ Task 4 and go through the same seam.
 from __future__ import annotations
 
 import functools
+import json
 import os
 import re
 import subprocess
@@ -400,6 +401,90 @@ class CaptureScreen(Screen):
         self.query_one("#capture-foot", Static).update(foot)
 
 
+def _help_text() -> Text:
+    """The `?` screen (11-help.png), §10.3's key map verbatim. Read by a
+    human at a terminal, never a model - nothing here is truncated for a
+    token budget the way `context` is (invariant 4 does not apply)."""
+    sections = [
+        ("NORMAL — MOVING", [
+            ("j k", "move the selection"),
+            ("h l", "collapse / expand a program"),
+            ("g G", "top / bottom"),
+            ("Tab", "focus the detail pane, then j k within it"),
+            ("/ n N", "search · next · previous match"),
+        ]),
+        ("NORMAL — CAPTURE", [
+            ("i", "start a note in the modeline"),
+            ("o", "open the full-screen capture pane"),
+            ("t", "cycle type: note → meeting → action → decision"),
+        ]),
+        ("NORMAL — ACTING", [
+            ("e", "edit the focused action in place"),
+            ("E", "show the file as raw source (view only, R10.11b)"),
+            ("x", "tick the focused action"),
+            ("d s H", "due date · status · health"),
+            ("u", "undo — a git commit reverted (redo: not yet, R10.7a)"),
+            ("Q", "queue a job for the agent in _request.md"),
+            (":", "run a brain command"),
+            ("?", "this screen"),
+            ("ZZ", "quit"),
+        ]),
+        ("INSERT", [
+            ("Esc", "back to NORMAL, keeping what you typed"),
+            ("⏎", "capture the note, or send the verb"),
+        ]),
+        ("COMMAND", [
+            (":log", "log against the selection"),
+            (":status set", "set a field"),
+            (":agenda ann", "build a stakeholder or board agenda"),
+            (":met ann", "record that the meeting happened"),
+            (":inbox", "list what is waiting to be processed"),
+        ]),
+    ]
+    t = Text()
+    t.append("Keys", style="bold " + FG)
+    t.append("   modal, like vim - single letters in NORMAL; i types; Esc always comes back\n\n",
+             style=MUTED)
+    for title, rows in sections:
+        t.append(title + "\n", style="bold " + MUTED)
+        for key, desc in rows:
+            t.append("  {:<8}".format(key), style=TEAL)
+            t.append("  " + desc + "\n", style=FG)
+        t.append("\n")
+    t.append("any key returns", style=DIM)
+    return t
+
+
+class HelpScreen(Screen):
+    """`?` (11-help.png): the key map and nothing else. Any key closes it -
+    `on_key` below stops every key it sees, and `BrainApp.action_escape` /
+    `action_tab` also check for this screen explicitly, because `escape` and
+    `tab` are *priority* bindings (R10.3, R10.8): Textual resolves those
+    before the event ever bubbles down to a screen's own `on_key`, so this
+    screen closing on "any key" needs both paths covered.
+    """
+
+    DEFAULT_CSS = """
+    HelpScreen {
+        background: #14161b;
+        color: #e6e6e6;
+    }
+    #help-body {
+        padding: 1 2;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll():
+            yield Static(_help_text(), id="help-body", markup=False)
+
+    @_guarded
+    def on_key(self, event) -> None:
+        event.stop()
+        event.prevent_default()
+        self.app.pop_screen()
+
+
 def _fmt_short_date(iso: Optional[str]) -> str:
     """`2026-09-18` -> `18 Sep`, portably (no `%-d`, which Windows lacks -
     C5 makes Windows the primary platform)."""
@@ -483,11 +568,17 @@ def _modeline_text(app: "BrainApp") -> Text:
     if app.mode == INSERT:
         t.append("-- INSERT --", style="bold " + TEAL)
         t.append("  ")
-        t.append_text(_chip(app.note_type))
+        if app.prompt:
+            # Task 4's acting keys (e, d, s, H, Q, /) each name what they are
+            # asking for instead of the capture type chip - same mechanism
+            # as `i`, a different label (ruling: R10.3, R10.10a).
+            t.append(app.prompt, style="bold " + TEAL)
+        else:
+            t.append_text(_chip(app.note_type))
         t.append("  ▸ ", style=TEAL)
         t.append(app.buffer, style=FG)
         t.append(" ", style="reverse " + TEAL)
-        hint = "⏎ capture · esc"
+        hint = "⏎ send · esc" if app.prompt else "⏎ capture · esc"
     elif app.mode == COMMAND:
         t.append("-- COMMAND --", style="bold " + VIOLET)
         t.append("  : ", style=MUTED)
@@ -504,6 +595,8 @@ def _modeline_text(app: "BrainApp") -> Text:
             t.append("(nothing selected)", style=DIM)
         if app._changed_marker:
             t.append("    ⟳ changed on disk", style=AMBER)
+        if app.raw_view:
+            t.append("    RAW", style="bold " + AMBER)
         t.append("    ")
         t.append_text(_chip(app.note_type))
         t.append("  ")
@@ -759,11 +852,18 @@ def _default_entity(programs, by_program, flat, stakeholders, boards):
     return None
 
 
-class BrainApp(App):
-    # R10.2: no Ctrl chords anywhere. Textual's App ships ctrl+p (the
-    # command palette - which Esc could not close, because this app's
-    # priority escape binding pre-empts the palette's own), ctrl+q and
-    # ctrl+c. All three off; ZZ quits.
+class BrainApp(App, inherit_bindings=False):
+    # R10.2/R10.7a: no Ctrl chords anywhere. Textual's own `App.BINDINGS`
+    # ships `ctrl+q` (quit) and `ctrl+c` (help_quit) as priority bindings -
+    # `inherit_bindings=False` is Textual's own mechanism for dropping a
+    # base class's bindings rather than merging them (`DOMNode._merge_bindings`
+    # walks the MRO and clears everything collected so far the moment it
+    # finds a base with this flag off), so only the list below is ever
+    # live. Proven, not assumed: without it `ctrl+q` really does quit the
+    # app, silently, which is exactly the vim-user muscle memory ZZ exists
+    # to replace. The command palette (`ctrl+p`) is a separate mechanism,
+    # off via `ENABLE_COMMAND_PALETTE` below - Esc could not close it,
+    # because this app's priority escape binding pre-empts the palette's own.
     ENABLE_COMMAND_PALETTE = False
     """The TUI. `BrainApp(root).run()` for a live terminal;
     `BrainApp(root).run_test(...)` (Textual's `Pilot`) for tests.
@@ -828,6 +928,20 @@ class BrainApp(App):
         Binding("i", "insert", "note", show=False),
         Binding("o", "capture", "capture", show=False),
         Binding("t", "cycle_type", "type", show=False),
+        # Task 4: acting keys, search, help, quit (R10.3's "acting" table).
+        Binding("e", "edit_line", "edit", show=False),
+        Binding("E", "toggle_raw", "raw", show=False),
+        Binding("x", "tick", "done", show=False),
+        Binding("d", "due_prompt", "due", show=False),
+        Binding("s", "status_prompt", "status", show=False),
+        Binding("H", "health_prompt", "health", show=False),
+        Binding("u", "undo", "undo", show=False),
+        Binding("Q", "queue_request", "request", show=False),
+        Binding("slash", "search_prompt", "search", show=False),
+        Binding("n", "next_hit", "next", show=False),
+        Binding("N", "prev_hit", "prev", show=False),
+        Binding("question_mark", "help", "help", show=False),
+        Binding("Z", "maybe_quit", "quit", show=False),
         Binding("colon", "command", "command", show=False),
         Binding("tab", "tab", "detail", show=False, priority=True),
         Binding("escape", "escape", "normal", show=False, priority=True),
@@ -849,6 +963,26 @@ class BrainApp(App):
         self._mtimes: Dict[str, float] = {}
         self._changed_marker = False
         self._unprocessed_count = 0
+        # Task 4: what an acting-key prompt (e, d, s, H, Q, /) is asking for,
+        # shown in the modeline in place of the capture chip (R10.3's "same
+        # mechanism as i"). `prompt` is the label; `_pending` is
+        # `(kind, project_slug_or_None, action_index_or_None)`, consumed by
+        # `_run_pending` on `⏎` and cleared by every fresh entry point so a
+        # leftover from one key never answers for another (see `check_action`
+        # for the analogous ZZ reset).
+        self.prompt: Optional[str] = None
+        self._pending: Optional[Tuple[str, Optional[str], Optional[int]]] = None
+        # `E` (R10.11/R10.11b): a read-only view of the selected entity's
+        # source, never a second representation to keep in sync.
+        self.raw_view: bool = False
+        # `/` `n` `N` (R6.7, R8.4.1): the last search's hits, replacing the
+        # detail pane until Esc. `None` means "not searching" - an empty
+        # list is a real zero-match search, which `_render_detail` must
+        # still show as search output, not fall back to the entity view.
+        self.search_hits: Optional[List[dict]] = None
+        self.search_query: str = ""
+        self.search_cursor: int = 0
+        self._pending_z = False   # ZZ: true right after a lone Z (R10.3's table)
 
     # -- the one subprocess ------------------------------------------
     def run_brain(self, argv, stdin=None):
@@ -885,7 +1019,15 @@ class BrainApp(App):
 
     def check_action(self, action: str, parameters) -> Optional[bool]:
         """The single-letter commands exist in NORMAL only (R10.1). `escape`
-        and `tab` decide for themselves."""
+        and `tab` decide for themselves.
+
+        Also where `ZZ` (R10.3) resets: any OTHER action attempted - even one
+        this same check goes on to refuse - means the `Z` that came before it
+        was not the first half of `ZZ`, so `action_maybe_quit` must not treat
+        a later, unrelated `Z` as the second one.
+        """
+        if action != "maybe_quit":
+            self._pending_z = False
         if action in ("escape", "tab"):
             return True
         if self.mode != NORMAL or isinstance(self.screen, CaptureScreen):
@@ -1059,9 +1201,15 @@ class BrainApp(App):
 
     def _render_detail(self) -> None:
         widget = self.query_one("#detail", DetailPane)
+        if self.search_hits is not None:
+            self._render_search_results(widget)
+            return
         if self.selected is None:
             widget.update(Text("Nothing to show yet.", style=DIM))
             self._detail_lines = []
+            return
+        if self.raw_view:
+            self._render_raw_source(widget)
             return
         rows = _header_block(self.selected) + _body_rows(self.selected)
         self._detail_lines = [(r.lineno, r.task) for r in rows]
@@ -1073,6 +1221,52 @@ class BrainApp(App):
             combined.append_text(row.text)
             combined.append("\n")
         widget.update(combined)
+
+    def _render_raw_source(self, widget) -> None:
+        """`E` (R10.11, R10.11b): the file exactly as `Doc.lines` holds it,
+        front matter included - a VIEW only. Milestone 5 ships no save path
+        here (`_run_command` refuses `:w` by name while this is up), so
+        there is nothing to address by line - `focused_line` stays empty."""
+        self._detail_lines = []
+        text = Text()
+        text.append("{}  ·  raw source, view only (R10.11b)\n\n".format(self.selected.slug),
+                    style=DIM)
+        for line in self.selected.doc.lines:
+            text.append(line, style=FG)
+            text.append("\n")
+        widget.update(text)
+
+    def _render_search_results(self, widget) -> None:
+        """`/` (R6.7, 07-search.png): hits grouped by kind, one line each -
+        the same grouping `brain search`'s own renderer uses, so the TUI and
+        the shell never disagree about what a match is."""
+        self._detail_lines = []
+        hits = self.search_hits
+        text = Text()
+        text.append("search ", style=MUTED)
+        text.append("/{}".format(self.search_query), style="bold " + TEAL)
+        text.append("   {} match(es)\n\n".format(len(hits)), style=MUTED)
+        if not hits:
+            text.append("no matches", style=DIM)
+            widget.update(text)
+            return
+        idx = 0
+        for kind in ("program", "project", "stakeholder", "board"):
+            group = [h for h in hits if h["kind"] == kind]
+            if not group:
+                continue
+            text.append("{}S\n".format(kind.upper()), style="bold " + MUTED)
+            for hit in group:
+                is_cursor = idx == self.search_cursor
+                text.append("▸ " if is_cursor else "  ",
+                            style=(TEAL if is_cursor else ""))
+                text.append(hit["slug"], style=TEAL)
+                text.append("  {}: ".format(hit["where"]), style=MUTED)
+                text.append(hit["line"], style=FG)
+                text.append("\n")
+                idx += 1
+            text.append("\n")
+        widget.update(text)
 
     def _render_modeline(self) -> None:
         self.query_one("#modeline", Static).update(_modeline_text(self))
@@ -1107,7 +1301,11 @@ class BrainApp(App):
     @_guarded
     def action_insert(self) -> None:
         """`i`: a note in the modeline (R10.13). The buffer is whatever Esc
-        left there last time."""
+        left there last time. Always plain capture - clears any Task 4
+        acting-key prompt (`e`/`d`/`s`/`H`/`Q`/`/`) so a leftover `_pending`
+        never answers for `⏎` here."""
+        self.prompt = None
+        self._pending = None
         self._enter(INSERT)
 
     @_guarded
@@ -1129,6 +1327,8 @@ class BrainApp(App):
     def action_capture(self) -> None:
         """`o`: the full-screen pane (R10.14). INSERT, like the modeline."""
         self.notice = None
+        self.prompt = None
+        self._pending = None
         self.mode = INSERT
         self._focus_before = self.focused
         self.push_screen(CaptureScreen(self._preview_note_id()))
@@ -1151,8 +1351,14 @@ class BrainApp(App):
     @_guarded
     def action_escape(self) -> None:
         """Esc: from anywhere, back to NORMAL, keeping the text (R10.3). In
-        the capture pane it asks first (R10.14); in NORMAL it returns DOM
-        focus from the detail pane to the tree."""
+        the capture pane it asks first (R10.14); in the help screen it
+        closes it (`escape` is a priority binding, so it never reaches
+        `HelpScreen.on_key` - see that class's docstring); in NORMAL it
+        clears search results or the raw-source view before it falls back to
+        returning DOM focus from the detail pane to the tree."""
+        if isinstance(self.screen, HelpScreen):
+            self.pop_screen()
+            return
         if isinstance(self.screen, CaptureScreen):
             self.screen.escape()
             return
@@ -1160,10 +1366,24 @@ class BrainApp(App):
             self.notice = None
             self._leave_to_normal()
             return
+        if self.search_hits is not None:
+            self.search_hits = None
+            self._render_detail()
+            self._render_modeline()
+            self.query_one("#tree", Tree).focus()
+            return
+        if self.raw_view:
+            self.raw_view = False
+            self._render_detail()
+            self._render_modeline()
+            return
         self.query_one("#tree", Tree).focus()
 
     @_guarded
     def action_tab(self) -> None:
+        if isinstance(self.screen, HelpScreen):
+            self.pop_screen()
+            return
         if isinstance(self.screen, CaptureScreen) or self.mode == INSERT:
             return
         if self.mode == COMMAND:
@@ -1209,9 +1429,14 @@ class BrainApp(App):
         self._render_modeline()
 
     def _capture_buffer(self) -> None:
-        """`⏎` in INSERT (R10.13): `note add <type> -f -`, the body on
-        stdin exactly as typed - never argv (invariant 13). No parsing, no
-        question, no model."""
+        """`⏎` in INSERT: either a Task 4 acting-key prompt waiting on typed
+        text (`_pending` set - `e`, `d`, `s`, `H`, `Q`, `/`), or plain note
+        capture (R10.13): `note add <type> -f -`, the body on stdin exactly
+        as typed - never argv (invariant 13). No parsing, no question, no
+        model."""
+        if self._pending is not None:
+            self._run_pending()
+            return
         body = self.buffer
         if not body.strip():
             self._leave_to_normal()
@@ -1226,11 +1451,90 @@ class BrainApp(App):
         self.buffer = ""
         self._finish_write(out)
 
+    def _run_pending(self) -> None:
+        """`⏎` in INSERT when `e`, `d`, `s`, `H` or `Q` is waiting on typed
+        text: the same commit key as plain capture, routed to the verb the
+        key chose rather than `note add`. Each is a thin argv build against
+        the seam `run_brain` is (R10.10a's ruling: no verb the TUI calls here
+        does anything `action edit`/`action due`/`status set`/`health
+        set`/`request add` did not already do from the shell).
+
+        An empty value quietly cancels, the same as an empty note (R10.13):
+        typing `d`, deciding not to, and hitting `⏎` on nothing is not a
+        request to send `action due --to ''`.
+        """
+        kind, slug, index = self._pending
+        value = self.buffer
+        if not value.strip():
+            self._pending = None
+            self.prompt = None
+            self._leave_to_normal()
+            return
+        if kind == "search":
+            self._run_search(value)
+            return
+        if kind == "edit":
+            argv = ["action", "edit", slug, str(index), "--", value]
+        elif kind == "due":
+            argv = ["action", "due", slug, str(index), "--to", value]
+        elif kind == "status":
+            argv = ["status", "set", slug, value]
+        elif kind == "health":
+            argv = ["health", "set", slug, value]
+        else:
+            assert kind == "request", kind
+            argv = ["request", "add", "--", value]
+        rc, out, err = self.run_brain(argv)
+        if rc != 0:
+            # R10.18a: stay put, keep the text, so `⏎` a moment later retries.
+            self.notice = Notice(_first_line(err) or "brain exited {}".format(rc), True)
+            self._render_modeline()
+            return
+        self.buffer = ""
+        self.prompt = None
+        self._pending = None
+        self._finish_write(out)
+
+    def _run_search(self, query: str) -> None:
+        """`⏎` on `/`'s query (R6.7, R8.4.1): `search --json -- <query>`,
+        parsed and shown grouped by kind (07-search.png) until `n`/`N` moves
+        between hits or Esc returns. Not a write, so no `_finish_write` -
+        nothing changed on disk and the tree does not need reloading."""
+        rc, out, err = self.run_brain(["search", "--json", "--", query])
+        if rc != 0:
+            self.notice = Notice(_first_line(err) or "brain exited {}".format(rc), True)
+            self._render_modeline()
+            return
+        try:
+            hits = json.loads(out) if out.strip() else []
+        except ValueError:
+            hits = []
+        self.search_hits = hits
+        self.search_query = query
+        self.search_cursor = 0
+        self.buffer = ""
+        self.prompt = None
+        self._pending = None
+        self.notice = Notice(
+            "{} match(es) for {!r}".format(len(hits), query) if hits else "no matches", False)
+        self._leave_to_normal()
+        self._render_detail()
+
     def _run_command(self) -> None:
         """`⏎` in COMMAND (R10.8): the line is split exactly as `brain apply`
         would split it - `grammar.parse_line`, not shlex - so everything
         after the first ` -- ` is one argv element, verbatim. A grammar
         error or a refusal keeps the line for correction."""
+        if self.raw_view and self.command.strip() in ("w", "wq"):
+            # R10.11b: milestone 5 ships `E` as a VIEW only - the validation
+            # a real save would need is `brain check`'s job (milestone 8),
+            # and building it twice is the format drift R3.1 exists to
+            # prevent. Refused by name, not spawned and not a generic
+            # "unknown verb" - there is no save path to almost-find.
+            self.notice = Notice(
+                "raw source has no save path yet - E is a view only (R10.11b)", True)
+            self._render_modeline()
+            return
         try:
             parsed = grammar.parse_line(self.command)
         except BrainError as exc:
@@ -1336,4 +1640,199 @@ class BrainApp(App):
     def action_nav_bottom(self) -> None:
         tree_widget = self.query_one("#tree", Tree)
         tree_widget.move_cursor_to_line(tree_widget.last_line)
+
+    # -- acting (R10.3 "acting", R10.7, R10.10, R10.10a, R10.11b) -------
+    # Every handler below ends in one `run_brain` call (or, for `e`/`d`/`s`/
+    # `H`/`Q`/`/`, sets up a prompt whose `⏎` does). None of them touches a
+    # `Doc` or `git` - the selector math (which open action, which index) is
+    # the only thing computed here; the verb itself validates and writes.
+
+    def _project_at_cursor(self):
+        """The project `s`/`H` set a field on: `self.selected` when it is a
+        project (`status set`/`health set` are project-only verbs, R6.2),
+        else `None`."""
+        if self.selected is not None and getattr(self.selected, "kind", None) == "project":
+            return self.selected
+        return None
+
+    def _focused_open_action(self):
+        """`(project, task, index)` for the detail pane's focused line,
+        where `index` is the task's 1-based position among the project's
+        OPEN actions - the same number `action done`'s own selector takes
+        (R6.2), derived from `Project.open_actions()` rather than the file's
+        line number, which moves under the agent's writes in the other pane.
+
+        `None` when there is nothing to act on this way: the tree has focus,
+        the focused row names no task, the task is already done (not
+        addressable by this index - it is not in `open_actions()`), or the
+        entity is not a project."""
+        found = self.focused_line
+        if found is None:
+            return None
+        entity, _lineno, task = found
+        if task is None or task.done or getattr(entity, "kind", None) != "project":
+            return None
+        for i, open_task in enumerate(entity.open_actions()):
+            if open_task.lineno == task.lineno:
+                return entity, task, i + 1
+        return None
+
+    @_guarded
+    def action_tick(self) -> None:
+        """`x`: `action done <project> <index>` (R10.3's table)."""
+        found = self._focused_open_action()
+        if found is None:
+            self.notice = Notice(
+                "x ticks the focused open action - focus one with Tab, then j/k", True)
+            self._render_modeline()
+            return
+        project, _task, index = found
+        rc, out, err = self.run_brain(["action", "done", project.slug, str(index)])
+        if rc != 0:
+            self.notice = Notice(_first_line(err) or "brain exited {}".format(rc), True)
+            self._render_modeline()
+            return
+        self._finish_write(out)
+
+    @_guarded
+    def action_edit_line(self) -> None:
+        """`e` (R10.10, R10.10a): an open action's INSERT buffer starts at
+        its own text - "the line becomes an INSERT buffer where it sits" -
+        and `⏎` sends `action edit <project> <index> -- <new text>`. Any
+        other focused line sends nothing and names what is editable, per
+        the ruling: no verb edits an arbitrary line by position."""
+        found = self._focused_open_action()
+        if found is None:
+            self.notice = Notice(
+                "e edits an open action in place - only actions are editable "
+                "this way (R10.10a)", True)
+            self._render_modeline()
+            return
+        project, task, index = found
+        self._pending = ("edit", project.slug, index)
+        self.buffer = task.text
+        self.prompt = "edit:"
+        self._enter(INSERT)
+
+    @_guarded
+    def action_toggle_raw(self) -> None:
+        """`E` (R10.11, R10.11b): toggle the raw-source view. A view only -
+        milestone 5 ships no save path, and `_run_command` refuses `:w`
+        here by name rather than silently doing nothing."""
+        if self.selected is None:
+            return
+        self.raw_view = not self.raw_view
+        self._detail_cursor = None
+        self._render_detail()
+        self._render_modeline()
+
+    @_guarded
+    def action_due_prompt(self) -> None:
+        """`d`: prompts `due:`, `⏎` sends `action due <project> <index> --to
+        <date>`. Same selector rule as `x`/`e` - an open action must be
+        focused first."""
+        found = self._focused_open_action()
+        if found is None:
+            self.notice = Notice(
+                "d sets the due date of the focused open action - focus one first", True)
+            self._render_modeline()
+            return
+        project, _task, index = found
+        self._pending = ("due", project.slug, index)
+        self.buffer = ""
+        self.prompt = "due:"
+        self._enter(INSERT)
+
+    @_guarded
+    def action_status_prompt(self) -> None:
+        """`s`: prompts `status:`, `⏎` sends `status set <project>
+        <status>` against the SELECTED project (not a focused line - status
+        is a field on the entity, not one line of it)."""
+        project = self._project_at_cursor()
+        if project is None:
+            self.notice = Notice("s sets a project's status - select a project first", True)
+            self._render_modeline()
+            return
+        self._pending = ("status", project.slug, None)
+        self.buffer = ""
+        self.prompt = "status:"
+        self._enter(INSERT)
+
+    @_guarded
+    def action_health_prompt(self) -> None:
+        """`H`: prompts `health:`, `⏎` sends `health set <project>
+        <health>`, same target rule as `s`."""
+        project = self._project_at_cursor()
+        if project is None:
+            self.notice = Notice("H sets a project's health - select a project first", True)
+            self._render_modeline()
+            return
+        self._pending = ("health", project.slug, None)
+        self.buffer = ""
+        self.prompt = "health:"
+        self._enter(INSERT)
+
+    @_guarded
+    def action_undo(self) -> None:
+        """`u`: `undo` (§11.5) - one more git commit, forward only, that
+        reverts the last one. No prompt: there is nothing to type."""
+        rc, out, err = self.run_brain(["undo"])
+        if rc != 0:
+            self.notice = Notice(_first_line(err) or "brain exited {}".format(rc), True)
+            self._render_modeline()
+            return
+        self._finish_write(out)
+
+    @_guarded
+    def action_queue_request(self) -> None:
+        """`Q`: prompts `request:`, `⏎` sends `request add -- <text>` - a
+        job for the agent in `_request.md`, never run here."""
+        self._pending = ("request", None, None)
+        self.buffer = ""
+        self.prompt = "request:"
+        self._enter(INSERT)
+
+    @_guarded
+    def action_search_prompt(self) -> None:
+        """`/`: prompts `search:`, `⏎` sends `search --json -- <query>`
+        (R6.7, R8.4.1) and `_run_search` replaces the detail pane with the
+        grouped hits."""
+        self._pending = ("search", None, None)
+        self.buffer = ""
+        self.prompt = "search:"
+        self._enter(INSERT)
+
+    @_guarded
+    def action_next_hit(self) -> None:
+        """`n`: the next search hit. A no-op with nothing to search."""
+        if not self.search_hits:
+            return
+        self.search_cursor = (self.search_cursor + 1) % len(self.search_hits)
+        self._render_detail()
+
+    @_guarded
+    def action_prev_hit(self) -> None:
+        """`N`: the previous search hit."""
+        if not self.search_hits:
+            return
+        self.search_cursor = (self.search_cursor - 1) % len(self.search_hits)
+        self._render_detail()
+
+    @_guarded
+    def action_help(self) -> None:
+        """`?`: the key map (11-help.png). Any key closes it."""
+        self.push_screen(HelpScreen())
+
+    @_guarded
+    def action_maybe_quit(self) -> None:
+        """`Z`: the first half of `ZZ` (R10.3's table). `check_action`
+        clears `_pending_z` on any OTHER action, so a stray `Z` followed by
+        something else never quits on the next, unrelated `Z`."""
+        if self._pending_z:
+            self._pending_z = False
+            self.exit()
+            return
+        self._pending_z = True
+        self.notice = Notice("Z again to quit", False)
+        self._render_modeline()
 

@@ -362,3 +362,290 @@ async def test_a_failing_poll_does_not_take_the_app_down(brain_repo, monkeypatch
         await pilot.pause(1.5)
         assert pilot.app.is_running
         assert pilot.app.buffer == "precious"
+
+
+# -- Task 4: acting keys, search, help, quit (R10.3, R10.7, R10.7a, R10.10,
+# R10.10a, R10.11, R10.11b, A11e). Every write is one `run_brain` call and
+# every test asserts the exact argv - the whole point of the seam Task 3
+# built is that nothing above it has to know how `brain` parses a line.
+
+def _detail(pilot) -> str:
+    return str(pilot.app.query_one("#detail").render())
+
+
+def _focus_open_action(pilot) -> None:
+    """Tab into the detail pane and land the cursor on the seeded fixture's
+    one open action: acme-migration's "Confirm the DNS cutover window with
+    Sara" (index 1 - it is the project's only OPEN action; "Migrate the
+    reporting service" is already ticked, so it is not addressable this
+    way). acme-migration is the tree's default selection."""
+    app = pilot.app
+    app.query_one("#detail").focus()
+    idx = next(i for i, (_lineno, task) in enumerate(app._detail_lines)
+               if task is not None and not task.done)
+    app._detail_cursor = idx
+    app._render_detail()
+
+
+@pytest.mark.asyncio
+async def test_x_ticks_the_focused_open_action(brain_repo, monkeypatch):
+    """`x` on an open action -> `action done <project> <index>` (R10.3's
+    table), the index being the 1-based position among OPEN actions
+    (R6.2) - not the file's line number."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "ticked it", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        _focus_open_action(pilot)
+        await pilot.press("x")
+    assert sent == [["action", "done", "acme-migration", "1"]]
+
+
+@pytest.mark.asyncio
+async def test_x_on_a_non_action_line_sends_nothing(brain_repo, monkeypatch):
+    """`x` needs a focused OPEN action; the tree has focus by default, so
+    there is no focused line at all yet."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "ok", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("x")
+        assert "x ticks" in _modeline(pilot)
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_e_edits_the_focused_action_in_place(brain_repo, monkeypatch):
+    """`e` on an open action (R10.10): the INSERT buffer starts AT the
+    line's own text (06-editing.png) - "the line becomes an INSERT buffer
+    where it sits" - and `⏎` sends `action edit <project> <index> --
+    <new text>` (R10.10a)."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "edited", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        _focus_open_action(pilot)
+        await pilot.press("e")
+        assert pilot.app.mode == "INSERT"
+        assert pilot.app.buffer == "Confirm the DNS cutover window with Sara"
+        assert "edit:" in _modeline(pilot)
+        await pilot.press(*(["backspace"] * len(pilot.app.buffer)))
+        await pilot.press(*"Confirm the DNS cutover window with Sara", "enter")
+    assert sent == [["action", "edit", "acme-migration", "1",
+                     "--", "Confirm the DNS cutover window with Sara"]]
+
+
+@pytest.mark.asyncio
+async def test_e_on_a_non_action_line_sends_nothing(brain_repo, monkeypatch):
+    """R10.10a's ruling: `e` on any other line sends nothing and the
+    modeline names what is editable - no verb edits an arbitrary line by
+    position. The detail pane's default cursor (row 0) is the title, not
+    an action."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "ok", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("tab", "e")
+        assert pilot.app.mode == "NORMAL"
+        assert "only actions are editable" in _modeline(pilot)
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_d_prompts_for_a_due_date(brain_repo, monkeypatch):
+    """`d` then a date -> `action due <project> <index> --to <date>`."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "due", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        _focus_open_action(pilot)
+        await pilot.press("d")
+        assert pilot.app.mode == "INSERT" and "due:" in _modeline(pilot)
+        await pilot.press(*"2026-09-20", "enter")
+    assert sent == [["action", "due", "acme-migration", "1", "--to", "2026-09-20"]]
+
+
+@pytest.mark.asyncio
+async def test_s_prompts_for_a_status(brain_repo, monkeypatch):
+    """`s` then a status -> `status set <project> <status>`, against the
+    SELECTED project - no focused line is needed, status is a field."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "set", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("s")
+        assert pilot.app.mode == "INSERT" and "status:" in _modeline(pilot)
+        await pilot.press(*"blocked", "enter")
+    assert sent == [["status", "set", "acme-migration", "blocked"]]
+
+
+@pytest.mark.asyncio
+async def test_H_prompts_for_a_health(brain_repo, monkeypatch):
+    """`H` then a health -> `health set <project> <health>`."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "set", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("H")
+        assert pilot.app.mode == "INSERT" and "health:" in _modeline(pilot)
+        await pilot.press(*"red", "enter")
+    assert sent == [["health", "set", "acme-migration", "red"]]
+
+
+@pytest.mark.asyncio
+async def test_u_undoes(brain_repo, monkeypatch):
+    """`u` -> `undo` (§11.5), no prompt - there is nothing to type."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "undid abc1234", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("u")
+        assert "undid" in _modeline(pilot)
+    assert sent == [["undo"]]
+
+
+@pytest.mark.asyncio
+async def test_Q_queues_a_request(brain_repo, monkeypatch):
+    """`Q` then text -> `request add -- <text>`."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "queued", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("Q")
+        assert pilot.app.mode == "INSERT" and "request:" in _modeline(pilot)
+        await pilot.press(*"chase finance for the codes", "enter")
+    assert sent == [["request", "add", "--", "chase finance for the codes"]]
+
+
+@pytest.mark.asyncio
+async def test_slash_searches_and_groups_results_by_kind(brain_repo, monkeypatch):
+    """`/` prompts, `⏎` sends `search --json -- <query>`; results replace
+    the detail pane grouped by kind (07-search.png)."""
+    import json as _json
+    sent = []
+
+    def fake_run(self, argv, stdin=None):
+        sent.append(argv)
+        hits = [
+            {"kind": "project", "slug": "acme-migration", "where": "title",
+             "line": "Acme - Azure migration"},
+            {"kind": "stakeholder", "slug": "ann", "where": "title", "line": "Ann"},
+        ]
+        return 0, _json.dumps(hits), ""
+    monkeypatch.setattr(BrainApp, "run_brain", fake_run)
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("/")
+        assert pilot.app.mode == "INSERT" and "search:" in _modeline(pilot)
+        await pilot.press(*"acme", "enter")
+        assert pilot.app.mode == "NORMAL"
+        detail = _detail(pilot)
+        assert "PROJECTS" in detail and "STAKEHOLDERS" in detail
+        assert "acme-migration" in detail and "ann" in detail
+        assert pilot.app.search_cursor == 0
+        await pilot.press("n")
+        assert pilot.app.search_cursor == 1
+        await pilot.press("n")
+        assert pilot.app.search_cursor == 0, "n wraps"
+        await pilot.press("N")
+        assert pilot.app.search_cursor == 1, "N moves backward"
+        await pilot.press("escape")
+        assert pilot.app.search_hits is None
+    assert sent == [["search", "--json", "--", "acme"]]
+
+
+@pytest.mark.asyncio
+async def test_question_mark_shows_help_and_any_key_returns(brain_repo):
+    """`?` -> the key map (11-help.png); any key closes it, including a
+    priority binding (`escape`/`tab`) that never reaches the screen's own
+    `on_key`."""
+    from brain.tui import HelpScreen
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("?")
+        assert isinstance(pilot.app.screen, HelpScreen)
+        assert "NORMAL" in str(pilot.app.screen.query_one("#help-body").render())
+        await pilot.press("x")
+        assert not isinstance(pilot.app.screen, HelpScreen)
+        await pilot.press("?")
+        assert isinstance(pilot.app.screen, HelpScreen)
+        await pilot.press("escape")
+        assert not isinstance(pilot.app.screen, HelpScreen)
+
+
+@pytest.mark.asyncio
+async def test_ZZ_quits(brain_repo):
+    """`ZZ` -> the app exits. A lone `Z` does nothing yet."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("Z")
+        assert pilot.app.is_running
+        await pilot.press("Z")
+        assert not pilot.app.is_running
+
+
+@pytest.mark.asyncio
+async def test_E_shows_raw_source_and_refuses_w(brain_repo, monkeypatch):
+    """`E` toggles a raw-source view (R10.11); `:w` inside it is refused
+    naming R10.11b - no save path exists and none may be added, so nothing
+    is ever sent to `run_brain` for it."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "ok", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        before = _detail(pilot)
+        await pilot.press("E")
+        assert pilot.app.raw_view is True
+        after = _detail(pilot)
+        assert "project: Acme" in after, "the raw front matter is now visible"
+        assert "project: Acme" not in before, "the rendered view never showed it"
+        await pilot.press(":", "w", "enter")
+        assert "R10.11b" in _modeline(pilot)
+        assert pilot.app.raw_view is True, "the refusal does not silently leave the view"
+        await pilot.press("escape", "E")
+        assert pilot.app.raw_view is False
+    assert sent == [], "no verb exists for this - nothing may be spawned"
+
+
+@pytest.mark.asyncio
+async def test_ctrl_r_is_unbound(brain_repo, monkeypatch):
+    """R10.7a: redo does not exist at milestone 5, and `Ctrl+R` is left
+    unbound rather than bound to a "not yet" message - it does nothing at
+    all, deliberately, so the key does not teach the user to keep pressing
+    it. (R10.7's exception from the pre-amendment table never happened.)"""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "ok", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        mode_before = pilot.app.mode
+        await pilot.press("ctrl+r")
+        assert pilot.app.is_running
+        assert pilot.app.mode == mode_before
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_ctrl_q_and_ctrl_c_do_not_quit(brain_repo):
+    """Textual's own `App.BINDINGS` ships `ctrl+q` (quit, priority) and
+    `ctrl+c` (help_quit) - a base class's `BINDINGS` merges into a
+    subclass's by default (`DOMNode._merge_bindings` walks the MRO), so
+    declaring `BrainApp`'s own list is not enough on its own to keep R10.2's
+    "no Ctrl chords anywhere" true; without `inherit_bindings=False` on the
+    class, `ctrl+q` really does quit the app - proven by pressing it before
+    that flag existed. `?`'s help screen, not `ctrl+*`, is where R10.7a's
+    reasoning for leaving keys unbound rather than half-built applies."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("ctrl+q")
+        assert pilot.app.is_running
+        await pilot.press("ctrl+c")
+        assert pilot.app.is_running
+
+
+def test_no_binding_anywhere_uses_a_ctrl_modifier():
+    """A11e, walked exhaustively rather than sampled: every key `BrainApp`
+    and every `Screen` it defines registers, none may contain `ctrl+` -
+    R10.7a leaves `Ctrl+R` unbound rather than special-cased, so the rule
+    is now absolute, not "all but one"."""
+    from brain.tui import BrainApp, CaptureScreen, HelpScreen
+    for cls in (BrainApp, CaptureScreen, HelpScreen):
+        for binding in cls.__dict__.get("BINDINGS", []):
+            key = binding.key if hasattr(binding, "key") else binding[0]
+            for part in key.split(","):
+                assert "ctrl+" not in part, "{}: {!r}".format(cls.__name__, key)
