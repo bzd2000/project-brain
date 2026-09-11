@@ -1310,10 +1310,13 @@ def _table_rows(lines: List[Tuple[int, str]], width: int) -> List[Row]:
             widths[i] = max(widths[i], len(c) + (2 if i == 0 else 0))
     rows: List[Row] = []
     header_seen = False
+    table_width = min(width, sum(widths) + 2 * (ncol - 1))
     for (lineno, _), cells, sep in zip(lines, parsed, is_sep):
         t = Text()
         if sep:
-            t.append(" " * min(width, sum(widths) + 2 * (ncol - 1)), style="underline " + LINE2)
+            # The `|---|` row is the rule under the header (R10.17, relaxed:
+            # box-drawing glyphs are the design's own).
+            t.append("─" * table_width, style=LINE2)
             rows.append(Row(t, lineno, None))
             continue
         cells = cells + [""] * (ncol - len(cells))
@@ -1334,6 +1337,11 @@ def _table_rows(lines: List[Tuple[int, str]], width: int) -> List[Row]:
                 t.append("{:>{w}}".format(c, w=widths[i]), style="bold " + FG)
             else:
                 t.append("{:<{w}}".format(c, w=widths[i]), style=MUTED)
+        if header_seen:
+            # 10-program.png parts the rows with a fainter rule; it rides on
+            # the row rather than being a row, so the cursor never lands on it.
+            t.append("\n")
+            t.append("─" * table_width, style=LINE)
         header_seen = True
         rows.append(Row(t, lineno, None))
     return rows
