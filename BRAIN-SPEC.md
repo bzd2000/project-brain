@@ -924,11 +924,32 @@ width. The modeline is never hidden. Minimum usable size 60×16.
 **R10.7** `Ctrl+R` for redo is the one exception to R10.2, because vim users
 expect it. Nothing else uses a chord.
 
+**R10.7a Redo is a second revert, never history rewriting.** R11.4 forbids
+`reset` and `amend`, so `brain redo` must revert the most recent `Brain-Undo`
+commit that has not itself been reverted — one more commit, forward only,
+same as everything else. It does not exist at milestone 5; `Ctrl+R` is left
+unbound rather than bound to a message, because a key that answers "not yet"
+teaches the user to stop pressing it. Built when a week of use shows `u`
+being pressed one time too many, and not before.
+
 **R10.8 COMMAND mode maps one-to-one onto the CLI verbs of §6.1.** `:log`,
 `:status`, `:agenda`, `:met`, `:inbox` and the rest are the same verbs with the
 same grammar and the same resolution rules — one implementation, two front doors.
 Tab completes verbs, then slugs. There is no command available in the TUI that
 is not available from the shell.
+
+**R10.8a Three argv spellings are transport, not verb semantics, and are not
+part of the grammar.** `--json` chooses an output encoding for a caller that
+is a program; `-f -` names standard input; `--dry-run` belongs to `apply`,
+which reads a whole document rather than a line. None of the three means
+anything typed into a modeline, so COMMAND mode does not offer them and R10.8
+is not weakened by their absence. Everything else a verb accepts is a grammar
+flag and works identically from both front doors — including `check
+--authored`, which milestone 3 implemented as an argv-only spelling because
+`split_flags` requires every `--name` to take a value. That is corrected in
+milestone 5 by declaring `authored` a **boolean flag** on `check`, so the
+grammar knows it takes none. Until then `:check --authored` is a grammar
+error, which is exactly the two-front-doors drift R10.8 forbids.
 
 ### 10.4 Rendered and raw
 
@@ -949,6 +970,16 @@ is **validated before it is written**: front matter must parse, the five section
 must be present and in order, action syntax must be intact. A save that would
 break the format is rejected with the reason, and nothing is written. This is
 the escape hatch for structural fixes, not the daily path.
+
+**R10.11b Raw-source *saving* waits for `brain check`.** The validation R10.11
+describes — front matter parses, the five sections are present and in order,
+action syntax is intact — is `brain check`'s own job (§9.3, milestone 8), and
+building it twice would be the format drift R3.1 exists to prevent. So
+milestone 5 ships `E` as a raw-source **view** (which R10.12 wants regardless)
+and `:w` in that view is refused with a message naming this requirement.
+Line-level editing (`e`, R10.10) is the daily path and needs no validator,
+because it goes through `Doc`'s own methods. A structural fix meanwhile is
+done from the shell, where `check --authored` will flag it as expected.
 
 **R10.11a** A leading `#` H1 is optional on every entity type — §4.2 shows one,
 §4.3 to §4.5 do not — and validation neither requires it nor strips it. `Doc`
@@ -1014,6 +1045,14 @@ Poll mtimes once a second and refresh; never hold a file open; never cache acros
 a redraw. A marker in the modeline shows when something changed underneath.
 If the user is mid-edit in raw mode when the file changes on disk, warn on save
 rather than silently overwriting.
+
+**R10.18a A refused write is a normal outcome.** Every TUI write shells out
+to `brain`, which takes the single-writer lock (R11.7). While the agent in the
+other pane is mid-`apply`, that write is refused naming the holder (A15). The
+TUI shows the refusal in the modeline and keeps the typed text (R10.3's rule
+applies: nothing typed is ever discarded by anything but an explicit cancel),
+so the user retries with `⏎` a moment later. This is not R10.19's exception
+path; it is the design working as intended and must read that way.
 
 **R10.19** An exception in a key handler produces a message in the modeline and
 nothing more — never a crash. Textual restores the terminal on exit.

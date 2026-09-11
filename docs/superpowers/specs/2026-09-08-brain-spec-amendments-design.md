@@ -224,3 +224,41 @@ an explicit `brain build` would leave every brain carrying stale roll-ups betwee
 builds with nothing to say so — the same silent-staleness failure R4.8.2 argues
 against, but in the one place it actually matters. R4.3.1a makes the write that
 invalidates a roll-up regenerate it in the same commit.
+
+## Milestone 5 — what the TUI needs that does not exist yet (2026-09-11)
+
+Read against the code as it stands after milestone 4, §10 assumes four things
+that are not true. Each is a small amendment; the alternative was discovering
+them mid-build.
+
+**R10.8 was already false.** "One implementation, two front doors" — but
+`cli.py` strips `--authored`, `--json` and `-f -` from argv before the grammar
+sees them, so `:check --authored` in COMMAND mode is a grammar error. Measured:
+`printf 'check --authored\n' | brain apply --dry-run` refuses with `--authored
+needs a value`. Two of the three are transport, not semantics — `--json` picks
+an encoding for a caller that is a program, `-f -` names stdin — and mean
+nothing in a modeline, so **R10.8a** excludes them from the grammar on purpose.
+`--authored` is a real flag and is fixed by declaring it boolean.
+
+**R10.11 needs a validator that does not exist.** Raw-source save must check
+front matter, section order and action syntax before writing. That is `brain
+check`'s own job, unbuilt until milestone 8; building it twice would be the
+format drift R3.1 exists to prevent. **R10.11b** ships `E` as a raw *view*,
+refuses `:w` by name, and defers save until `check` exists. `e` — the daily
+path — is unaffected.
+
+**There is no redo.** `brain undo` exists; `Ctrl+R` maps to a verb that does
+not. R11.4 forbids `reset` and `amend`, so redo must be a second revert
+(**R10.7a**). Deferred, and `Ctrl+R` left *unbound* rather than bound to a
+message — a key that says "not yet" teaches the user to stop pressing it.
+
+**A refused write is normal, not exceptional.** The TUI shells out to `brain`,
+which takes the lock; while the agent is mid-`apply`, the write is refused
+(A15). R10.19 covers exceptions; this is the design working. **R10.18a** says
+so, and says the typed text survives the refusal.
+
+Two things checked and found already right: the A11 seam test
+(`test_model_and_entities_do_not_import_textual`) exists, and R10.18's "poll
+mtimes, never cache across a redraw" is the same anti-cache position as
+R4.8.1a — the TUI re-reads on change, and at the design's target size a full
+scan is ~2 ms.
