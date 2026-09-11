@@ -262,3 +262,38 @@ Two things checked and found already right: the A11 seam test
 mtimes, never cache across a redraw" is the same anti-cache position as
 R4.8.1a — the TUI re-reads on change, and at the design's target size a full
 scan is ~2 ms.
+
+## Milestone 4 — recorded, not fixed (2026-09-11)
+
+From the final review, which landed after the merge. Fixed on master: the
+`link` stale roll-up (H1), the untested sanitisers (H2), the uncapped lines
+(H3), and "oldest dropped" being false for append sections (M1).
+
+Deliberately left, each with its reason:
+
+- **Slug-first budget (ruling T3-b) is not implemented.** At 17 projects plus
+  30 notes the digest shows 7 with `+10 more projects`; slug-only lines for
+  all 17 would fit. The A3 test accepts hiding whenever `+N more` is present,
+  which is the ruling's *fallback*, not its priority. Deferred because it only
+  bites at a scale the brain is nowhere near, and the right shape depends on
+  how the agent actually uses the digest - milestone 6.
+- **Slugs are not passed through `_safe`.** Brain's own slugs are `[a-z0-9-]`;
+  forging one needs a hand-authored filename like `bob(chief), fake-vp(….md`.
+  Lower consequence than a role forgery. Milestone 6, with the other
+  hand-edit hardening.
+- **`(+N more)` for actions/pending keeps the newest** - fixed - but a
+  positional `zip` diff in two roll-up tests is blind once the section changes
+  length. They pass for the right reason today; recorded so nobody trusts
+  them as a regression net for a write that lands outside `## Roll-up`.
+- **A read-only program file blocks every write to every project in it**, with
+  a misleading "rollback incomplete" message though the tree is in fact fully
+  restored. Rare, and the fix is a message, not a mechanism.
+- **`search` skips `## Next agenda`** under R4.3.1's duplicate reasoning, but
+  Next agenda is agent-*written* (R9.2) and its lines exist nowhere else. Revisit
+  when agendas exist (milestone 7); today the section is always empty.
+- **`_safe` strips non-ASCII** (`Zoë` → `Zo`). Cosmetic in a digest, wrong in
+  spirit. Widen the allow-list to letters of any script when the TUI shows
+  what the digest actually needs to look like.
+- `brain context --for inbox` - R6.3's own printed command - errors, per the
+  ruling that `--for` takes an entity. The spec example is a stray and should
+  say so; one sentence, milestone 5.
