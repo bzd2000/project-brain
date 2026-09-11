@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Status: milestone 3 done
+## Status: milestone 4 done
 
 `brain/model.py` (the `Doc` class), `brain/entities.py` (the four entity types
 plus notes), `brain/_yaml.py` (front-matter parsing), `brain/git.py` (commit,
@@ -11,18 +11,29 @@ checkpoint/restore, undo, `log`/`diff`, the R11.4 guard) and `brain/lock.py`
 discovery and `brain init`), `brain/grammar.py` (the R6.4 line grammar),
 `brain/resolve.py` (reference resolution, R6.2), `brain/commands.py` (the verb
 registry) and `brain/cli.py` (the argparse front door) now also exist, and
-every verb in §6.1 works from a terminal except `context`, `search`, `build`,
-the agenda verbs (`agenda material`, `agenda set`, `minutes add`, `met`),
-`check --fix` and `rewrite`. That is: `init`, `note add`, `note list`,
+every verb in §6.1 works from a terminal except the agenda verbs
+(`agenda material`, `agenda set`, `minutes add`, `met`), `check --fix` and
+`rewrite`. That is: `init`, `note add`, `note list`,
 `note show`, `note flag`, `note drop`, `log`, `action add`, `action done`,
 `action due`, `decision add`, `question add`, `status set`, `health set`,
 `field set`, `new`, `link`, `raise`, `request add`, `request list`,
-`request done`, `undo`, `check --authored`, and `apply` (with `--dry-run`,
+`request done`, `undo`, `check --authored`, `context`, `search`, `build`,
+and `apply` (with `--dry-run`,
 validated against a projected slug namespace so a batch may create an entity
 and reference it on a later line, R6.5.1/A18; one lock, one checkpoint, one
-commit, R6.5/A2; A15's two-process race is covered end to end). `index.py`,
+commit, R6.5/A2; A15's two-process race is covered end to end).
+
+Milestone 4 added `brain/digest.py` (`brain context`, R6.3), `brain/search.py`
+(`brain search`, R6.7), `brain/rollup.py` (`## Roll-up` regeneration and
+`brain build`, R4.3.1a) and `brain/tree.py` (one scan of the entity tree per
+command, R4.8.2). **`index.py` is deliberately not built** (R4.8.1a): it never
+crosses into the prompt, so it saves milliseconds and not one token, and
+nothing an agent reads is served from a cache. The TUI is its only plausible
+consumer - build it there against a measured need, or not at all.
+
 `tui.py`, `AGENTS.md` + `process inbox`, agendas, and `tidy`/`review`/`rewrite`
-are unbuilt - milestone 4 starts with `index.py`. Known gap, deferred to
+are unbuilt - **milestone 5 is the TUI, and START-HERE says to stop there and
+use it for a week with no agent at all before writing a line of `AGENTS.md`.** Known gap, deferred to
 milestone 6: `note add` does not yet refuse a body line that itself matches
 the `## <id> · <date> · <type>` header shape, so such a line is read back as a
 real note and advances the id counter - not reachable until `process inbox`
@@ -63,6 +74,11 @@ python -m pytest tests/test_stdlib_only.py -v        # the R3.3 seam
 .venv/bin/python -m brain --root ~/mybrain action done acme-portal-rebuild 1
 .venv/bin/python -m brain --root ~/mybrain raise ann-peeters --ref acme-portal-rebuild -- Budget impact of the delay
 .venv/bin/python -m brain --root ~/mybrain check --authored
+
+.venv/bin/python -m brain --root ~/mybrain context
+.venv/bin/python -m brain --root ~/mybrain context --for acme-portal-rebuild
+.venv/bin/python -m brain --root ~/mybrain search -- cutover
+.venv/bin/python -m brain --root ~/mybrain build
 
 .venv/bin/python -m brain --root ~/mybrain apply --dry-run <<'EOF'
 new project -- Acme portal rebuild
@@ -150,7 +166,11 @@ Violating any of these silently breaks the design's economics or its trust model
 | `brain/grammar.py` | The line grammar of R6.4 | stdlib |
 | `brain/resolve.py` | Reference resolution (R6.2) | stdlib |
 | `brain/commands.py` | The command verbs and their execution | stdlib |
-| `brain/index.py` | `_index.json`, digests, search index | stdlib |
+| `brain/digest.py` | `brain context` — the ~200-token digest (R6.3) | stdlib |
+| `brain/search.py` | `brain search` (R6.7) | stdlib |
+| `brain/rollup.py` | `## Roll-up` regeneration (R4.3.1a) | stdlib |
+| `brain/tree.py` | one entity-tree scan per command (R4.8.2) | stdlib |
+| ~~`brain/index.py`~~ | deferred until something needs it (R4.8.1a) | — |
 | `brain/git.py` | commit, checkpoint, diff, revert | stdlib |
 | `brain/lock.py` | the single-writer lock of R11.7 | stdlib |
 | `brain/cli.py` | argparse entry point — `brain …` | stdlib |
