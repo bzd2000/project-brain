@@ -90,6 +90,11 @@ class Notice(NamedTuple):
     error: bool
 
 
+def _clip(text: str, width: int) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= width else text[: width - 1] + "\u2026"
+
+
 def _first_line(text: str) -> str:
     for line in text.splitlines():
         if line.strip():
@@ -953,6 +958,9 @@ class BrainApp(App, inherit_bindings=False):
         self.selected = None
         self.mode = NORMAL
         self.buffer = ""          # INSERT text; survives Esc (R10.3)
+        self._stash = None        # an `i` note parked while a prompt runs (C2)
+        self._prompt_kept = {}    # a prompt's half-typed value, by kind, after Esc
+        self._quit_armed = False  # ZZ warned about unsent text; next ZZ discards
         self.command = ""         # COMMAND text; survives Esc and a refusal
         self.note_type = ent.NOTE_TYPES[0]
         self.notice: Optional[Notice] = None
@@ -1004,8 +1012,15 @@ class BrainApp(App, inherit_bindings=False):
         env["PYTHONIOENCODING"] = "utf-8"
         cmd = [sys.executable, "-m", "brain", "--root", str(self.root), *argv]
         feed = {"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                              env=env, **feed)
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  encoding="utf-8", env=env, timeout=30, **feed)
+        except subprocess.TimeoutExpired:
+            # A hung child must not hang the app: no key would work, not even
+            # ZZ (B2). Thirty seconds is far past any real write; the lock
+            # fails fast, so this is a stalled disk or a bug, and the user
+            # needs the terminal back more than the write.
+            return 1, "", "brain: no answer after 30s - the write was abandoned"
         return proc.returncode, proc.stdout, proc.stderr
 
     # -- composition --------------------------------------------------
@@ -1058,7 +1073,7 @@ class BrainApp(App, inherit_bindings=False):
         tree_widget.styles.width = "100%" if narrow else 36
 
     # -- reading the tree on disk --------------------------------------
-    def reload(self, initial: bool = False) -> None:
+    def reload(self, initial: bool = False, mtimes=None) -> None:
         """Re-read `brain.tree.Tree(root)` from scratch and redraw
         everything. No lock, no `for_command` - the TUI is a reader
         (invariant 1); an agent writing from the other pane needs nothing
@@ -1140,7 +1155,16 @@ class BrainApp(App, inherit_bindings=False):
             _portfolio_summary(len(projects), n_open, n_blocked, n_overdue, len(notes))
         )
 
-        self._mtimes = self._scan_mtimes()
+        # The poller passes the scan it already did; a reload from elsewhere
+        # scans here - guarded, because the first version of this line was
+        # the second, unguarded stat() that could still take the app down
+        # (B1: the guard in `_poll` covered only the first scan).
+        if mtimes is None:
+            try:
+                mtimes = self._scan_mtimes()
+            except OSError:
+                mtimes = self._mtimes
+        self._mtimes = mtimes
         self._render_detail()
         self._render_modeline()
 
@@ -1173,7 +1197,7 @@ class BrainApp(App, inherit_bindings=False):
             return
         if current != self._mtimes:
             self._changed_marker = True
-            self.reload()
+            self.reload(mtimes=current)
 
     # -- selection & the detail pane -----------------------------------
     def on_tree_node_highlighted(self, event) -> None:
@@ -1372,6 +1396,15 @@ class BrainApp(App, inherit_bindings=False):
             return
         if self.mode != NORMAL:
             self.notice = None
+            if self._pending is not None:
+                # Esc from a prompt keeps BOTH texts (R10.3): the half-typed
+                # value is parked under its prompt kind so the same key finds
+                # it again, and the note that was parked when the prompt
+                # started comes back to the buffer for `i`.
+                self._prompt_kept[self._pending[0]] = self.buffer
+                self._pending = None
+                self.prompt = None
+                self._unstash_note()
             self._leave_to_normal()
             return
         if self.search_hits is not None:
@@ -1471,16 +1504,26 @@ class BrainApp(App, inherit_bindings=False):
         typing `d`, deciding not to, and hitting `⏎` on nothing is not a
         request to send `action due --to ''`.
         """
-        kind, slug, index = self._pending
+        kind, slug, ident = self._pending
         value = self.buffer
         if not value.strip():
             self._pending = None
             self.prompt = None
+            self._unstash_note()
             self._leave_to_normal()
             return
         if kind == "search":
             self._run_search(value)
             return
+        if kind in ("edit", "due"):
+            index = self._current_index(slug, ident)
+            if index is None:
+                # R10.18a's shape: a refusal, text kept, so the user can look
+                # and retry - not a write to whichever action now sits there.
+                self.notice = Notice(
+                    "that action moved or changed under you - re-select it and try again", True)
+                self._render_modeline()
+                return
         if kind == "edit":
             argv = ["action", "edit", slug, str(index), "--", value]
         elif kind == "due":
@@ -1498,7 +1541,7 @@ class BrainApp(App, inherit_bindings=False):
             self.notice = Notice(_first_line(err) or "brain exited {}".format(rc), True)
             self._render_modeline()
             return
-        self.buffer = ""
+        self._unstash_note()
         self.prompt = None
         self._pending = None
         self._finish_write(out)
@@ -1520,7 +1563,7 @@ class BrainApp(App, inherit_bindings=False):
         self.search_hits = hits
         self.search_query = query
         self.search_cursor = 0
-        self.buffer = ""
+        self._unstash_note()
         self.prompt = None
         self._pending = None
         self.notice = Notice(
@@ -1663,6 +1706,33 @@ class BrainApp(App, inherit_bindings=False):
             return self.selected
         return None
 
+    def _stash_note(self) -> None:
+        """A prompt (`e`, `d`, `s`, `H`, `Q`, `/`) is about to take over the
+        INSERT buffer. If it still holds a note the user typed with `i` and
+        kept with Esc, that note is not the prompt's to discard (R10.3 - C2:
+        every prompt stomped it silently). Park it; `_unstash_note` puts it
+        back when the prompt ends, so `i` finds it again."""
+        if self.buffer and self._stash is None:
+            self._stash = self.buffer
+
+    def _unstash_note(self) -> None:
+        if self._stash is not None:
+            self.buffer, self._stash = self._stash, None
+        else:
+            self.buffer = ""
+
+    def _current_index(self, slug, text):
+        """Re-find an open action by its exact text, RIGHT NOW, and return its
+        1-based index among the project's open actions - or None if it is
+        gone, done, or no longer unique. Read fresh from disk, never from the
+        tree the cursor was on: that tree is what went stale."""
+        path = Path(self.root) / "projects" / (slug + ".md")
+        project = ent.load(path)
+        if project is None:
+            return None
+        matches = [i for i, t in enumerate(project.open_actions()) if t.text == text]
+        return matches[0] + 1 if len(matches) == 1 else None
+
     def _focused_open_action(self):
         """`(project, task, index)` for the detail pane's focused line,
         where `index` is the task's 1-based position among the project's
@@ -1717,8 +1787,15 @@ class BrainApp(App, inherit_bindings=False):
             self._render_modeline()
             return
         project, task, index = found
-        self._pending = ("edit", project.slug, index)
-        self.buffer = task.text
+        # Identity, not position: the other pane can tick an earlier action
+        # while the user types, shifting every open-action index by one. An
+        # index captured now and sent on ⏎ would then edit a DIFFERENT action
+        # and report success (C3). `_current_index` re-finds the task by its
+        # text at commit time and refuses if it is gone or ambiguous.
+        self._pending = ("edit", project.slug, task.text)
+        self._stash_note()
+        kept = self._prompt_kept.pop('edit', None)
+        self.buffer = kept if kept is not None else task.text
         self.prompt = "edit:"
         self._enter(INSERT)
 
@@ -1745,9 +1822,11 @@ class BrainApp(App, inherit_bindings=False):
                 "d sets the due date of the focused open action - focus one first", True)
             self._render_modeline()
             return
-        project, _task, index = found
-        self._pending = ("due", project.slug, index)
-        self.buffer = ""
+        project, task, _index = found
+        self._pending = ("due", project.slug, task.text)
+        self._stash_note()
+        kept = self._prompt_kept.pop('due', None)
+        self.buffer = kept if kept is not None else ""
         self.prompt = "due:"
         self._enter(INSERT)
 
@@ -1762,7 +1841,9 @@ class BrainApp(App, inherit_bindings=False):
             self._render_modeline()
             return
         self._pending = ("status", project.slug, None)
-        self.buffer = ""
+        self._stash_note()
+        kept = self._prompt_kept.pop('status', None)
+        self.buffer = kept if kept is not None else ""
         self.prompt = "status:"
         self._enter(INSERT)
 
@@ -1776,7 +1857,9 @@ class BrainApp(App, inherit_bindings=False):
             self._render_modeline()
             return
         self._pending = ("health", project.slug, None)
-        self.buffer = ""
+        self._stash_note()
+        kept = self._prompt_kept.pop('health', None)
+        self.buffer = kept if kept is not None else ""
         self.prompt = "health:"
         self._enter(INSERT)
 
@@ -1796,7 +1879,9 @@ class BrainApp(App, inherit_bindings=False):
         """`Q`: prompts `request:`, `⏎` sends `request add -- <text>` - a
         job for the agent in `_request.md`, never run here."""
         self._pending = ("request", None, None)
-        self.buffer = ""
+        self._stash_note()
+        kept = self._prompt_kept.pop('request', None)
+        self.buffer = kept if kept is not None else ""
         self.prompt = "request:"
         self._enter(INSERT)
 
@@ -1806,7 +1891,9 @@ class BrainApp(App, inherit_bindings=False):
         (R6.7, R8.4.1) and `_run_search` replaces the detail pane with the
         grouped hits."""
         self._pending = ("search", None, None)
-        self.buffer = ""
+        self._stash_note()
+        kept = self._prompt_kept.pop('search', None)
+        self.buffer = kept if kept is not None else ""
         self.prompt = "search:"
         self._enter(INSERT)
 
@@ -1836,8 +1923,18 @@ class BrainApp(App, inherit_bindings=False):
         """`Z`: the first half of `ZZ` (R10.3's table). `check_action`
         clears `_pending_z` on any OTHER action, so a stray `Z` followed by
         something else never quits on the next, unrelated `Z`."""
+        unsent = self.buffer or self._stash or self.command
         if self._pending_z:
             self._pending_z = False
+            if unsent and not self._quit_armed:
+                # R10.3: quitting is not an explicit cancel. Say what would
+                # be lost and require one more ZZ, which is (C1).
+                self._quit_armed = True
+                self.notice = Notice(
+                    "unsent text: {!r} - ZZ again discards it, i or : sends it"
+                    .format(_clip(unsent, 40)), True)
+                self._render_modeline()
+                return
             self.exit()
             return
         self._pending_z = True

@@ -671,3 +671,119 @@ async def test_the_detail_cursor_survives_a_write(brain_repo, monkeypatch):
         await pilot.press("x")
         await pilot.press("x")   # the second one must ALSO know which action
     assert len(sent) == 2 and sent[0][:2] == ["action", "done"] == sent[1][:2], sent
+
+
+# -- the whole-branch review's four week-wasters ---------------------------
+
+async def test_zz_refuses_while_unsent_text_exists_then_discards_on_a_second_zz(brain_repo):
+    """C1, R10.3: quitting is not an explicit cancel. `i`, type, Esc, ZZ
+    exited with the note still only in memory."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("i", *"remember sara", "escape", "Z", "Z")
+        assert pilot.app.is_running, "first ZZ must refuse and say what would be lost"
+        assert "remember sara" in _modeline(pilot)
+        await pilot.press("Z", "Z")
+        assert not pilot.app.is_running, "the second ZZ is the explicit discard"
+
+
+async def test_a_prompt_does_not_clobber_a_kept_note(brain_repo, monkeypatch):
+    """C2, R10.3: every prompt key stomped the buffer. `i`, type, Esc, then
+    `d` - the note was gone. It is parked while the prompt runs and comes
+    back for `i`; Esc from the prompt keeps the half-typed value too."""
+    monkeypatch.setattr(BrainApp, "run_brain", lambda self, a, stdin=None: (0, "ok", ""))
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("i", *"remember sara", "escape")
+        _focus_open_action(pilot)
+        await pilot.press("d", *"2026-1", "escape")          # half a date, then Esc
+        await pilot.press("i")
+        assert pilot.app.buffer == "remember sara", pilot.app.buffer
+        await pilot.press("escape")
+        _focus_open_action(pilot)
+        await pilot.press("d")
+        assert pilot.app.buffer == "2026-1", "the half-typed date must survive Esc too"
+
+
+async def test_an_edit_lands_on_the_action_it_started_on(brain_repo, monkeypatch):
+    """C3: `e` captured an open-action INDEX at keypress. The other pane
+    ticking an earlier action shifts every index by one, and ⏎ then edited a
+    different action and reported success. The task is re-found by its text
+    at commit time; if it moved, the write is refused with the text kept."""
+    # The fixture project has ONE open action, so give it a second one
+    # through brain itself - a real write, so the file and the tree agree.
+    from brain import commands as c
+    from brain import grammar as gr
+    c.execute(brain_repo, gr.parse_line("action add acme-migration -- Second open action"))
+
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, a, stdin=None: (sent.append(a), (0, "ok", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        _focus_open_action(pilot)
+        app = pilot.app
+        # move to the SECOND open action
+        idx = [i for i, (_l, t) in enumerate(app._detail_lines) if t and not t.done][1]
+        app._detail_cursor = idx
+        app._render_detail()
+        await pilot.pause()          # focus lands on the next loop turn
+        project, task, index = app._focused_open_action()
+        assert index == 2 and task.text == "Second open action"
+        await pilot.press("e")
+        # the other pane ticks action 1 while the user is typing
+        path = brain_repo / "projects" / "acme-migration.md"
+        text = path.read_text(encoding="utf-8")
+        first = project.open_actions()[0].text
+        assert "- [ ] " + first in text
+        path.write_text(text.replace("- [ ] " + first, "- [x] " + first, 1), encoding="utf-8")
+        await pilot.pause(1.5)                                 # let the poll reload
+        await pilot.press(*" edited", "enter")
+    assert sent, "nothing was sent"
+    # the edit must land on the action it STARTED on - which is now index 1
+    assert sent[-1][:3] == ["action", "edit", "acme-migration"], sent[-1]
+    assert sent[-1][3] == "1", "stale index sent: {}".format(sent[-1])
+    assert sent[-1][-1].startswith("Second open action")
+
+
+async def test_reload_survives_a_file_vanishing_between_scans(brain_repo, monkeypatch):
+    """B1: `_poll` guarded its own scan; `reload()` scanned AGAIN, unguarded,
+    and a file the agent unlinked in between took the app down."""
+    # The raise must land in a reload that scans for ITSELF - the one after
+    # a write - not in the poller's scan, which was already guarded. The
+    # first version of this test raised inside the poller's call and stayed
+    # green with reload's guard removed: it proved the wrong path.
+    # The crash was ONLY reachable from the timer: a key handler's reload is
+    # already wrapped by `_guarded`. So: the poller's scan sees a change, and
+    # the scan reload then did for itself raises. Two fences now stop it -
+    # `_poll` passes its scan in so reload does not re-scan, and reload's own
+    # scan is guarded - so this test reddens only when BOTH are removed. That
+    # is acceptable: each alone is sufficient, and the test asserts the
+    # behaviour, not one mechanism.
+    countdown = {"n": -1}
+    real = BrainApp._scan_mtimes
+    def flaky(self):
+        if countdown["n"] > 0:
+            countdown["n"] -= 1
+        elif countdown["n"] == 0:
+            countdown["n"] = -1
+            raise FileNotFoundError("unlinked between glob and stat")
+        return real(self)
+    monkeypatch.setattr(BrainApp, "_scan_mtimes", flaky)
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("i", *"precious", "escape")
+        (brain_repo / "inbox.md").write_text("changed\n", encoding="utf-8")
+        countdown["n"] = 1          # next scan (the poll's) succeeds and sees the change;
+        await pilot.pause(1.6)      # the one after (reload's, if it scans) raises
+        assert pilot.app.is_running
+        assert pilot.app.buffer == "precious"
+
+
+async def test_a_hung_brain_does_not_hang_the_app(brain_repo, monkeypatch):
+    """B2: no timeout meant a stalled child froze every key, ZZ included."""
+    import subprocess as sp
+    def hang(*a, **k):
+        raise sp.TimeoutExpired(cmd=a[0], timeout=30)
+    monkeypatch.setattr(sp, "run", hang)
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("i", *"hello", "enter")
+        assert pilot.app.is_running
+        assert "abandoned" in _modeline(pilot)
+        assert pilot.app.buffer == "hello", "the text is kept for a retry"
