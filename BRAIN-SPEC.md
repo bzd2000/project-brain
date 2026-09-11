@@ -254,10 +254,10 @@ Why this programme exists and what "done" looks like.
 
 ## Roll-up
 <!-- generated: do not edit -->
-| Project | Status | Health | Open | Next |
-|---|---|---|---|---|
-| acme-migration | active | amber | 3 | Confirm the DNS cutover window |
-| dns-cutover | next | green | 2 | Book the change window |
+| Project | Status | Health | Open | Next | Due |
+|---|---|---|---|---|---|
+| acme-migration | active | amber | 3 | Confirm the DNS cutover window | 2026-09-11 |
+| dns-cutover | next | green | 2 | Book the change window | 2026-09-28 |
 
 ## Log
 - 2026-09-01 - Steering agreed to fund phase 2.
@@ -683,8 +683,17 @@ trailer** — otherwise the user's very first `brain check --authored` reports
 their entire brain as a violation (R11.6).
 
 **R6.7** `brain search -- <query>` matches tokens case-insensitively against slug,
-title, tags and section text, printing hits grouped by entity kind — one line
-each: kind, slug, the matching line. `--json` for the TUI. It reads entity files,
+title, tags, section text, **and the body of every unprocessed note**, printing
+hits grouped by **where the hit is** — projects, open actions, log & decisions,
+inbox, open questions — one line each: the owning slug (or note id), the
+matching line, and the right-hand fact the group carries (status, owner and
+due, `unprocessed`). `--json` for the TUI.
+
+*Design review, 2026-09-11:* an earlier draft grouped by entity kind and
+omitted notes. `07-search.png` groups by hit type and includes an INBOX group,
+and that is the more useful answer — a user searching "cutover" wants to know
+it is an open action, not that it lives in a project — so the spec now says
+what the screen shows. It reads entity files,
 which `brain context` never does, because it serves a human at a terminal and the
 TUI's `/`. It is not part of any agent job (§9) and so does not bear on A3.
 
@@ -856,6 +865,15 @@ feature seems to need one, it needs a letter or a `:` command instead.
 captured text — it leaves what was typed in the buffer. Only an explicit `⏎`
 commits and only an explicit cancel inside the full-screen pane discards.
 
+**R10.3a What "captured text" means.** A note typed with `i` or in the `o`
+pane is captured text: the user's words, not yet saved anywhere, and R10.3
+protects them absolutely. A **line edit** (`e`) and a **command line** (`:`)
+are not — the original line is still in the file, and a half-typed command
+saves nothing — so for those `Esc` **cancels**, as R10.10 already said and as
+`03-modes.png` and `06-editing.png` both show ("esc cancel"). The `d`/`s`/`H`
+prompts are command lines in this sense. One rule, stated once: *Esc keeps a
+note; Esc cancels an edit or a command.*
+
 ### 10.2 Layout
 
 ```
@@ -897,7 +915,7 @@ width. The modeline is never hidden. Minimum usable size 60×16.
 | `h` `l` | collapse / expand a program |
 | `g` `G` | top / bottom |
 | `Tab` | focus the detail pane; `j`/`k` then move within it; `Esc` returns to the tree |
-| `/` `n` `N` | search · next · previous match |
+| `/` `n` `N` | search · next · previous match; `↑` `↓` also move, `⏎` opens the hit (jumps the tree to its entity) |
 
 **NORMAL — capture**
 
@@ -1040,11 +1058,43 @@ they settle spacing, colour and density questions this document does not.
 | `11-help.png` | The key map as the user sees it |
 | `12-legend.png` | The colour and glyph system |
 
+**Known illustration artifacts** (design review, 2026-09-11) — parts of a
+screen that are the mockup's, not the app's: `06` renders the title `Acme —
+Azure migration` from a source reading `Acme - Azure migration` (the renderer
+never reformats, R10.12 — the file wins); `06` gives the detail pane a
+file-path header that `02`/`08`/`09`/`10` do not have; `07`'s modeline shows a
+COMMAND state pasted from `03`; `03`'s NORMAL card omits `H` (`11` is
+canonical); `08` colours `done 28 Aug` inside a minute's prose, which would
+mean parsing free text — it stays plain until a syntax exists. Three screens
+show things later milestones build (`:w save` — R10.11b; `:agenda` and NEXT
+AGENDA content — milestone 7; `n7` ids on pending lines — milestone 6): the
+app says so rather than pretending.
+
 **R10.16 Colour system.** A warm near-black ground; one teal accent for anything
 live or interactive; violet for people and boards; red, amber and green reserved
 strictly for state (blocked/overdue, at-risk/stale, done). Never use a state
 colour decoratively — if everything is coloured, the colours stop meaning
 anything. `12-legend.png` is the reference.
+
+**R10.16a Three rules the legend implies but does not state**, written down
+after a review of the screens (2026-09-11):
+
+- **Amber also means "due soon": an action or meeting within 7 days.** `02`
+  and `09` colour `in 4d` and `tomorrow` amber; `08` leaves `in 11d` teal. Seven
+  is the cutoff. Red stays for overdue.
+- **Stale (`~`) means no `updated:` change in 14 days.** The screens draw the
+  marker; nothing defined the threshold.
+- **A kind chip takes its kind's colour:** `PROJECT` by its status, `PROGRAM`
+  teal, `STAKEHOLDER` and `BOARD` violet. `GENERATED` is `--mut` with a
+  `--line2` border.
+
+**R10.16b Where the screens themselves break the legend**, the legend wins:
+the `-- COMMAND --` label is drawn violet in `03` and is teal (a mode is
+live); front-matter keys in the raw view are drawn violet in `06` and are
+`--mut`; agenda item numbers are drawn teal in `08`/`09` and are `--mut`.
+
+**R10.16c Dates are unpadded** — `1 Sep`, `12 Aug` — as `09` and `10` show;
+`02` and `06` zero-pad and are wrong.
 
 **R10.17** ~~Terminal chrome is drawn with borders, not box-drawing glyphs, so it
 does not depend on the user's font having good `U+2500` coverage.~~ **Relaxed
