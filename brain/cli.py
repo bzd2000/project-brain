@@ -73,6 +73,17 @@ def main(argv=None) -> int:
 
         where = root.find_root(args.root)
 
+        if args.rest[0] == "tui":
+            # A lazy import, not a module-level one: `textual` is the `tui`
+            # extra, not `dev` (R3.3), and cli.py is one of the modules
+            # `tests/test_stdlib_only.py` imports with `textual` blocked. The
+            # import only runs when `tui` is the verb actually invoked, so
+            # every other verb keeps working on a machine that never
+            # installed it.
+            from .tui import BrainApp
+            BrainApp(where).run()
+            return 0
+
         if args.rest[0] == "apply":
             # `apply`'s input is a whole document read from stdin, not one
             # line of argv, so it is handled here rather than falling through
