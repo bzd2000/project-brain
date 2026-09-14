@@ -25,8 +25,12 @@ SECTION = "Roll-up"
 # here is one `brain check` can recompute from the projects themselves - which
 # is what makes it safe to overwrite wholesale (R4.3.1's machine-owned rule)
 # rather than needing the surgical line-level edits R5.1 demands of user text.
-_HEADER = ("| Project | Status | Health | Open | Next |",
-           "|---|---|---|---|---|")
+#
+# *Design review, 2026-09-11 (§4.3):* `Due` - the next open action's due
+# date, blank if none - joins the table; `10-program.png` draws it and the
+# spec had not caught up.
+_HEADER = ("| Project | Status | Health | Open | Next | Due |",
+           "|---|---|---|---|---|---|")
 
 
 def _cell(text) -> str:
@@ -54,11 +58,12 @@ def table(tree, program_slug: str) -> str:
     for p in sorted(projects, key=lambda p: p.slug):
         open_actions = p.open_actions()
         nxt = _cell(open_actions[0].text) if open_actions else ""
-        rows.append("| {} | {} | {} | {} | {} |".format(
+        due = _cell(open_actions[0].due) if open_actions and open_actions[0].due else ""
+        rows.append("| {} | {} | {} | {} | {} | {} |".format(
             _cell(p.slug), _cell(p.status), _cell(p.health),
-            len(open_actions), nxt))
+            len(open_actions), nxt, due))
     if not projects:
-        rows.append("| _(no projects declare this program)_ |  |  |  |  |")
+        rows.append("| _(no projects declare this program)_ |  |  |  |  |  |")
     return "\n".join(rows)
 
 

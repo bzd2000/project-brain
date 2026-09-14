@@ -20,7 +20,9 @@ async def test_the_tree_groups_by_kind_and_programs_expand(brain_repo):
     ungrouped ones), STAKEHOLDERS, BOARDS."""
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         labels = [str(n.label) for n in pilot.app.query_one("#tree").root.children]
-        assert [l.strip() for l in labels] == ["PROGRAMS", "PROJECTS", "STAKEHOLDERS", "BOARDS"]
+        # INBOX leads (the first finding of the week of use: the notes had
+        # nowhere in the TUI to be read); then the four entity kinds.
+        assert [l.strip() for l in labels] == ["INBOX", "PROGRAMS", "PROJECTS", "STAKEHOLDERS", "BOARDS"]
         # acme-migration declares cloud-migration, so it sits UNDER the program,
         # not in the flat PROJECTS group; q4-budget declares none, so it is flat.
         # Walk the nodes. Textual's Tree exposes `root.children`, and each
@@ -305,7 +307,10 @@ async def test_the_real_brain_captures_the_bytes_and_commits(brain_repo):
         assert "captured n1" in _modeline(pilot)
         assert "1 unprocessed" in _modeline(pilot)
     text = (brain_repo / "inbox.md").read_bytes().decode("utf-8")
-    assert text.endswith("· note\n" + body + "\n")
+    # The header now carries the selected entity as a tag - the note was
+    # captured with acme-migration selected - and the body is still exactly
+    # what was typed, on the line after it (R4.6.1).
+    assert text.endswith("· note · acme-migration\n" + body + "\n"), text
     assert (brain_repo / "_seq").read_text(encoding="utf-8").strip() == "1"
     latest = g.log(brain_repo, 1)[0]
     assert latest.source == "cli" and "n1" in latest.subject
@@ -689,7 +694,11 @@ async def test_zz_refuses_while_unsent_text_exists_then_discards_on_a_second_zz(
 async def test_a_prompt_does_not_clobber_a_kept_note(brain_repo, monkeypatch):
     """C2, R10.3: every prompt key stomped the buffer. `i`, type, Esc, then
     `d` - the note was gone. It is parked while the prompt runs and comes
-    back for `i`; Esc from the prompt keeps the half-typed value too."""
+    back for `i`.
+
+    R10.3a (design review): Esc from a prompt CANCELS it - a half-typed date
+    is not captured text, and the design's own modeline says "esc cancel".
+    An earlier version of this test asserted the opposite."""
     monkeypatch.setattr(BrainApp, "run_brain", lambda self, a, stdin=None: (0, "ok", ""))
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         await pilot.press("i", *"remember sara", "escape")
@@ -700,7 +709,17 @@ async def test_a_prompt_does_not_clobber_a_kept_note(brain_repo, monkeypatch):
         await pilot.press("escape")
         _focus_open_action(pilot)
         await pilot.press("d")
-        assert pilot.app.buffer == "2026-1", "the half-typed date must survive Esc too"
+        assert pilot.app.buffer == "", "R10.3a: Esc cancelled the prompt; nothing is kept"
+
+
+async def test_esc_from_command_mode_cancels_the_line(brain_repo):
+    """R10.3a: a command line saves nothing, so Esc cancels it. The earlier
+    reading kept it, which needed forty backspaces to clear."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press(":", *"status set q4", "escape")
+        assert pilot.app.mode == "NORMAL"
+        await pilot.press(":")
+        assert pilot.app.command == "", pilot.app.command
 
 
 async def test_an_edit_lands_on_the_action_it_started_on(brain_repo, monkeypatch):
@@ -787,3 +806,89 @@ async def test_a_hung_brain_does_not_hang_the_app(brain_repo, monkeypatch):
         assert pilot.app.is_running
         assert "abandoned" in _modeline(pilot)
         assert pilot.app.buffer == "hello", "the text is kept for a retry"
+
+
+# -- the inbox in the tree (first finding of the week of use) -------------
+
+async def test_the_inbox_is_in_the_tree_and_a_note_reads_verbatim(brain_repo, monkeypatch):
+    """The modeline counted unprocessed notes and nothing showed them - the
+    one thing the product is built around ("the meeting note is the
+    product", A7) had nowhere in the TUI to be READ. An INBOX group now
+    leads the tree; selecting a note shows its body byte for byte (R4.6.1)."""
+    from brain import commands as c
+    from brain import grammar as gr
+    body = "sara can do thursday -- needs the rollback plan # first"
+    c.execute(brain_repo, gr.parse_line("note add meeting -- " + body))
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        app = pilot.app
+        groups = [str(n.label) for n in app.query_one("#tree").root.children]
+        assert groups[0] == "INBOX", groups
+        await pilot.press("g", "j")
+        assert app.selected.kind == "note" and app.selected.slug == "n1"
+        detail = str(app.query_one("#detail").render())
+        assert body in detail, "the body must appear verbatim"
+        await pilot.press("E")
+        assert app.is_running and "## n1" in str(app.query_one("#detail").render())
+
+
+async def test_enter_on_a_note_search_hit_selects_it(brain_repo):
+    """§10.3 + R6.7: a note hit jumps to its row under INBOX like any other."""
+    from brain import commands as c
+    from brain import grammar as gr
+    c.execute(brain_repo, gr.parse_line("note add note -- zzdistinctive word here"))
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("/", *"zzdistinctive", "enter")
+        await pilot.pause(0.3)
+        assert pilot.app.search_hits and pilot.app.search_hits[0]["kind"] == "note"
+        await pilot.press("enter")
+        await pilot.pause(0.3)
+        assert pilot.app.selected.kind == "note", pilot.app.selected
+
+
+async def test_dropping_a_note_removes_it_from_the_tree(brain_repo):
+    """The daily loop closes inside the TUI: capture, read, file, watch it go."""
+    from brain import commands as c
+    from brain import grammar as gr
+    c.execute(brain_repo, gr.parse_line("note add note -- one"))
+    c.execute(brain_repo, gr.parse_line("note add note -- two"))
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        inbox = pilot.app.query_one("#tree").root.children[0]
+        assert len(inbox.children) == 2
+        await pilot.press(":", *"note drop n1", "enter")
+        await pilot.pause(0.6)
+        inbox = pilot.app.query_one("#tree").root.children[0]
+        assert [str(n.label) for n in inbox.children] == ["▶ n2  note"]
+        assert pilot.app.is_running
+
+
+# -- capture carries the selection (second finding of the week) ------------
+
+async def test_a_note_captured_on_an_entity_is_tagged_with_it(brain_repo, monkeypatch):
+    """"When I'm on a project and add a note, will it take that as a
+    reference?" It did not. Now `i` tags the note with the selected slug -
+    in the machine-written header via `note add --tag`, never in the body
+    (R4.6.1) - so the filer knows where it belongs without an @ref typed."""
+    sent = {}
+    def fake(self, argv, stdin=None):
+        sent["argv"], sent["stdin"] = argv, stdin; return 0, "captured n1", ""
+    monkeypatch.setattr(BrainApp, "run_brain", fake)
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        assert pilot.app.selected.slug == "acme-migration"
+        await pilot.press("i")
+        assert "#acme-migration" in _modeline(pilot), "the ref must be visible before typing"
+        await pilot.press(*"bram wants sign-off", "enter")
+    assert sent["argv"] == ["note", "add", "note", "--tag", "acme-migration", "-f", "-"], sent["argv"]
+    assert sent["stdin"] == "bram wants sign-off"
+
+
+async def test_a_note_captured_on_a_group_header_or_a_note_has_no_ref(brain_repo, monkeypatch):
+    """A group header selects nothing, and a note is not a reference - both
+    are how you capture with no tag, and the first works on an empty inbox."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "captured n1", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("g")                       # the INBOX group header
+        assert pilot.app.selected is None
+        await pilot.press("i", *"loose thought", "enter")
+    assert sent[-1] == ["note", "add", "note", "-f", "-"], sent[-1]
