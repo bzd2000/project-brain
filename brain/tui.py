@@ -1010,6 +1010,62 @@ def _modeline_text(app: "BrainApp") -> Text:
     return t
 
 
+class NoteItem:
+    """An unprocessed note, shaped so the tree and the selection machinery
+    can hold it: `kind`/`slug` like an entity, the `Note` itself for the
+    detail pane. The inbox is not an entity (R10.4's tree is "the entity
+    list"), which is why nothing drew it - and why the one thing the product
+    is built around ("the meeting note is the product", A7) had nowhere in
+    the TUI to be READ. Found in the first hour of real use."""
+    kind = "note"
+
+    def __init__(self, note):
+        self.note = note
+        self.slug = note.id or "?"
+
+
+def _note_label(item: NoteItem) -> Text:
+    t = Text()
+    t.append("▶ ", style=TYPE_COLORS.get(item.note.type, TEAL))
+    t.append(item.slug, style=FG)
+    t.append("  " + item.note.type, style=MUTED)
+    return t
+
+
+def _note_right(item: NoteItem) -> Text:
+    captured = (item.note.captured or "")[:10]
+    return Text(_fmt_short_date(captured), style=DIM)
+
+
+def _note_rows(item: NoteItem, width: int) -> List[Row]:
+    """The note, verbatim. Its body is the user's words byte for byte
+    (R4.6.1); the header line is the only machine-written part, so it is the
+    only part rendered as anything but plain text."""
+    note = item.note
+    rows = []
+    head = Text()
+    head.append(item.slug, style="bold " + FG)
+    head.append("  ")
+    head.append(" {} ".format(note.type.upper()),
+                style="bold {} on {}".format(GROUND, TYPE_COLORS.get(note.type, TEAL)))
+    if note.captured:
+        head.append("  captured " + note.captured, style=MUTED)
+    rows.append(Row(head, None, None))
+    if note.tags:
+        rows.append(Row(Text("  " + " ".join("#" + t for t in note.tags), style=MUTED), None, None))
+    rows.append(Row(Text(""), None, None, gap=True))
+    body = list(note.body)
+    while body and not body[-1].strip():
+        body.pop()
+    for line in body:
+        rows.append(Row(Text(line, style=FG), None, None))
+    if not body:
+        rows.append(Row(Text("(empty note)", style=DIM), None, None))
+    rows.append(Row(Text(""), None, None, gap=True))
+    rows.append(Row(Text(":note drop {}  once it is filed".format(item.slug), style=DIM), None, None))
+    return rows
+
+
 def _group_label(name: str) -> Text:
     return Text(name, style=DIM)
 
@@ -1984,6 +2040,7 @@ class BrainApp(App, inherit_bindings=False):
         tree_widget = self.query_one("#tree", EntityTree)
         tree_widget.clear()
         tree_widget.right.clear()
+        inbox_node = tree_widget.root.add(_group_label("INBOX"), expand=True)
         programs_node = tree_widget.root.add(_group_label("PROGRAMS"), expand=True)
         projects_node = tree_widget.root.add(_group_label("PROJECTS"), expand=True)
         stakeholders_node = tree_widget.root.add(_group_label("STAKEHOLDERS"), expand=True)
@@ -1995,6 +2052,11 @@ class BrainApp(App, inherit_bindings=False):
 
         node_by_key = {}
         right = tree_widget.right
+        for note in notes:
+            item = NoteItem(note)
+            leaf = inbox_node.add_leaf(_note_label(item), data=item)
+            right[leaf.id] = _note_right(item)
+            node_by_key[("note", item.slug)] = leaf
         for prog in sorted(programs, key=lambda x: x.slug):
             children = sorted(by_program.get(prog.slug, []), key=lambda x: x.slug)
             node = programs_node.add(_program_label(prog), data=prog, expand=True)
@@ -2140,9 +2202,12 @@ class BrainApp(App, inherit_bindings=False):
             return
         width = self._detail_width()
         siblings = None
-        if getattr(self.selected, "kind", None) == "program":
-            siblings = self._by_program.get(self.selected.slug, [])
-        rows = _header_block(self.selected, width, siblings) + _body_rows(self.selected, width)
+        if getattr(self.selected, "kind", None) == "note":
+            rows = _note_rows(self.selected, width)
+        else:
+            if getattr(self.selected, "kind", None) == "program":
+                siblings = self._by_program.get(self.selected.slug, [])
+            rows = _header_block(self.selected, width, siblings) + _body_rows(self.selected, width)
         self._detail_lines = [(r.lineno, r.task) for r in rows]
         editing = self._editing_row(rows)
         combined = Text()
@@ -2168,6 +2233,16 @@ class BrainApp(App, inherit_bindings=False):
         return idx if rows[idx].task.text == self._pending[2] else None
 
     def _render_raw_source(self, widget) -> None:
+        if getattr(self.selected, "kind", None) == "note":
+            # A note's "raw source" is its slice of inbox.md: the machine
+            # header line and the body exactly as captured.
+            note = self.selected.note
+            t = Text()
+            t.append(note.header + "\n", style=DIM)
+            t.append("\n".join(note.body), style=FG)
+            widget.update(t)
+            self._detail_lines = []
+            return
         """`E` (R10.11, R10.11b): the file exactly as `Doc.lines` holds it,
         front matter included - a VIEW only. Milestone 5 ships no save path
         here (`_run_command` refuses `:w` by name while this is up), so
@@ -2894,20 +2969,13 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_open_hit(self) -> None:
-        """§10.3: `⏎` on a search hit jumps the tree to its entity. A note
-        hit (R6.7's INBOX group) selects nothing - the inbox is not in the
-        tree - and says so rather than silently doing nothing."""
+        """§10.3: `⏎` on a search hit jumps the tree to its entity, or to
+        the note's row under INBOX (R6.7's INBOX group)."""
         if not self.search_hits or self.search_cursor >= len(self.search_hits):
             return
         hit = self.search_hits[self.search_cursor]
-        if hit.get("kind") == "note":
-            self.notice = Notice("the inbox is not in the tree", False)
-            self.search_hits = None
-            self._apply_layout()
-            self._render_detail()
-            self._render_modeline()
-            self.query_one("#tree", Tree).focus()
-            return
+        # A note hit jumps to its row under INBOX like any other - the inbox
+        # IS in the tree now. The key is ("note", "<id>").
         node = self._node_by_key.get((hit.get("kind"), hit.get("slug")))
         self.search_hits = None
         self._apply_layout()

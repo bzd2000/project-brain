@@ -20,7 +20,9 @@ async def test_the_tree_groups_by_kind_and_programs_expand(brain_repo):
     ungrouped ones), STAKEHOLDERS, BOARDS."""
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         labels = [str(n.label) for n in pilot.app.query_one("#tree").root.children]
-        assert [l.strip() for l in labels] == ["PROGRAMS", "PROJECTS", "STAKEHOLDERS", "BOARDS"]
+        # INBOX leads (the first finding of the week of use: the notes had
+        # nowhere in the TUI to be read); then the four entity kinds.
+        assert [l.strip() for l in labels] == ["INBOX", "PROGRAMS", "PROJECTS", "STAKEHOLDERS", "BOARDS"]
         # acme-migration declares cloud-migration, so it sits UNDER the program,
         # not in the flat PROJECTS group; q4-budget declares none, so it is flat.
         # Walk the nodes. Textual's Tree exposes `root.children`, and each
@@ -801,3 +803,56 @@ async def test_a_hung_brain_does_not_hang_the_app(brain_repo, monkeypatch):
         assert pilot.app.is_running
         assert "abandoned" in _modeline(pilot)
         assert pilot.app.buffer == "hello", "the text is kept for a retry"
+
+
+# -- the inbox in the tree (first finding of the week of use) -------------
+
+async def test_the_inbox_is_in_the_tree_and_a_note_reads_verbatim(brain_repo, monkeypatch):
+    """The modeline counted unprocessed notes and nothing showed them - the
+    one thing the product is built around ("the meeting note is the
+    product", A7) had nowhere in the TUI to be READ. An INBOX group now
+    leads the tree; selecting a note shows its body byte for byte (R4.6.1)."""
+    from brain import commands as c
+    from brain import grammar as gr
+    body = "sara can do thursday -- needs the rollback plan # first"
+    c.execute(brain_repo, gr.parse_line("note add meeting -- " + body))
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        app = pilot.app
+        groups = [str(n.label) for n in app.query_one("#tree").root.children]
+        assert groups[0] == "INBOX", groups
+        await pilot.press("g", "j")
+        assert app.selected.kind == "note" and app.selected.slug == "n1"
+        detail = str(app.query_one("#detail").render())
+        assert body in detail, "the body must appear verbatim"
+        await pilot.press("E")
+        assert app.is_running and "## n1" in str(app.query_one("#detail").render())
+
+
+async def test_enter_on_a_note_search_hit_selects_it(brain_repo):
+    """§10.3 + R6.7: a note hit jumps to its row under INBOX like any other."""
+    from brain import commands as c
+    from brain import grammar as gr
+    c.execute(brain_repo, gr.parse_line("note add note -- zzdistinctive word here"))
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("/", *"zzdistinctive", "enter")
+        await pilot.pause(0.3)
+        assert pilot.app.search_hits and pilot.app.search_hits[0]["kind"] == "note"
+        await pilot.press("enter")
+        await pilot.pause(0.3)
+        assert pilot.app.selected.kind == "note", pilot.app.selected
+
+
+async def test_dropping_a_note_removes_it_from_the_tree(brain_repo):
+    """The daily loop closes inside the TUI: capture, read, file, watch it go."""
+    from brain import commands as c
+    from brain import grammar as gr
+    c.execute(brain_repo, gr.parse_line("note add note -- one"))
+    c.execute(brain_repo, gr.parse_line("note add note -- two"))
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        inbox = pilot.app.query_one("#tree").root.children[0]
+        assert len(inbox.children) == 2
+        await pilot.press(":", *"note drop n1", "enter")
+        await pilot.pause(0.6)
+        inbox = pilot.app.query_one("#tree").root.children[0]
+        assert [str(n.label) for n in inbox.children] == ["▶ n2  note"]
+        assert pilot.app.is_running
