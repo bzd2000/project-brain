@@ -307,7 +307,10 @@ async def test_the_real_brain_captures_the_bytes_and_commits(brain_repo):
         assert "captured n1" in _modeline(pilot)
         assert "1 unprocessed" in _modeline(pilot)
     text = (brain_repo / "inbox.md").read_bytes().decode("utf-8")
-    assert text.endswith("· note\n" + body + "\n")
+    # The header now carries the selected entity as a tag - the note was
+    # captured with acme-migration selected - and the body is still exactly
+    # what was typed, on the line after it (R4.6.1).
+    assert text.endswith("· note · acme-migration\n" + body + "\n"), text
     assert (brain_repo / "_seq").read_text(encoding="utf-8").strip() == "1"
     latest = g.log(brain_repo, 1)[0]
     assert latest.source == "cli" and "n1" in latest.subject
@@ -856,3 +859,36 @@ async def test_dropping_a_note_removes_it_from_the_tree(brain_repo):
         inbox = pilot.app.query_one("#tree").root.children[0]
         assert [str(n.label) for n in inbox.children] == ["▶ n2  note"]
         assert pilot.app.is_running
+
+
+# -- capture carries the selection (second finding of the week) ------------
+
+async def test_a_note_captured_on_an_entity_is_tagged_with_it(brain_repo, monkeypatch):
+    """"When I'm on a project and add a note, will it take that as a
+    reference?" It did not. Now `i` tags the note with the selected slug -
+    in the machine-written header via `note add --tag`, never in the body
+    (R4.6.1) - so the filer knows where it belongs without an @ref typed."""
+    sent = {}
+    def fake(self, argv, stdin=None):
+        sent["argv"], sent["stdin"] = argv, stdin; return 0, "captured n1", ""
+    monkeypatch.setattr(BrainApp, "run_brain", fake)
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        assert pilot.app.selected.slug == "acme-migration"
+        await pilot.press("i")
+        assert "#acme-migration" in _modeline(pilot), "the ref must be visible before typing"
+        await pilot.press(*"bram wants sign-off", "enter")
+    assert sent["argv"] == ["note", "add", "note", "--tag", "acme-migration", "-f", "-"], sent["argv"]
+    assert sent["stdin"] == "bram wants sign-off"
+
+
+async def test_a_note_captured_on_a_group_header_or_a_note_has_no_ref(brain_repo, monkeypatch):
+    """A group header selects nothing, and a note is not a reference - both
+    are how you capture with no tag, and the first works on an empty inbox."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "captured n1", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("g")                       # the INBOX group header
+        assert pilot.app.selected is None
+        await pilot.press("i", *"loose thought", "enter")
+    assert sent[-1] == ["note", "add", "note", "-f", "-"], sent[-1]

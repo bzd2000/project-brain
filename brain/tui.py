@@ -965,6 +965,14 @@ def _modeline_text(app: "BrainApp") -> Text:
             t.append(app.prompt, style="bold " + TEAL)
         else:
             t.append_text(_chip(app.note_type))
+            ref = app.capture_ref
+            if ref:
+                # The note will be tagged with the selected entity, so the
+                # filer - you, or the agent - knows where it belongs without
+                # you typing an @ref (R10.13). Shown so you can see it. To
+                # capture with no reference, select the INBOX group or a
+                # note first: the note carries what you are looking at.
+                t.append("  #" + ref, style=VIOLET if app.selected_is_party else TEAL)
         t.append("  ▸ ", style=DIM)
         t.append(_tail(app.buffer, app.size.width - 4 - t.cell_len - 20), style=FG)
         t.append_text(_cursor(TEAL))
@@ -2160,6 +2168,16 @@ class BrainApp(App, inherit_bindings=False):
     def on_tree_node_highlighted(self, event) -> None:
         node = event.node
         if node.data is None:
+            # A group header (INBOX, PROGRAMS, ...) selects nothing. That is
+            # also how you capture a note with no #ref: the note carries what
+            # is selected, and a header is nothing - which matters when the
+            # inbox is empty and there is no note row to land on instead.
+            if self.selected is None:
+                return
+            self.selected = None
+            self._detail_cursor = None
+            self._render_detail()
+            self._render_modeline()
             return
         if self.selected is node.data:
             return
@@ -2173,6 +2191,21 @@ class BrainApp(App, inherit_bindings=False):
 
     def _detail_has_focus(self) -> bool:
         return self.focused is self.query_one("#detail", DetailPane)
+
+    @property
+    def capture_ref(self) -> Optional[str]:
+        """The slug a note captured with `i` will be tagged with: the
+        selected entity. A selected NOTE (or nothing) is no reference - you
+        cannot file a note against a note, and selecting one is how you
+        capture without a tag."""
+        sel = self.selected
+        if sel is None or getattr(sel, "kind", None) in (None, "note"):
+            return None
+        return sel.slug
+
+    @property
+    def selected_is_party(self) -> bool:
+        return getattr(self.selected, "kind", None) in ("stakeholder", "board")
 
     @property
     def focused_line(self):
@@ -2525,7 +2558,13 @@ class BrainApp(App, inherit_bindings=False):
         if not body.strip():
             self._leave_to_normal()
             return
-        rc, out, err = self.run_brain(["note", "add", self.note_type, "-f", "-"], stdin=body)
+        argv = ["note", "add", self.note_type]
+        if self.capture_ref:
+            # The reference travels as a TAG in the note's machine-written
+            # header - `note add --tag`, the same slot `raise` uses - never in
+            # the body, which stays byte for byte what was typed (R4.6.1).
+            argv += ["--tag", self.capture_ref]
+        rc, out, err = self.run_brain(argv + ["-f", "-"], stdin=body)
         if rc != 0:
             # R10.18a: a refusal (the agent holds the lock) is normal. Stay
             # in INSERT with the text, so `⏎` a moment later retries it.
