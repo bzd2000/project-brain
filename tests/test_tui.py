@@ -689,7 +689,11 @@ async def test_zz_refuses_while_unsent_text_exists_then_discards_on_a_second_zz(
 async def test_a_prompt_does_not_clobber_a_kept_note(brain_repo, monkeypatch):
     """C2, R10.3: every prompt key stomped the buffer. `i`, type, Esc, then
     `d` - the note was gone. It is parked while the prompt runs and comes
-    back for `i`; Esc from the prompt keeps the half-typed value too."""
+    back for `i`.
+
+    R10.3a (design review): Esc from a prompt CANCELS it - a half-typed date
+    is not captured text, and the design's own modeline says "esc cancel".
+    An earlier version of this test asserted the opposite."""
     monkeypatch.setattr(BrainApp, "run_brain", lambda self, a, stdin=None: (0, "ok", ""))
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         await pilot.press("i", *"remember sara", "escape")
@@ -700,7 +704,17 @@ async def test_a_prompt_does_not_clobber_a_kept_note(brain_repo, monkeypatch):
         await pilot.press("escape")
         _focus_open_action(pilot)
         await pilot.press("d")
-        assert pilot.app.buffer == "2026-1", "the half-typed date must survive Esc too"
+        assert pilot.app.buffer == "", "R10.3a: Esc cancelled the prompt; nothing is kept"
+
+
+async def test_esc_from_command_mode_cancels_the_line(brain_repo):
+    """R10.3a: a command line saves nothing, so Esc cancels it. The earlier
+    reading kept it, which needed forty backspaces to clear."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press(":", *"status set q4", "escape")
+        assert pilot.app.mode == "NORMAL"
+        await pilot.press(":")
+        assert pilot.app.command == "", pilot.app.command
 
 
 async def test_an_edit_lands_on_the_action_it_started_on(brain_repo, monkeypatch):

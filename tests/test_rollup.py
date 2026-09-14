@@ -85,6 +85,21 @@ def test_a_batch_rewrites_the_program_once(brain_repo):
     assert "blocked" in row[0] and "red" in row[0], row
 
 
+def test_the_due_column_carries_the_next_open_actions_due_date(brain_repo):
+    """§4.3: the roll-up's `Due` column is the next OPEN action's due date,
+    blank when it has none - not the project's own `due:` field, which is a
+    separate value (the fixture's acme-migration carries both, and they
+    differ, so a correct implementation cannot pass by accident)."""
+    _run(brain_repo, "status set acme-migration active")   # trigger a rewrite
+    row = [l for l in _rollup(brain_repo).splitlines() if "acme-migration" in l][0]
+    assert "| 2026-09-11 |" in row, row
+    assert "2026-10-15" not in row, "the project's own due:, not the action's, leaked in"
+    _run(brain_repo, "link q4-budget --program cloud-migration")
+    row2 = [l for l in _rollup(brain_repo).splitlines() if "q4-budget" in l][0]
+    cells = [c.strip() for c in row2.strip("|").split("|")]
+    assert cells[-1] == "", "no open action has a due date, so Due must be blank: {!r}".format(row2)
+
+
 def test_a_pipe_in_an_action_cannot_forge_a_column(brain_repo):
     """The characteristic defect, twenty-sixth guard. The `Next` cell carries
     the user's own action text (R4.6.1), and a `|` in it would forge a table
@@ -98,7 +113,9 @@ def test_a_pipe_in_an_action_cannot_forge_a_column(brain_repo):
     _run(brain_repo, "action add pipe-probe -- ship | rollback | decide")
     row = [l for l in _rollup(brain_repo).splitlines() if "pipe-probe" in l][0]
     assert "ship" in row, "the action must actually reach the Next cell"
-    assert row.count("|") == 6, "a forged column: {!r}".format(row)
+    # §4.3 added a Due column, so a correct row now carries seven pipes
+    # (six cells); a forged column from the action's own text would add one.
+    assert row.count("|") == 7, "a forged column: {!r}".format(row)
 
 
 def test_build_repairs_a_hand_edited_rollup(brain_repo):

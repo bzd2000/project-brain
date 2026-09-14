@@ -14,13 +14,16 @@ command in flight here, so there is nothing to lock and nothing to share via
 
 Three modes (R10.1). NORMAL is the resting state and every letter is a
 command. INSERT is typing - into the modeline (`i`) or the full-screen
-capture pane (`o`); `⏎` commits, `Esc` returns to NORMAL and keeps the text
-(R10.3). COMMAND (`:`) is a `brain` verb typed out, split exactly the way
-the grammar splits it (R10.8, R6.4). Everything typed in INSERT or COMMAND
-is the user's words until it reaches `brain`: nothing here parses a note
-body, and a body travels on stdin (`note add <type> -f -`), never argv
-(invariant 13, R4.6.1). The acting keys (`e`, `x`, `d`, `s`, `H`, ...) are
-Task 4 and go through the same seam.
+capture pane (`o`); `⏎` commits. COMMAND (`:`) is a `brain` verb typed out,
+split exactly the way the grammar splits it (R10.8, R6.4). What `Esc` does
+follows R10.3a's one rule: a NOTE (`i`, `o`) is captured text with nowhere
+else it lives yet, so `Esc` keeps it; an EDIT (`e`) or a COMMAND (`:`, and
+the `d`/`s`/`H`/`Q`/`/` prompts, which are command lines in this sense) has
+nothing riding on the half-typed value, so `Esc` cancels it. Everything
+typed in INSERT or COMMAND is the user's words until it reaches `brain`:
+nothing here parses a note body, and a body travels on stdin (`note add
+<type> -f -`), never argv (invariant 13, R4.6.1). The acting keys (`e`, `x`,
+`d`, `s`, `H`, ...) are Task 4 and go through the same seam.
 """
 from __future__ import annotations
 
@@ -544,7 +547,7 @@ HELP_SECTIONS = [
         ("ZZ", "quit"),
     ]),
     ("INSERT", [
-        ("Esc", "back to NORMAL, keeping what you typed"),
+        ("Esc", "keeps a note (i/o) - cancels an edit or command (R10.3a)"),
         ("⏎", "capture the note, or commit the line edit"),
     ]),
     ("COMMAND :", [
@@ -720,7 +723,10 @@ def _fmt_short_date(iso: Optional[str], pad: bool = False) -> str:
         d = date.fromisoformat(iso)
     except ValueError:
         return str(iso)
-    day = "{:02d}".format(d.day) if pad else str(d.day)
+    # R10.16c: dates are unpadded - `1 Sep`, never `01 Sep`. Where a column
+    # of dated lines needs its text to line up, the day is right-aligned in
+    # two cells with a SPACE (` 1 Sep`), which is what 09 and 10 show.
+    day = "{:>2}".format(d.day) if pad else str(d.day)
     return "{} {}".format(day, d.strftime("%b"))
 
 
@@ -749,19 +755,23 @@ def _relative(iso: Optional[str], today: Optional[date] = None) -> str:
     return "in {}d".format(n) if n > 0 else "{}d ago".format(-n)
 
 
-def _due_style(due: Optional[str]) -> str:
+def _due_style(due: Optional[str], default: str = MUTED) -> str:
+    """R10.16a: red overdue, amber within 7 days - "an action or meeting
+    within 7 days" - `default` otherwise (a due date's is `--mut`; a
+    meeting's, called with `default=TEAL`, stays the live colour it always
+    was, since `08-board.png` leaves an 11-day-out meeting teal)."""
     if not due:
-        return MUTED
+        return default
     try:
         d = date.fromisoformat(due)
     except ValueError:
-        return MUTED
+        return default
     today = date.today()
     if d < today:
         return RED
-    if (d - today).days <= 3:
+    if (d - today).days <= 7:
         return AMBER
-    return MUTED
+    return default
 
 
 def _pill(label: str, colour: str) -> Text:
@@ -958,7 +968,9 @@ def _modeline_text(app: "BrainApp") -> Text:
         t.append("  ▸ ", style=DIM)
         t.append(_tail(app.buffer, app.size.width - 4 - t.cell_len - 20), style=FG)
         t.append_text(_cursor(TEAL))
-        hint = "⏎ send · esc" if app.prompt else "⏎ capture · esc"
+        # R10.3a: a prompt (d/s/H/Q//) is a command line - esc cancels it;
+        # plain note capture (i) is captured text - esc keeps it.
+        hint = "⏎ send · esc cancel" if app.prompt else "⏎ capture · esc keeps it"
     elif app.mode == COMMAND:
         t.append("-- COMMAND --", style="bold " + VIOLET)
         t.append("  ")
@@ -1027,6 +1039,8 @@ def _project_right(p) -> Text:
     overdue = any(a.due and _is_overdue(a.due) for a in open_actions)
     if overdue:
         t.append(" !", style=RED)
+    elif _is_stale(getattr(p, "updated", None)):
+        t.append(" ~", style=AMBER)
     elif p.health in ("amber", "red"):
         t.append(" ▲", style=HEALTH_COLORS.get(p.health, DIM))
     return t
@@ -1039,6 +1053,18 @@ def _program_right(prog, children) -> Text:
 def _is_overdue(due: str) -> bool:
     try:
         return date.fromisoformat(due) < date.today()
+    except ValueError:
+        return False
+
+
+STALE_DAYS = 14   # R10.16a: "stale means no `updated:` change in 14 days"
+
+
+def _is_stale(updated: Optional[str]) -> bool:
+    if not updated:
+        return False
+    try:
+        return (date.today() - date.fromisoformat(updated)).days >= STALE_DAYS
     except ValueError:
         return False
 
@@ -1110,9 +1136,14 @@ def _header_block(entity, width: int, siblings=None) -> List[Row]:
     next_meeting = getattr(entity, "next_meeting", None)
     if next_meeting:
         sep()
-        meta.append("next {}".format(_fmt_short_date(next_meeting)), style=TEAL)
+        # R10.16a: "amber also means due soon" reaches a meeting too - a
+        # meeting within 7 days colours the same as a due-soon action; one
+        # further out stays teal, a meeting's own live colour (08-board.png
+        # leaves an 11-day-out one teal).
+        style = _due_style(next_meeting, default=TEAL)
+        meta.append("next {}".format(_fmt_short_date(next_meeting)), style=style)
         meta.append(" · ", style=DIM)
-        meta.append(_relative(next_meeting), style=TEAL)
+        meta.append(_relative(next_meeting), style=style)
     updated = getattr(entity, "updated", None)
     if updated:
         sep()
@@ -1500,9 +1531,13 @@ SEARCH_SECTION_TITLES = {
     "Log": "LOG & DECISIONS",
     "Decisions": "LOG & DECISIONS",
     "Open questions": "OPEN QUESTIONS",
+    "body": "INBOX",     # R6.7: an unprocessed note's body, `search.py`'s own
 }
+# 07-search.png's order: PROJECTS, OPEN ACTIONS, LOG & DECISIONS, INBOX,
+# OPEN QUESTIONS - PROGRAMS/STAKEHOLDERS/BOARDS fill in where an entity hit
+# lands, between PROJECTS and the section groups (R6.7).
 SEARCH_GROUP_ORDER = ("PROJECTS", "PROGRAMS", "STAKEHOLDERS", "BOARDS",
-                      "OPEN ACTIONS", "LOG & DECISIONS", "OPEN QUESTIONS")
+                      "OPEN ACTIONS", "LOG & DECISIONS", "INBOX", "OPEN QUESTIONS")
 ENTITY_WHERE = ("slug", "title", "tag")
 
 
@@ -1559,6 +1594,19 @@ def _search_row(hit: dict, entity, query: str, width: int) -> Text:
         else:
             t.append(KIND_GLYPHS.get(kind, "◆") + "  ", style=VIOLET)
         body.append(getattr(entity, "title", None) or line, style=FG)
+    elif kind == "note":
+        # R6.7: an unprocessed note's body. The glyph takes the note's own
+        # type colour (04-capture.png's chips), the slug column carries the
+        # id and type together (`n7 meeting`, 07-search.png), and the
+        # right-hand fact every note carries is that it is unprocessed -
+        # never rendered as if it forged a real section (the twenty-ninth
+        # through thirty-first guards: the body is searched and shown
+        # literally, whatever it contains).
+        note_type = hit.get("type") or "note"
+        t.append("▶  ", style=TYPE_COLORS.get(note_type, TEAL))
+        slug = "{} {}".format(slug, note_type)
+        body.append(line, style=FG)
+        right = Text("unprocessed", style=TEAL)
     else:
         task = parse_action(0, line)
         when, text, tags = _split_bullet(line)
@@ -1574,7 +1622,7 @@ def _search_row(hit: dict, entity, query: str, width: int) -> Text:
         else:
             t.append("·  ", style=DIM)
             if when:
-                body.append(_fmt_short_date(when, pad=True) + "  ", style=DIM)
+                body.append(_fmt_short_date(when) + "  ", style=DIM)
             body.append(text, style=FG)
             if tags:
                 right = Text(" ".join(tags), style=DIM)
@@ -1735,6 +1783,16 @@ class BrainApp(App, inherit_bindings=False):
         Binding("slash", "search_prompt", "search", show=False),
         Binding("n", "next_hit", "next", show=False),
         Binding("N", "prev_hit", "prev", show=False),
+        # §10.3: while search results are showing, `↑`/`↓` move like `n`/`N`
+        # and `⏎` opens the hit. Priority, because Textual's `Tree` already
+        # binds all three (cursor_up/down, select_cursor) and would consume
+        # them first otherwise - `check_action` below only claims them while
+        # there are search results to move through, so outside search (and
+        # while typing, when `check_action` sees the mode is not NORMAL)
+        # the event falls through to the focused widget exactly as before.
+        Binding("up", "search_up", "up", show=False, priority=True),
+        Binding("down", "search_down", "down", show=False, priority=True),
+        Binding("enter", "open_hit", "open", show=False, priority=True),
         Binding("question_mark", "help", "help", show=False),
         Binding("Z", "maybe_quit", "quit", show=False),
         Binding("colon", "command", "command", show=False),
@@ -1749,7 +1807,6 @@ class BrainApp(App, inherit_bindings=False):
         self.mode = NORMAL
         self.buffer = ""          # INSERT text; survives Esc (R10.3)
         self._stash = None        # an `i` note parked while a prompt runs (C2)
-        self._prompt_kept = {}    # a prompt's half-typed value, by kind, after Esc
         self._quit_armed = False  # ZZ warned about unsent text; next ZZ discards
         self.command = ""         # COMMAND text; survives Esc and a refusal
         self.note_type = ent.NOTE_TYPES[0]
@@ -1758,6 +1815,7 @@ class BrainApp(App, inherit_bindings=False):
         self._slugs: List[str] = []
         self._by_program: Dict[str, list] = {}
         self._entity_by_slug: Dict[str, object] = {}
+        self._node_by_key: Dict[Tuple[str, str], object] = {}   # (kind, slug) -> tree node, for §10.3's ⏎
         self._detail_lines: List[Tuple[Optional[int], Optional[Task]]] = []
         self._detail_cursor: Optional[int] = None
         self._mtimes: Dict[str, float] = {}
@@ -1840,6 +1898,12 @@ class BrainApp(App, inherit_bindings=False):
             return True
         if self.mode != NORMAL or isinstance(self.screen, CaptureScreen):
             return False
+        if action in ("search_up", "search_down", "open_hit"):
+            # §10.3: these three are priority bindings on keys `Tree` already
+            # owns (up/down/enter) - active only while there are search
+            # results to move through or open, so a bare `Tree` otherwise
+            # keeps its own cursor-up/down/select behaviour unchanged.
+            return self.search_hits is not None
         return True
 
     def on_mount(self) -> None:
@@ -1958,6 +2022,7 @@ class BrainApp(App, inherit_bindings=False):
         # `node._line` directly rather than through the property that
         # rebuilds it.
         _ = tree_widget._tree_lines
+        self._node_by_key = node_by_key   # §10.3's ⏎ on a search hit jumps here
 
         target_key = previous if previous in node_by_key else None
         if target_key is None:
@@ -2184,7 +2249,8 @@ class BrainApp(App, inherit_bindings=False):
         right = Text()
         right.append("{} match{}".format(n, "" if n == 1 else "es"), style=DIM)
         right.append(" · ", style=DIM)
-        right.append("n N to move, esc to close", style=DIM)
+        # §10.3: `↑`/`↓` move like `n`/`N`, `⏎` opens the hit (07-search.png).
+        right.append("n N / ↑↓ to move, ⏎ to open, esc to close", style=DIM)
         pad = max(0, self.size.width - 4) - bar.cell_len - right.cell_len
         bar.append(" " * max(2, pad))
         bar.append_text(right)
@@ -2272,12 +2338,18 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_escape(self) -> None:
-        """Esc: from anywhere, back to NORMAL, keeping the text (R10.3). In
-        the capture pane it asks first (R10.14); in the help screen it
-        closes it (`escape` is a priority binding, so it never reaches
-        `HelpScreen.on_key` - see that class's docstring); in NORMAL it
-        clears search results or the raw-source view before it falls back to
-        returning DOM focus from the detail pane to the tree."""
+        """Esc: from anywhere, back to NORMAL (R10.3). R10.3a is the one
+        rule that decides what survives the trip: a NOTE (`i`, `o`) is
+        captured text with nowhere else it lives yet, so Esc keeps it
+        absolutely; an EDIT (`e`) or a COMMAND (`:`, and the `d`/`s`/`H`/`Q`/
+        `/` prompts, which are command lines in this sense) has the original
+        still safe in the file or nothing at all riding on it, so Esc
+        CANCELS it - the half-typed value is discarded, never remembered for
+        next time. In the capture pane Esc asks first (R10.14); in the help
+        screen it closes it (`escape` is a priority binding, so it never
+        reaches `HelpScreen.on_key` - see that class's docstring); in NORMAL
+        it clears search results or the raw-source view before it falls back
+        to returning DOM focus from the detail pane to the tree."""
         if isinstance(self.screen, HelpScreen):
             self.pop_screen()
             return
@@ -2287,14 +2359,15 @@ class BrainApp(App, inherit_bindings=False):
         if self.mode != NORMAL:
             self.notice = None
             if self._pending is not None:
-                # Esc from a prompt keeps BOTH texts (R10.3): the half-typed
-                # value is parked under its prompt kind so the same key finds
-                # it again, and the note that was parked when the prompt
-                # started comes back to the buffer for `i`.
-                self._prompt_kept[self._pending[0]] = self.buffer
+                # R10.3a: an edit or a prompt (e/d/s/H/Q//) cancels - the
+                # half-typed value is not remembered. The note that was
+                # parked when the prompt started (if any) comes back for `i`.
                 self._pending = None
                 self.prompt = None
                 self._unstash_note()
+            elif self.mode == COMMAND:
+                # R10.3a: a command line cancels too - nothing is kept.
+                self.command = ""
             self._leave_to_normal()
             return
         if self.search_hits is not None:
@@ -2690,8 +2763,9 @@ class BrainApp(App, inherit_bindings=False):
         # text at commit time and refuses if it is gone or ambiguous.
         self._pending = ("edit", project.slug, task.text)
         self._stash_note()
-        kept = self._prompt_kept.pop('edit', None)
-        self.buffer = kept if kept is not None else task.text
+        # R10.3a: an edit always starts fresh at the line's own text - Esc
+        # cancels a half-typed edit rather than remembering it for next time.
+        self.buffer = task.text
         self.prompt = "edit:"
         self._enter(INSERT)
 
@@ -2721,8 +2795,9 @@ class BrainApp(App, inherit_bindings=False):
         project, task, _index = found
         self._pending = ("due", project.slug, task.text)
         self._stash_note()
-        kept = self._prompt_kept.pop('due', None)
-        self.buffer = kept if kept is not None else ""
+        # R10.3a: a prompt always starts empty - Esc cancels it, never keeps
+        # a half-typed value for the next time this key is pressed.
+        self.buffer = ""
         self.prompt = "due:"
         self._enter(INSERT)
 
@@ -2738,8 +2813,7 @@ class BrainApp(App, inherit_bindings=False):
             return
         self._pending = ("status", project.slug, None)
         self._stash_note()
-        kept = self._prompt_kept.pop('status', None)
-        self.buffer = kept if kept is not None else ""
+        self.buffer = ""   # R10.3a: a prompt always starts empty
         self.prompt = "status:"
         self._enter(INSERT)
 
@@ -2754,8 +2828,7 @@ class BrainApp(App, inherit_bindings=False):
             return
         self._pending = ("health", project.slug, None)
         self._stash_note()
-        kept = self._prompt_kept.pop('health', None)
-        self.buffer = kept if kept is not None else ""
+        self.buffer = ""   # R10.3a: a prompt always starts empty
         self.prompt = "health:"
         self._enter(INSERT)
 
@@ -2776,8 +2849,7 @@ class BrainApp(App, inherit_bindings=False):
         job for the agent in `_request.md`, never run here."""
         self._pending = ("request", None, None)
         self._stash_note()
-        kept = self._prompt_kept.pop('request', None)
-        self.buffer = kept if kept is not None else ""
+        self.buffer = ""   # R10.3a: a prompt always starts empty
         self.prompt = "request:"
         self._enter(INSERT)
 
@@ -2788,8 +2860,7 @@ class BrainApp(App, inherit_bindings=False):
         grouped hits."""
         self._pending = ("search", None, None)
         self._stash_note()
-        kept = self._prompt_kept.pop('search', None)
-        self.buffer = kept if kept is not None else ""
+        self.buffer = ""   # R10.3a: a prompt always starts empty
         self.prompt = "search:"
         self._enter(INSERT)
 
@@ -2810,6 +2881,46 @@ class BrainApp(App, inherit_bindings=False):
         self._render_detail()
 
     @_guarded
+    def action_search_down(self) -> None:
+        """§10.3: `↓` moves through search results like `n`. `check_action`
+        only makes this binding active while `search_hits` is set, so this
+        body never runs otherwise - the `Tree` keeps its own `cursor_down`."""
+        self.action_next_hit()
+
+    @_guarded
+    def action_search_up(self) -> None:
+        """§10.3: `↑` moves through search results like `N`."""
+        self.action_prev_hit()
+
+    @_guarded
+    def action_open_hit(self) -> None:
+        """§10.3: `⏎` on a search hit jumps the tree to its entity. A note
+        hit (R6.7's INBOX group) selects nothing - the inbox is not in the
+        tree - and says so rather than silently doing nothing."""
+        if not self.search_hits or self.search_cursor >= len(self.search_hits):
+            return
+        hit = self.search_hits[self.search_cursor]
+        if hit.get("kind") == "note":
+            self.notice = Notice("the inbox is not in the tree", False)
+            self.search_hits = None
+            self._apply_layout()
+            self._render_detail()
+            self._render_modeline()
+            self.query_one("#tree", Tree).focus()
+            return
+        node = self._node_by_key.get((hit.get("kind"), hit.get("slug")))
+        self.search_hits = None
+        self._apply_layout()
+        if node is not None:
+            tree_widget = self.query_one("#tree", Tree)
+            tree_widget.move_cursor(node)
+            self.selected = node.data
+            self._detail_cursor = None
+        self._render_detail()
+        self._render_modeline()
+        self.query_one("#tree", Tree).focus()
+
+    @_guarded
     def action_help(self) -> None:
         """`?`: the key map (11-help.png). Any key closes it."""
         self.push_screen(HelpScreen())
@@ -2818,8 +2929,12 @@ class BrainApp(App, inherit_bindings=False):
     def action_maybe_quit(self) -> None:
         """`Z`: the first half of `ZZ` (R10.3's table). `check_action`
         clears `_pending_z` on any OTHER action, so a stray `Z` followed by
-        something else never quits on the next, unrelated `Z`."""
-        unsent = self.buffer or self._stash or self.command
+        something else never quits on the next, unrelated `Z`.
+
+        R10.3a: Esc now cancels a command line, so `self.command` is always
+        empty by the time NORMAL - and therefore `ZZ` - is reachable again;
+        the guard covers only the note buffer (`i`/`o`, parked or not)."""
+        unsent = self.buffer or self._stash
         if self._pending_z:
             self._pending_z = False
             if unsent and not self._quit_armed:
