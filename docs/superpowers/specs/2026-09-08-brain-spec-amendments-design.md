@@ -359,6 +359,18 @@ proposal replaced it with `link`, but `link` is R4.1's interest declaration
 on front matter — a different fact. `log` keeps `--ref` on every kind; it
 costs one optional flag and the pending-line format does not change.
 
+**7. `i` opens the pane** (user, 2026-09-15: *"if you do i, it shows a
+(contextualized) dialog to add a multiline note"*). The proposal kept `i`
+as one line in the modeline with `o` for paragraphs. A thought is as often
+three lines as one, the pane already exists, and its head now shows what
+the note is tagged with — the context. Modeline capture is removed rather
+than kept as a third way. The shell and `:` stay one line; the pane is the
+TUI's only multi-line surface, and notes are its only multi-line content —
+**an entry (log line, action, decision, question) is still one line**, so
+`file` still refuses a multi-line note. Whether entries should grow
+continuation lines is deferred until a week of multi-line `i` notes shows
+how often one thought spans lines and gets decomposed anyway.
+
 Not changed from the proposal: the seven verbs and their names; `i` as the
 one capture key; `t`/`d`/`s`/`H` removed; `re:<id>` replies; kind dispatch
 for `log`, `decide`, `query`, `link`; `todo`'s sub-words after the target

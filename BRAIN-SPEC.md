@@ -993,8 +993,8 @@ width. The modeline is never hidden. Minimum usable size 60×16.
 
 | Key | Action |
 |---|---|
-| `i` | **log something** — a note in the modeline, tagged with the selection (`note add --tag <selected> -f -`). The LLM decides what it is and where it goes (R6.0a); no type, no target, no question asked |
-| `o` | the same, full-screen, for a meeting's worth (`note add meeting --tag <selected> -f -`, §10.5) |
+| `i` | **log something** — opens the capture pane (§10.5), multi-line, headed with the selection; `:w` sends `note add --tag <selected> -f -`. The LLM decides what it is and where it goes (R6.0a); no type, no target, no question asked |
+| `o` | the same pane, stamped `meeting` (`note add meeting --tag <selected> -f -`) |
 
 **NORMAL — acting**
 
@@ -1104,11 +1104,20 @@ negotiable for the sake of a tidier render.
 
 ### 10.5 Capture
 
-**R10.13 Capture is verbatim, instant and unconditional.** `i` then typing then
-`⏎` appends the text to `inbox.md` exactly as typed, with a timestamp and the
-selected entity as its tag. No parsing that can fail, no question asked, no
-model, no delay. The echo below the modeline shows which `@refs` were
-recognised — that is a *read* of the text, not a change to it.
+**R10.13 Capture is verbatim, instant and unconditional.** `i` opens the
+capture pane; typing, then `:w`, appends the text to `inbox.md` exactly as
+typed — every line of it — with a timestamp and the selected entity as its
+tag. No parsing that can fail, no question asked, no model, no delay. The
+tags line shows which `@refs` were recognised — that is a *read* of the
+text, not a change to it.
+
+*Amended 2026-09-15:* `i` used to capture one line in the modeline and `o`
+was the only way to a paragraph. A thought is as often three lines as one,
+and a one-line pane costs nothing more than `:w` in place of `⏎`; so both
+keys open the same pane and the modeline captures nothing — INSERT in the
+modeline is now only the prompts (`e`, `Q`, `/`). The shell and `:` stay
+one line: multi-line text travels by stdin (`-f -`, R6.4c), never by argv
+or a batch line.
 
 **R10.13a Replying.** A flagged note in INBOX (`> ?` line, R4.6.4) is the LLM
 asking. Select it and `i`: the reply is a new note tagged `re:<id>` (R4.6.3),
@@ -1116,9 +1125,11 @@ and the flagged note stays until the LLM drops both. The INBOX group shows a
 flagged note with its `> ?` line so the question is readable without opening
 it.
 
-**R10.14 `o` opens a full-screen capture pane**, because meeting notes are
-paragraphs, not lines. It shows `MEETING`, the note id and timestamp being
-assigned, and the tags recognised so far. `:w` saves it as one note; `Esc`
+**R10.14 The capture pane** is full-screen, because notes are paragraphs,
+not lines. Its head shows the type (`NOTE` from `i`, `MEETING` from `o`),
+**the selection it is tagged with** (`#acme-migration`, or `#re:n13` on a
+flagged note, R10.13a — the context the LLM will read), the note id and
+timestamp being assigned, and the tags recognised so far. `:w` saves it as one note; `Esc`
 discards after a confirmation. Everything in the app: no shelling out to
 `$EDITOR`.
 
@@ -1161,7 +1172,9 @@ AGENDA content — milestone 7; `n7` ids on pending lines — milestone 6): the
 app says so rather than pretending. **Superseded by the vocabulary redesign
 (2026-09-15):** the type chip in `03`/`04`/`05` and the `t`, `d`, `s`, `H`
 rows of `11` show keys that no longer exist (R10.7b, R10.15); `04`'s "four
-note types and what each becomes" is now R4.6.2's two. The PNGs are not
+note types and what each becomes" is now R4.6.2's two; `03`'s INSERT card
+shows a one-line note in the modeline, which `i` no longer does (R10.13 —
+the pane of `05` is what `i` opens). The PNGs are not
 regenerated — spec wins on behaviour — and `?` shows §10.3 as it stands.
 
 **R10.16 Colour system.** A warm near-black ground; one teal accent for anything
@@ -1407,10 +1420,12 @@ n9's body, byte for byte, and n9 is gone from `inbox.md` — one commit. A
 two-line note is refused and nothing changes.
 
 **A22** With the TUI on a project, `x` on an open action sends `todo <slug>
-done <n>` and `e` sends `todo <slug> edit <n> -- <text>`; `o` sends `note add
-meeting --tag <slug> -f -`; on a flagged inbox note `i` sends `note add --tag
-re:<id> -f -`. `t`, `d`, `s`, `H` are unbound — pressing one changes nothing
-and no `brain` process starts.
+done <n>` and `e` sends `todo <slug> edit <n> -- <text>`; `i` opens the pane
+showing `#<slug>` and `:w` sends `note add --tag <slug> -f -` with the body,
+three lines typed as three lines, on stdin; `o` sends `note add meeting --tag
+<slug> -f -`; on a flagged inbox note `i` shows `#re:<id>` and sends `note add
+--tag re:<id> -f -`. `t`, `d`, `s`, `H` are unbound — pressing one changes
+nothing and no `brain` process starts.
 
 ---
 

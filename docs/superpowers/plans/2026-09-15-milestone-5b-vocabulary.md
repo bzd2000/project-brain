@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3 stdlib below the TUI (R3.3); `textual==8.2.8` in `brain/tui.py` only; pytest + pytest-asyncio; a real `git` on `PATH`.
 
-**Spec:** `BRAIN-SPEC.md` — R6.0, **R6.0a**, **R6.0b**, R4.6.2, R4.6.3, R10.3, **R10.7b**, **R10.13a**, R10.15, §10.6, A20, A21, A22. Rationale for the six rulings against the proposal: `docs/superpowers/specs/2026-09-08-brain-spec-amendments-design.md` § "Milestone 5b". The proposal itself: `docs/superpowers/specs/2026-09-14-vocabulary-redesign.md` (the spec wins where they differ).
+**Spec:** `BRAIN-SPEC.md` — R6.0, **R6.0a**, **R6.0b**, R4.6.2, R4.6.3, R10.3, **R10.7b**, **R10.13** (amended: `i` opens the pane), R10.14, **R10.13a**, R10.15, §10.6, A20, A21, A22. Rationale for the six rulings against the proposal: `docs/superpowers/specs/2026-09-08-brain-spec-amendments-design.md` § "Milestone 5b". The proposal itself: `docs/superpowers/specs/2026-09-14-vocabulary-redesign.md` (the spec wins where they differ).
 
 ## Global Constraints
 
@@ -36,7 +36,7 @@
 | `brain/commands.py` | `Verb` + `Plan` fields; `_reference_sites`, `validate`, `validate_batch`, `_dry_run_effect` read them; new verbs `log`(rewritten) `todo` `decide` `query` `set` `link`(reshaped) `file`; `TOMBSTONES` in `find_verb`; old verbs deleted; `note add` accepts `[meeting]` only |
 | `brain/model.py` | `Doc.add_minute(section, day, line)` |
 | `brain/entities.py` | `NOTE_TYPES = ("note", "meeting")`, `LEGACY_NOTE_TYPES = ("action", "decision")` read-only |
-| `brain/tui.py` | bindings `t d s H` removed; `x`/`e`/`i`/`o` argv; `capture_ref` → `re:<id>` on a flagged note; flagged note in the tree; help table; no type chip |
+| `brain/tui.py` | bindings `t d s H` removed; `i` opens the capture pane (type `note`), `o` the same (type `meeting`); modeline capture removed; `x`/`e` argv; `capture_ref` → `re:<id>` on a flagged note; pane head shows the tag; flagged note in the tree; help table; no type chip in the modeline |
 | `tests/test_verb_hooks.py` | new — Task 1 |
 | `tests/test_vocabulary.py` | new — the R6.0a table (A20), `file` (A21), tombstones (R6.0b) |
 | `tests/test_commands*.py`, `tests/test_apply.py`, `tests/test_acceptance_apply.py`, `tests/test_batch_validation.py`, `tests/test_rollup.py`, `tests/test_context.py`, `tests/test_tree_cache.py`, `tests/test_execute_split.py`, `tests/test_git_undo.py`, `tests/test_cli.py`, `tests/test_grammar.py`, `tests/test_yaml_fast_path.py`, `tests/test_verb_declarations.py` | old verbs → new (Task 6) |
@@ -1558,27 +1558,34 @@ Claude-Session: https://claude.ai/code/session_013xGqVDq1uaH3ho1HCTAzTf"
 
 ---
 
-### Task 7: The TUI — keys, argv, reply, help
+### Task 7: The TUI — `i` is the pane, `todo` argv, reply, help
 
 **Files:**
-- Modify: `brain/tui.py` — `BINDINGS` (~1829), `action_cycle_type`/`action_due_prompt`/`action_status_prompt`/`action_health_prompt` (delete), `action_tick` (~2842), `_run_pending` (~2578), INSERT commit (~2561), `CapturePane._save` (~450) and its `:t` branch (~426) and notice text (~437), `_redraw` head (~469), modeline (`_chip` in INSERT and NORMAL, ~967/~1002), `capture_ref` (~2196), `_note_label`/`_note_right` (~1035), `HELP_SECTIONS` (~525), `self.note_type` (~1876), `TYPE_COLORS` (~90)
+- Modify: `brain/tui.py` — `BINDINGS` (~1829), `action_insert` (~2398), `action_capture` (~2423), `action_cycle_type`/`action_due_prompt`/`action_status_prompt`/`action_health_prompt` (delete), `action_tick` (~2842), `_run_pending` (~2578), the INSERT commit path (~2555: the plain-capture branch goes; only `_run_pending` remains), `_stash_note`/`_unstash_note` and `action_maybe_quit`'s unsent-text guard (the modeline never holds a note now — delete the stash, keep the guard for an open pane), `CaptureScreen.__init__`/`_save`/`_redraw`/the `:t` branch (~271–520), modeline (`_chip` in INSERT and NORMAL, ~967/~1002), `capture_ref` (~2196), `_note_label`/`_note_right` (~1035), `HELP_SECTIONS` (~525), `self.note_type` (~1876), `TYPE_COLORS` (~90)
 - Test: `tests/test_tui.py`
 
 **Interfaces:**
-- `i` → `["note", "add", "--tag", <ref>, "-f", "-"]` or `["note", "add", "-f", "-"]`; on a flagged note `<ref>` is `"re:<id>"`.
-- `o` → `["note", "add", "meeting", "--tag", <ref>, "-f", "-"]` (tag omitted when none).
+- `CaptureScreen(preview_id: str, note_type: str, ref: Optional[str])` — `note_type` is `"note"` (from `i`) or `"meeting"` (from `o`); `ref` is `app.capture_ref` at the moment the pane opened (the selection can change under a poll, the tag must not). `_save` sends `["note", "add"] + (["meeting"] if meeting) + (["--tag", ref] if ref) + ["-f", "-"]` with `body` on stdin.
+- `i` → `push_screen(CaptureScreen(id, "note", self.capture_ref))`; `o` → the same with `"meeting"`. `action_insert` and `action_capture` share one `_open_capture(note_type)`.
 - `x` → `["todo", <slug>, "done", <n>]`; `e` → `["todo", <slug>, "edit", <n>, "--", <text>]`.
 - Produces `NoteItem.flagged: bool` and `NoteItem.question: str` (the `> ?` line's text after the marker, `""` when not flagged).
 - `BrainApp.note_type` attribute removed; `TYPE_COLORS` keeps `note`/`meeting` and the two legacy keys for old inboxes.
+- INSERT mode in the modeline exists only for prompts (`e`, `Q`, `/`); `app.buffer` with `prompt is None` is unreachable.
 
 - [ ] **Step 1: Rewrite the affected tests** in `tests/test_tui.py`:
 
 - `test_x_ticks_the_focused_open_action`: `assert sent == [["todo", "acme-migration", "done", "1"]]`.
 - `test_e_edits_the_focused_action_in_place`: `["todo", "acme-migration", "edit", "1", "--", "Confirm the DNS cutover window with Sara"]`.
-- `test_a_note_captured_on_an_entity_is_tagged_with_it`: argv `["note", "add", "--tag", "acme-migration", "-f", "-"]`.
+- `i` tests now drive the pane: after `await pilot.press("i")`, `assert isinstance(pilot.app.screen, CaptureScreen)`; type with `pilot.press(*"line one", "enter", *"line two")`; save with `pilot.press(":", "w", "enter")` (look at `test_o_opens_the_capture_pane_and_w_saves_one_note` for the exact key sequence the pane's `:` line takes — it opens only at the start of an empty line, so press `"enter"` first when the current line has text, and assert the saved body accordingly).
+- `test_a_note_captured_on_an_entity_is_tagged_with_it`: `i`, assert `"#acme-migration"` is in the pane head (`pilot.app.screen.query_one("#capture-head", Static).renderable`), type `bram wants sign-off`, save; argv `["note", "add", "--tag", "acme-migration", "-f", "-"]`, stdin `"bram wants sign-off"`.
 - `test_a_note_captured_on_a_group_header_or_a_note_has_no_ref`: `["note", "add", "-f", "-"]`.
-- `test_enter_captures_verbatim_via_note_add_on_stdin`, `test_o_opens_the_capture_pane_and_w_saves_one_note`, `test_the_real_brain_captures_the_bytes_and_commits`: drop the `"note"` type token from `i` argv; `o` sends `["note", "add", "meeting", "--tag", "acme-migration", "-f", "-"]`.
-- Delete `test_t_cycles_the_note_type_and_the_chip_shows_it`, `test_d_prompts_for_a_due_date`, `test_s_prompts_for_a_status`, `test_H_prompts_for_a_health`.
+- `test_enter_captures_verbatim_via_note_add_on_stdin` becomes `test_w_captures_every_line_verbatim_via_note_add_on_stdin`: type three lines with `enter` between them, save; stdin is exactly `"one\ntwo\nthree"`. Mutation: `"\n".join` → `" ".join` in `CaptureScreen.body`.
+- `test_i_enters_insert_and_esc_returns_keeping_the_text`: `i`, type, `escape` → the pane asks (`"Discard this note?"` in the foot), `n` keeps typing, the text is still there; `escape`, `y` discards and returns to NORMAL with no `brain` call.
+- `test_insert_keys_are_words_not_commands`: the same assertion, in the pane — `:` mid-line is text, `sara: thursday` survives.
+- `test_o_opens_the_capture_pane_and_w_saves_one_note`: `o` sends `["note", "add", "meeting", "--tag", "acme-migration", "-f", "-"]`.
+- `test_the_real_brain_captures_the_bytes_and_commits`: through `i` and `:w`; the note's type is `note`, its tag `acme-migration`.
+- Delete `test_t_cycles_the_note_type_and_the_chip_shows_it`, `test_d_prompts_for_a_due_date`, `test_s_prompts_for_a_status`, `test_H_prompts_for_a_health`, and any test of `_stash_note`/`_unstash_note` (grep `stash`) — a prompt no longer has a note to stash.
+- `test_i_on_a_flagged_note_replies_with_a_re_tag` (below): assert `"#re:n8"` in the pane head, not the modeline.
 - Add (A22):
 
 ```python
@@ -1612,8 +1619,8 @@ async def test_i_on_a_flagged_note_replies_with_a_re_tag(brain_repo, monkeypatch
         _select_note(pilot, "n8")
         assert "?" in str(_tree_node(pilot, "n8").label), "a flagged note is marked in the tree"
         await pilot.press("i")
-        assert "#re:n8" in _modeline(pilot)
-        await pilot.press(*"the second week", "enter")
+        assert "#re:n8" in _pane_head(pilot)
+        await pilot.press(*"the second week", "enter", ":", "w", "enter")
     assert sent == [["note", "add", "--tag", "re:n8", "-f", "-"]]
 
 
@@ -1625,7 +1632,7 @@ async def test_i_on_an_unflagged_note_has_no_ref(brain_repo, monkeypatch):
                         lambda self, argv, stdin=None: (sent.append(argv), (0, "captured n10", ""))[1])
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         _select_note(pilot, "n8")
-        await pilot.press("i", *"x", "enter")
+        await pilot.press("i", *"x", "enter", ":", "w", "enter")
     assert sent == [["note", "add", "-f", "-"]]
 
 
@@ -1635,21 +1642,39 @@ async def test_no_type_chip_anywhere(brain_repo):
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         assert " NOTE " not in _modeline(pilot)
         await pilot.press("i")
+        assert " NOTE " in _pane_head(pilot), "the pane says what it is"
         assert " NOTE " not in _modeline(pilot)
 ```
 
-Write `_select_note(pilot, note_id)` and `_tree_node(pilot, note_id)` helpers next to `_focus_open_action` — look at how `test_a_note_captured_on_a_group_header…` and the INBOX tests (~line 840–860) reach the INBOX group's children and select one; reuse that mechanism (`app.query_one(Tree)`, walk `inbox.children`, `tree.select_node(node)` or `move_cursor`), then `await pilot.pause()`.
+Write `_pane_head(pilot) -> str` (`str(pilot.app.screen.query_one("#capture-head", Static).renderable)`), `_select_note(pilot, note_id)` and `_tree_node(pilot, note_id)` helpers next to `_focus_open_action` — look at how `test_a_note_captured_on_a_group_header…` and the INBOX tests (~line 840–860) reach the INBOX group's children and select one; reuse that mechanism (`app.query_one(Tree)`, walk `inbox.children`, `tree.select_node(node)` or `move_cursor`), then `await pilot.pause()`.
 
 Run: `python -m pytest tests/test_tui.py -q` — expected: the rewritten and new tests FAIL; the rest pass.
 
 - [ ] **Step 2: Implement**
 
 - `BINDINGS`: remove the `t`, `d`, `s`, `H` lines. Delete `action_cycle_type`, `action_due_prompt`, `action_status_prompt`, `action_health_prompt`. Delete `self.note_type = …` in `__init__`.
-- INSERT commit: `argv = ["note", "add"]` (no type); keep the `--tag` branch.
+- `action_insert` and `action_capture` both call `self._open_capture("note")` / `self._open_capture("meeting")`:
+
+```python
+    def _open_capture(self, note_type: str) -> None:
+        """R10.13/R10.14: `i` and `o` open the same pane; the type is the
+        only difference. The tag is read NOW - the selection may change under
+        a poll while the pane is open, and the note is about what was looked
+        at when the key was pressed."""
+        self.notice = None
+        self.prompt = None
+        self._pending = None
+        self.mode = INSERT
+        self._focus_before = self.focused
+        self.push_screen(CaptureScreen(self._preview_note_id(), note_type, self.capture_ref))
+        self._render_modeline()
+```
+
+- The INSERT commit path (`⏎` in the modeline): delete the plain-capture branch (`body = self.buffer … note add …`); `⏎` with `self._pending is None` does nothing but `_leave_to_normal()`. Delete `_stash_note`/`_unstash_note` and every call; `action_maybe_quit`'s guard now asks only when a `CaptureScreen` is open with text (`isinstance(self.screen, CaptureScreen) and self.screen.body().strip()`).
 - `_run_pending`: keep `edit`, `search`, `request`; delete the `due`/`status`/`health` branches; `edit` sends `["todo", slug, "edit", str(index), "--", value]`. Update the docstring: `e` and `Q` and `/`.
 - `action_tick`: `["todo", project.slug, "done", str(index)]`.
-- `CapturePane._save`: `argv = ["note", "add", "meeting"]` + `["--tag", app.capture_ref]` if set + `["-f", "-"]`. Remove the `elif name == "t":` branch; notice text becomes `"kept as text - :w saves, esc cancels"`. `_redraw`: `head.append_text(_chip("meeting"))`.
-- Modeline: in INSERT with no prompt, drop `_chip(app.note_type)` (keep the `#ref` echo, which now begins the segment); in NORMAL drop `right.append_text(_chip(app.note_type)); right.append("  ")`.
+- `CaptureScreen.__init__(self, preview_id, note_type, ref)`: store all three. `_save`: `argv = ["note", "add"] + (["meeting"] if self.note_type == "meeting" else []) + (["--tag", self.ref] if self.ref else []) + ["-f", "-"]`. Remove the `elif name == "t":` branch; notice text becomes `"kept as text - :w saves, esc cancels"`; the foot loses `key(":t", "type")`. `_redraw` head: `_chip(self.note_type)`, then `"  new note"` / `"  new meeting note"`, then — when `self.ref` — `"  #" + self.ref` in VIOLET for a party, TEAL otherwise (pass `app.selected_is_party` at open time as a fourth argument `party: bool = False`, or compute the colour from the ref's kind via the tree; the simplest is the extra argument).
+- Modeline: INSERT shows only the prompt (`app.prompt` is always set now) — delete the `else:` branch with `_chip(app.note_type)` and the `#ref` echo; in NORMAL drop `right.append_text(_chip(app.note_type)); right.append("  ")`; the INSERT hint is always `"⏎ send · esc cancel"`.
 - `capture_ref`: 
 
 ```python
@@ -1704,7 +1729,7 @@ Run: `python -m pytest tests/test_tui.py -q` — expected: the rewritten and new
 ```
 
 - `TYPE_COLORS = {"note": TEAL, "meeting": VIOLET, "action": AMBER, "decision": GREEN}` — keep (legacy notes still render).
-- grep `brain/tui.py` for `note_type`, `cycle_type`, `"d"`, `due_prompt`, `status_prompt`, `health_prompt`, `:t ` — nothing left.
+- grep `brain/tui.py` for `cycle_type`, `"d"`, `due_prompt`, `status_prompt`, `health_prompt`, `_stash_note`, `:t ` — nothing left; `note_type` survives only as `CaptureScreen`'s attribute.
 
 - [ ] **Step 3: Run the TUI suite and the full suite (with and without textual)**
 
@@ -1764,7 +1789,7 @@ Claude-Session: https://claude.ai/code/session_013xGqVDq1uaH3ho1HCTAzTf"
 
 ## Self-review
 
-**Spec coverage.** R6.0a table: every cell — Task 2 (`log`/`decide`/`query`), 3 (`todo`), 4 (`set`/`link`), 5 (`file`), verified row by row in Task 6's A20. Bullets under R6.0a: `--ref` (T2), `todo` sub-words and selectors (T3), `set … -- value` (T4), `file` one-line + `--as <verb>` (T5), static refusals (T1 hooks, used T3–T5). R6.0b tombstones (T6). R4.6.2 two types + legacy read (T6). R4.6.3 `re:<id>` (T7). R10.3 key table / R10.7b / R10.13a / R10.15 (T7). §6.2 + R8.1 batch = A7 (T6). A20 (T6), A21 (T5), A22 (T7). §10.6 PNGs: not regenerated by design. CLAUDE.md (T8). Nothing in the spec's Task list is left unassigned.
+**Spec coverage.** R10.13 amended (`i` is the pane) and R10.14 (the head shows the tag) — Task 7. R6.0a table: every cell — Task 2 (`log`/`decide`/`query`), 3 (`todo`), 4 (`set`/`link`), 5 (`file`), verified row by row in Task 6's A20. Bullets under R6.0a: `--ref` (T2), `todo` sub-words and selectors (T3), `set … -- value` (T4), `file` one-line + `--as <verb>` (T5), static refusals (T1 hooks, used T3–T5). R6.0b tombstones (T6). R4.6.2 two types + legacy read (T6). R4.6.3 `re:<id>` (T7). R10.3 key table / R10.7b / R10.13a / R10.15 (T7). §6.2 + R8.1 batch = A7 (T6). A20 (T6), A21 (T5), A22 (T7). §10.6 PNGs: not regenerated by design. CLAUDE.md (T8). Nothing in the spec's Task list is left unassigned.
 
 **Placeholders.** `test_file_defaults_to_log` is given as a sketch plus a correction paragraph; the implementer writes the corrected form. Every other test is final as written.
 
