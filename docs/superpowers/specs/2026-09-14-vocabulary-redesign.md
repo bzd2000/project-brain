@@ -51,7 +51,7 @@ kind and does the kind-appropriate thing, or refuses **by name**.
 | `todo <t> [--owner] [--due] -- text` | `## Next actions` | refuse: "a program has no actions" | `## Pending` as `- [ ]` |
 | `todo <t> done <n\|words>` · `edit <n> -- text` · `due <n> --to <date>` | as today's `action …` | — | on the pending checkbox |
 | `decide <t> -- text` | `## Decisions` | `## Log`, `decision:` prefix | `## Minutes` / `## History` |
-| `ask <t> -- text` | `## Open questions` | `## Log`, `question:` prefix | `## Pending`, `question:` prefix |
+| `query <t> -- text` | `## Open questions` | `## Log`, `question:` prefix | `## Pending`, `question:` prefix |
 | `set <t> <field> <value>` | any field; `status`/`health` validated | any field | any field; `cadence`/`next_meeting` validated |
 | `link <t> <ref>` | `program:` | — | appends to `projects:` |
 
@@ -72,7 +72,7 @@ note drop <note>                                      done with it
 |---|---|
 | `log` · `raise` | `log` |
 | `action add` · `done` · `edit` · `due` | `todo` · `todo … done` · `edit` · `due` |
-| `decision add` · `question add` | `decide` · `ask` |
+| `decision add` · `question add` | `decide` · `query` |
 | `status set` · `health set` · `field set` | `set` |
 | `link --program` · `raise --ref` · `note add --tag` | `link` |
 | — | `file` |
@@ -150,5 +150,6 @@ learned it costs a retrain; changing it before costs one milestone.
 - `i` stays the capture key (muscle memory).
 - The detailed vocabulary stays reachable at `:`.
 - `link`, not `about` — the word already exists.
+- `query`, not `ask` — reads as the noun it adds, an open question.
 - `todo`, not `action` — kind-neutral; the note type `action` goes away
   with the chip, so the consistency argument for `action` is gone too.
