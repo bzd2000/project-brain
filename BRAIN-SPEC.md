@@ -541,7 +541,7 @@ brain note show <id>
 brain note flag <id> -- <reason>
 brain note drop <id>
 
-# The seven daily verbs. One shape: <verb> <target> [<what>] [--flag v]... -- <text>
+# The six daily verbs. One shape: <verb> <target> [<what>] [--flag v]... -- <text>
 brain log <target> [--ref <entity>] -- <text>
 brain todo <project> [--owner who] [--due when] -- <text>
 brain todo <project> done <n> | done -- <words>
@@ -551,7 +551,6 @@ brain decide <target> -- <text>
 brain query <target> -- <text>
 brain set <target> <field> -- <value>
 brain link <target> <ref>
-brain file <note> <target> [--as log|todo|decide|query] [--owner who] [--due when]
 
 brain agenda material <stakeholder|board>      # deterministic gather, to stdout
 brain agenda set <stakeholder|board> -f -      # write ## Next agenda from stdin
@@ -571,8 +570,8 @@ brain undo
 brain rewrite <entity> [--finish|--abort]   # escape hatch, §8.4
 ```
 
-**R6.0a One shape, every kind** (vocabulary redesign, 2026-09-15). The seven
-daily verbs — `log`, `todo`, `decide`, `query`, `set`, `link`, `file` — are
+**R6.0a One shape, every kind** (vocabulary redesign, 2026-09-15). The six
+daily verbs — `log`, `todo`, `decide`, `query`, `set`, `link` — are
 written by the LLM in every batch and by a human at `:` perhaps once a week,
 so they are designed for the LLM: **one shape, and every verb accepts every
 entity kind and does the kind-appropriate thing, or refuses by name, naming
@@ -590,7 +589,6 @@ agent had to learn and a user had to remember, and they are gone.
 | `query` | `## Open questions` | `## Log`, `question:` prefix | `## Pending`, `question:` prefix |
 | `set` | any front-matter field; `status`/`health` validated against their lists; `program` refused → `link` | same | same; `projects` refused → `link` |
 | `link` | sets `program:` — `<ref>` must be a program | refused: "programs never list their projects (R4.1) — link the project" | appends `<ref>` (a project) to `projects:`; already there is a no-op that says so |
-| `file` | the note's body becomes the line the named verb would add, byte for byte, and the note is dropped — one line in the batch, both writes | | |
 
 - `log --ref <entity>` appends `  #<slug>` to the line on any kind — the
   cross-reference `raise --ref` used to make. `link` is not that: `link` is
@@ -609,12 +607,12 @@ agent had to learn and a user had to remember, and they are gone.
   place; the earlier `status set q4-budget active` was the exception. Field
   names are bare `key`s of the front matter; the entity's own title key
   (`project:`, `stakeholder:`, …) is settable like any other.
-- `file <note> <target> --as <verb>` defaults to `--as log`. It exists so the
-  LLM does not retype the user's words (R7.1.4, R8.3) — the line carries the
-  body verbatim. It **refuses a body of more than one non-blank line** by
-  count ("n7 has 4 lines — a meeting is decomposed, not filed"): the single
-  line is what `i` captures, and a multi-line body would have to be joined or
-  truncated, both of which rewrite the user's words.
+- **There is no `file` verb.** The proposal had one — the note's line copied
+  onto the target verbatim and the note dropped, in one batch line. It is
+  `<verb> <target> -- <the note's words>` plus `note drop <id>`, which a batch
+  already makes atomic (R6.5); what it would add is a guard against the LLM
+  retyping the user's words inexactly (R7.1.4), and no LLM has processed a
+  note yet. Built when milestone 6 measures that drift, not before.
 - Refusals are static (R6.5.1): kind is known from the projected namespace,
   so `todo cloud-migration -- x` fails `--dry-run` naming the line.
 
@@ -1295,7 +1293,7 @@ Each step independently usable before the next.
 5. **`tui.py`** — tree, detail, capture, search, `_request.md` queueing. At this
    point the whole thing is useful with no model at all. **Pause here and use it
    for a week** before writing a line of `AGENTS.md`.
-   - **5b. Vocabulary** — R6.0a/R6.0b, R4.6.2, R10.7b: the seven verbs, the
+   - **5b. Vocabulary** — R6.0a/R6.0b, R4.6.2, R10.7b: the six verbs, the
      tombstones, the keys. Inserted after an hour of use, before `AGENTS.md`
      learns the old names; §12's numbers are not shifted.
 6. **`AGENTS.md`** + `process inbox`, tuned against real captured notes.
@@ -1407,17 +1405,15 @@ empty, add a fourth: it is `n4` (R4.6.6).
 **A17** Outside a git repository every write verb refuses and exits non-zero, and
 no file is created or modified (R11.1a).
 
-**A20** Every cell of R6.0a's table, table-driven: for each of the seven
+**A20** Every cell of R6.0a's table, table-driven: for each of the six
 verbs and each of the four kinds, either the named section changes by
 exactly the expected lines (full repo diff, A4) or the verb refuses before
 any write, and the refusal names the verb to use instead. A refused line in
 a batch fails `--dry-run` (R6.5.1). Every tombstone of R6.0b refuses naming
 its replacement, in the shell and in a batch.
 
-**A21** `file n9 acme-migration --as todo --owner me --due 2026-09-11`
-produces exactly the `## Next actions` line `todo` would have produced from
-n9's body, byte for byte, and n9 is gone from `inbox.md` — one commit. A
-two-line note is refused and nothing changes.
+**A21** ~~`file n9 acme-migration --as todo` …~~ Not built (R6.0a: no `file`
+verb). Reserved; the number is not reused.
 
 **A22** With the TUI on a project, `x` on an open action sends `todo <slug>
 done <n>` and `e` sends `todo <slug> edit <n> -- <text>`; `i` opens the pane

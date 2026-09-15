@@ -1,6 +1,6 @@
 # The vocabulary, redesigned
 
-**Status:** agreed with the user 2026-09-15; written into `BRAIN-SPEC.md` as R6.0a/R6.0b, R4.6.2, R10.7b, R10.13a, A20–A22 the same day, with six rulings recorded in the amendments design doc (§ "Milestone 5b"). Where this document and the spec differ, the spec wins.
+**Status:** agreed with the user 2026-09-15; written into `BRAIN-SPEC.md` as R6.0a/R6.0b, R4.6.2, R10.7b, R10.13a, A20–A22 the same day, with seven rulings recorded in the amendments design doc (among them: no `file` verb, and `i` opens the pane) (§ "Milestone 5b"). Where this document and the spec differ, the spec wins.
 
 **Where it came from.** The user, after one hour of real use: *"the vocabulary
 should be consistent between all entities … called from the TUI

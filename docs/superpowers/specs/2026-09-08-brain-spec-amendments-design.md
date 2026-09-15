@@ -337,13 +337,15 @@ so `action add` fails loudly with `todo <project> -- <text>` in the message.
 Removed the milestone after. Cost if wrong: nothing; an alias can be added
 in an afternoon.
 
-**4. `file` refuses a multi-line body.** The proposal did not say what
-`file` does with a note of several lines. Joining them rewrites the user's
-words (R4.6.1's principle); truncating loses them. A one-line note — what
-`i` captures — files verbatim; a meeting note is decomposed with
-`log`/`todo`/`decide`/`query` and dropped, which is what §8.1 already
-describes. `--as` takes the verb's own name (`log|todo|decide|query`) rather
-than a third spelling (`todo|decision|question`).
+**4. No `file` verb** (user, 2026-09-15: *"we don't need this, right?"*).
+The proposal had `file <note> <target> --as <verb>`: the note's line copied
+verbatim, the note dropped, one batch line. First draft of this milestone
+kept it and spent a ruling on what it does with a multi-line note (refuse:
+joining rewrites the words). But it is `<verb> <target> -- <words>` +
+`note drop`, which a batch already makes atomic; the one thing it adds — the
+LLM cannot retype the words wrongly — guards against a drift nobody has
+measured because no LLM has processed a note yet. Cut. Cost if wrong: an
+afternoon in milestone 6, built against an observed mis-quote.
 
 **5. Two note types, not none.** Removing the chip could have removed the
 type column from the header. It stays, with two values that record *how* the
@@ -366,12 +368,12 @@ three lines as one, the pane already exists, and its head now shows what
 the note is tagged with — the context. Modeline capture is removed rather
 than kept as a third way. The shell and `:` stay one line; the pane is the
 TUI's only multi-line surface, and notes are its only multi-line content —
-**an entry (log line, action, decision, question) is still one line**, so
-`file` still refuses a multi-line note. Whether entries should grow
-continuation lines is deferred until a week of multi-line `i` notes shows
-how often one thought spans lines and gets decomposed anyway.
+**an entry (log line, action, decision, question) is still one line**.
+Whether entries should grow continuation lines is deferred until a week of
+multi-line `i` notes shows how often one thought spans lines and gets
+decomposed anyway.
 
-Not changed from the proposal: the seven verbs and their names; `i` as the
+Not changed from the proposal: the six remaining verbs and their names; `i` as the
 one capture key; `t`/`d`/`s`/`H` removed; `re:<id>` replies; kind dispatch
 for `log`, `decide`, `query`, `link`; `todo`'s sub-words after the target
 (`todo acme done 2`), which keep the user's shape and `action …`'s selectors.

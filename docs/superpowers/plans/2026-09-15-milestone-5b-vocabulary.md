@@ -2,20 +2,20 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the eleven per-kind write verbs with the seven regular ones of R6.0a (`log`, `todo`, `decide`, `query`, `set`, `link`, `file`), kind-dispatched and refusing by name; tombstone the old names (R6.0b); reduce capture to two types (R4.6.2); and make the TUI's keys send the new argv (R10.7b, R10.13a, R10.15 struck, A20–A22).
+**Goal:** Replace the eleven per-kind write verbs with the six regular ones of R6.0a (`log`, `todo`, `decide`, `query`, `set`, `link`), kind-dispatched and refusing by name; tombstone the old names (R6.0b); reduce capture to two types (R4.6.2); and make the TUI's keys send the new argv (R10.7b, R10.13a, R10.15 struck, A20–A22).
 
-**Architecture:** Everything stays in `brain/commands.py`'s registry. Four small additions to `Verb` (`ref_index`, `extra_refs`, `shape`, `check`) let `validate`/`validate_batch` refuse a wrong kind or a wrong sub-shape *statically*, before any write, so `--dry-run` reports what the run would refuse (R6.5.1). Each new verb resolves its target with no `kinds` restriction and dispatches on `entity.kind`. One `Doc` mutator is added (`add_minute`, for `decide` on a board). The TUI changes are argv strings, four removed bindings and the help table. No file format changes.
+**Architecture:** Everything stays in `brain/commands.py`'s registry. Three small additions to `Verb` (`extra_refs`, `shape`, `check`) let `validate`/`validate_batch` refuse a wrong kind or a wrong sub-shape *statically*, before any write, so `--dry-run` reports what the run would refuse (R6.5.1). Each new verb resolves its target with no `kinds` restriction and dispatches on `entity.kind`. One `Doc` mutator is added (`add_minute`, for `decide` on a board). The TUI changes are argv strings, four removed bindings and the help table. No file format changes.
 
 **Tech Stack:** Python 3 stdlib below the TUI (R3.3); `textual==8.2.8` in `brain/tui.py` only; pytest + pytest-asyncio; a real `git` on `PATH`.
 
-**Spec:** `BRAIN-SPEC.md` — R6.0, **R6.0a**, **R6.0b**, R4.6.2, R4.6.3, R10.3, **R10.7b**, **R10.13** (amended: `i` opens the pane), R10.14, **R10.13a**, R10.15, §10.6, A20, A21, A22. Rationale for the six rulings against the proposal: `docs/superpowers/specs/2026-09-08-brain-spec-amendments-design.md` § "Milestone 5b". The proposal itself: `docs/superpowers/specs/2026-09-14-vocabulary-redesign.md` (the spec wins where they differ).
+**Spec:** `BRAIN-SPEC.md` — R6.0, **R6.0a**, **R6.0b**, R4.6.2, R4.6.3, R10.3, **R10.7b**, **R10.13** (amended: `i` opens the pane), R10.14, **R10.13a**, R10.15, §10.6, A20, A22 (A21 is reserved, not built). Rationale for the six rulings against the proposal: `docs/superpowers/specs/2026-09-08-brain-spec-amendments-design.md` § "Milestone 5b". The proposal itself: `docs/superpowers/specs/2026-09-14-vocabulary-redesign.md` (the spec wins where they differ).
 
 ## Global Constraints
 
 - **Only `brain` writes** (invariant 1). The TUI shells out via `BrainApp.run_brain`; it never touches a `Doc`.
 - **Surgical edits** (R5.1, invariant 2): every mutation changes the minimum lines. **Tests assert on a full repo snapshot** (A4) — `assert_only_changed` for same-length edits, the `_inserted`/`_in_place`/`_bodies` helpers of `tests/test_vocabulary.py` for inserts — never by reading the target file alone.
 - **Free text is always last and always follows ` -- `** (R6.0, R6.4, invariant 13). `set`'s value is free text. Note bodies never travel by argv.
-- **Note bodies are never rewritten** (R4.6.1, invariant 5). `file` copies one body line byte for byte.
+- **Note bodies are never rewritten** (R4.6.1, invariant 5).
 - **Batches are atomic and validated statically** (R6.5, R6.5.1, invariant 6). A kind refusal or a bad sub-shape fails `apply --dry-run` naming the line.
 - **Ambiguity is an error listing candidates, never a guess** (R6.2, invariant 8).
 - **Stdlib only below `brain/tui.py`** (R3.3). `tests/test_stdlib_only.py` guards it.
@@ -23,7 +23,7 @@
 - **`tests/conftest.py` is frozen.** Add fixtures in the test file that needs them.
 - **The mutation rule.** For every test you write, name the mutation that reddens it, apply the mutation, **confirm by grep that it is present**, run the test red, revert, run green. A test that passed against an unapplied mutation proves nothing. Record the mutation in the test's docstring in one line.
 - **Refusals name the verb to use instead** (R6.0a). Every refusal message in this plan is given verbatim; use it as written.
-- **Exact spellings.** Verb names: `log todo decide query set link file`. Sub-words: `done edit due`. Flags: `--ref --owner --due --to --as --tag`. `--as` values: `log todo decide query`. Note types: `note meeting`. Reply tag: `re:<id>`.
+- **Exact spellings.** Verb names: `log todo decide query set link`. Sub-words: `done edit due`. Flags: `--ref --owner --due --to --tag`. Note types: `note meeting`. Reply tag: `re:<id>`.
 - **Dated lines** are `- YYYY-MM-DD - <text>` with `date.today().isoformat()`; tests compute the date the same way.
 - Model choice for executors: `sonnet` for every task; one review round per task; no separate reviewer for a task whose diff is under 60 lines.
 
@@ -33,33 +33,33 @@
 
 | File | Change |
 |---|---|
-| `brain/commands.py` | `Verb` + `Plan` fields; `_reference_sites`, `validate`, `validate_batch`, `_dry_run_effect` read them; new verbs `log`(rewritten) `todo` `decide` `query` `set` `link`(reshaped) `file`; `TOMBSTONES` in `find_verb`; old verbs deleted; `note add` accepts `[meeting]` only |
+| `brain/commands.py` | `Verb` + `Plan` fields; `_reference_sites`, `validate`, `validate_batch`, `_dry_run_effect` read them; new verbs `log`(rewritten) `todo` `decide` `query` `set` `link`(reshaped); `TOMBSTONES` in `find_verb`; old verbs deleted; `note add` accepts `[meeting]` only |
 | `brain/model.py` | `Doc.add_minute(section, day, line)` |
 | `brain/entities.py` | `NOTE_TYPES = ("note", "meeting")`, `LEGACY_NOTE_TYPES = ("action", "decision")` read-only |
 | `brain/tui.py` | bindings `t d s H` removed; `i` opens the capture pane (type `note`), `o` the same (type `meeting`); modeline capture removed; `x`/`e` argv; `capture_ref` → `re:<id>` on a flagged note; pane head shows the tag; flagged note in the tree; help table; no type chip in the modeline |
 | `tests/test_verb_hooks.py` | new — Task 1 |
-| `tests/test_vocabulary.py` | new — the R6.0a table (A20), `file` (A21), tombstones (R6.0b) |
-| `tests/test_commands*.py`, `tests/test_apply.py`, `tests/test_acceptance_apply.py`, `tests/test_batch_validation.py`, `tests/test_rollup.py`, `tests/test_context.py`, `tests/test_tree_cache.py`, `tests/test_execute_split.py`, `tests/test_git_undo.py`, `tests/test_cli.py`, `tests/test_grammar.py`, `tests/test_yaml_fast_path.py`, `tests/test_verb_declarations.py` | old verbs → new (Task 6) |
-| `tests/test_tui.py` | argv assertions, A22 (Task 7) |
-| `CLAUDE.md` | status, command examples, key list (Task 8) |
+| `tests/test_vocabulary.py` | new — the R6.0a table (A20), tombstones (R6.0b) |
+| `tests/test_commands*.py`, `tests/test_apply.py`, `tests/test_acceptance_apply.py`, `tests/test_batch_validation.py`, `tests/test_rollup.py`, `tests/test_context.py`, `tests/test_tree_cache.py`, `tests/test_execute_split.py`, `tests/test_git_undo.py`, `tests/test_cli.py`, `tests/test_grammar.py`, `tests/test_yaml_fast_path.py`, `tests/test_verb_declarations.py` | old verbs → new (Task 5) |
+| `tests/test_tui.py` | argv assertions, A22 (Task 6) |
+| `CLAUDE.md` | status, command examples, key list (Task 7) |
 
 ---
 
-### Task 1: Registry plumbing — `ref_index`, `extra_refs`, `shape`, `check`
+### Task 1: Registry plumbing — `extra_refs`, `shape`, `check`
 
-The four hooks every new verb needs, added to the registry and honoured by validation, before any verb uses them. Old verbs keep working unchanged (every new field defaults to "absent").
+The three hooks the new verbs need, added to the registry and honoured by validation, before any verb uses them. Old verbs keep working unchanged (every new field defaults to "absent").
 
 **Files:**
 - Modify: `brain/commands.py` — `Verb` (line ~52), `verb()` decorator (~99), `Plan` (~785), `_reference_sites` (~1015), `validate` (~818), `validate_batch` (~1137), `_dry_run_effect` (~1242)
 - Test: `tests/test_verb_hooks.py` (new)
 
 **Interfaces:**
-- Produces on `Verb`: `ref_index: int = 0`, `extra_refs: Tuple[Tuple[int, Tuple[str, ...]], ...] = ()`, `shape: Optional[Callable[[List[str], Dict[str, str], Optional[str]], None]] = None`, `check: Optional[Callable[["Plan"], None]] = None`; same four keyword arguments on the `verb()` decorator.
+- Produces on `Verb`: `extra_refs: Tuple[Tuple[int, Tuple[str, ...]], ...] = ()`, `shape: Optional[Callable[[List[str], Dict[str, str], Optional[str]], None]] = None`, `check: Optional[Callable[["Plan"], None]] = None`; same three keyword arguments on the `verb()` decorator.
 - Produces on `Plan`: `resolved_extra: Optional[Dict[int, object]] = None` (positional index → resolved entity, batch path only).
 - Produces `_refuse_kind(verb_label: str, entity, refused: Dict[str, str]) -> None` — raises `VerbError` when `entity.kind in refused`, message `"`{verb_label}` does not apply to {slug} ({kind}): {refused[kind].format(slug=slug)}"`.
 - `validate` calls `verb.shape(rest, flags, parsed.text)` after the arity/flag/text checks and before `value_choices`.
 - `validate_batch` calls `verb.check(plan)` after every reference site of the line is resolved (so `plan.resolved`, `plan.resolved_flags`, `plan.resolved_extra` are populated); a `VerbError` becomes a `BatchError` naming the line.
-- `_reference_sites` yields `(plan.positional[plan.verb.ref_index], plan.verb.ref_kinds, None)` for the primary and `(plan.positional[i], kinds, i)` for each `extra_refs` entry (`i` is an `int`; flag sites keep their `str` name).
+- `_reference_sites` yields `(plan.positional[0], plan.verb.ref_kinds, None)` for the primary and `(plan.positional[i], kinds, i)` for each `extra_refs` entry (`i` is an `int`; flag sites keep their `str` name).
 - `_dry_run_effect` appends each resolved extra as `_dry_run_target(entity)` (no flag prefix) to `extras`, in positional order, before the flag extras.
 
 - [ ] **Step 1: Write the failing tests**
@@ -135,17 +135,6 @@ def test_check_runs_in_validate_batch_after_resolution(brain_repo, scratch_verb)
     assert seen["kind"] == "project", "check must run AFTER the target is resolved"
 
 
-def test_ref_index_moves_the_primary_reference(brain_repo, scratch_verb):
-    """Mutation: make `_reference_sites` yield `positional[0]` regardless of
-    `ref_index` — `n9` then fails to resolve and the batch is refused."""
-    @scratch_verb("zz", arity=(2, 2), writes=False, ref_kinds=("project",), ref_index=1)
-    def _zz(root, positional, flags, text):
-        return c.Result("ran")
-
-    [(lineno, plan)] = c.validate_batch(brain_repo, "zz n9 acme-migration\n")
-    assert plan.resolved.slug == "acme-migration"
-
-
 def test_extra_refs_are_resolved_and_shown_in_dry_run(brain_repo, scratch_verb):
     """Mutation: drop the `extra_refs` loop from `_reference_sites` —
     `resolved_extra` stays None and the dry-run line loses the slug."""
@@ -197,10 +186,6 @@ Expected: every test FAILS — `verb() got an unexpected keyword argument 'shape
 In `class Verb(NamedTuple)`, after `bool_flags`:
 
 ```python
-    # R6.0a: which positional (after the verb's own words) names the PRIMARY
-    # entity. 0 for every verb but `file`, whose positional[0] is a note id
-    # and whose target is positional[1].
-    ref_index: int = 0
     # Other positionals that name an entity, as (index, kinds) - `link`'s
     # `<ref>`. Resolved statically like `flag_refs`, shown by `--dry-run`.
     extra_refs: Tuple[Tuple[int, Tuple[str, ...]], ...] = ()
@@ -217,7 +202,7 @@ In `class Verb(NamedTuple)`, after `bool_flags`:
     check: Optional[Callable[["Plan"], None]] = None
 ```
 
-Add the same four as keyword arguments of `verb()` (defaults `0`, `()`, `None`, `None`) and pass them through in `VERBS[tuple(name)] = Verb(...)`.
+Add the same three as keyword arguments of `verb()` (defaults `()`, `None`, `None`) and pass them through in `VERBS[tuple(name)] = Verb(...)`.
 
 In `class Plan(NamedTuple)`, after `resolved_flags`:
 
@@ -258,11 +243,11 @@ Replace `_reference_sites` with:
 def _reference_sites(plan: "Plan"):
     """Where `plan` names an entity, as `(ref, kinds, site)` triples - what a
     batch must resolve before writing any of it (R6.5.1). `site` is `None`
-    for the PRIMARY target (`positional[verb.ref_index]`), an `int` for an
+    for the PRIMARY target (`positional[0]`), an `int` for an
     `extra_refs` positional, and the flag's own name for a `flag_refs` site,
     so `--dry-run`'s preview can tell the three apart."""
     if plan.verb.ref_kinds is not None:
-        yield plan.positional[plan.verb.ref_index], plan.verb.ref_kinds, None
+        yield plan.positional[0], plan.verb.ref_kinds, None
     for index, kinds in plan.verb.extra_refs:
         if index < len(plan.positional):
             yield plan.positional[index], kinds, index
@@ -308,7 +293,7 @@ In `_dry_run_effect`, after the `value_choices` extras and before the flag loop:
 - [ ] **Step 5: Run the new tests and the whole suite**
 
 Run: `python -m pytest tests/test_verb_hooks.py -v && python -m pytest -q`
-Expected: all green (672 + 6).
+Expected: all green (672 + 5).
 
 - [ ] **Step 6: Mutation check, then commit**
 
@@ -316,12 +301,12 @@ For each test in `tests/test_verb_hooks.py`, apply its docstring's mutation with
 
 ```bash
 git add brain/commands.py tests/test_verb_hooks.py
-git commit -m "Registry: ref_index, extra_refs, shape and check hooks (R6.0a, R6.5.1)
+git commit -m "Registry: extra_refs, shape and check hooks (R6.0a, R6.5.1)
 
-Four fields on Verb so a kind-dispatched verb can be refused statically -
+Three fields on Verb so a kind-dispatched verb can be refused statically -
 by validate (shape) or by validate_batch once its references are resolved
-(check) - and so a verb's target need not be positional[0] (file) or its
-only reference (link's <ref>). Nothing uses them yet.
+(check) - and so a verb can name a second entity positionally (link's
+<ref>). Nothing uses them yet.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_013xGqVDq1uaH3ho1HCTAzTf"
@@ -331,7 +316,7 @@ Claude-Session: https://claude.ai/code/session_013xGqVDq1uaH3ho1HCTAzTf"
 
 ### Task 2: `log`, `decide`, `query` — every kind, dated
 
-`log` is rewritten in place (it exists, project-only, undated). `decide` and `query` are new; the old `decision add`/`question add` stay until Task 6. `raise` stays until Task 6 too — its tests keep passing.
+`log` is rewritten in place (it exists, project-only, undated). `decide` and `query` are new; the old `decision add`/`question add` stay until Task 5. `raise` stays until Task 5 too — its tests keep passing.
 
 **Files:**
 - Modify: `brain/model.py` — add `Doc.add_minute` after `add_question` (~line 391)
@@ -419,7 +404,7 @@ Run the test: PASS. Apply the docstring mutation, grep it, run red, revert, gree
 
 ```python
 """R6.0a: one shape, every kind. Each cell of the verb x kind table is one
-test here (A20), plus `file` (A21) and the tombstones (R6.0b) in later tasks.
+test here (A20), plus the tombstones (R6.0b) in a later task.
 
 Every test names its mutation in its docstring; each was applied, seen by
 grep, run red, reverted, run green.
@@ -746,7 +731,7 @@ One verb, four forms, the word after the target choosing the form. Selectors and
 **Interfaces:**
 - `todo <project> [--owner who] [--due when] -- <text>` adds; `todo <project> done <n>` / `todo <project> done -- <words>` ticks; `todo <project> edit <n> -- <text>` rewrites; `todo <project> due <n> --to <date>` / `todo <project> due --to <date> -- <words>` re-dates.
 - Declaration: `arity=(1, 3)`, `allowed_flags=("owner", "due", "to")`, `optional_text=True`, `ref_kinds=()`, `shape=_todo_shape`, `check=_todo_check`.
-- Produces `TODO_REFUSED: Dict[str, str]` (used again by `file --as todo` in Task 5) and `_todo_check(plan)`.
+- Produces `TODO_REFUSED: Dict[str, str]` and `_todo_check(plan)`.
 - Messages: add → `"added an action to {slug}"`; done → `"ticked {task.text} in {slug}"`; edit → `"edited an action on {slug}"`; due → `"{task.text} is now due {date}"`.
 
 - [ ] **Step 1: Failing tests** — append to `tests/test_vocabulary.py`:
@@ -950,7 +935,7 @@ Claude-Session: https://claude.ai/code/session_013xGqVDq1uaH3ho1HCTAzTf"
 
 ### Task 4: `set` and `link` — every kind
 
-`set` is new (`status set`/`health set`/`field set` stay until Task 6). `link` is **reshaped in place**: `link <target> <ref>` replaces `link <project> --program <program>`, so every use of the old shape in tests is rewritten in this task (grep list below).
+`set` is new (`status set`/`health set`/`field set` stay until Task 5). `link` is **reshaped in place**: `link <target> <ref>` replaces `link <project> --program <program>`, so every use of the old shape in tests is rewritten in this task (grep list below).
 
 **Files:**
 - Modify: `brain/commands.py` — add `SET_GUARDED`, `SET_CHOICES`, `_set_shape`, `_set` after `_field_set` (~330); replace `_link` (~562)
@@ -1169,167 +1154,7 @@ Claude-Session: https://claude.ai/code/session_013xGqVDq1uaH3ho1HCTAzTf"
 
 ---
 
-### Task 5: `file` — the note becomes the line
-
-**Files:**
-- Modify: `brain/commands.py` — add `FILE_AS`, `_file_shape`, `_file_check`, `_file` after `_note_drop` (~line 480)
-- Test: `tests/test_vocabulary.py`
-
-**Interfaces:**
-- `file <note> <target> [--as log|todo|decide|query] [--owner who] [--due when]`: `arity=(2, 2)`, `allowed_flags=("as", "owner", "due")`, `ref_kinds=()`, `ref_index=1`, `shape=_file_shape`, `check=_file_check`; message `"filed {id} as {verb} on {slug}"`; paths = the target's path + `inbox.md`.
-- Consumes `TODO_REFUSED`, `_refuse_kind` (Task 3/1), `rewrite_inbox`, `load_notes`.
-
-- [ ] **Step 1: Failing tests** — append to `tests/test_vocabulary.py`:
-
-```python
-# ---- file (A21) -------------------------------------------------------------
-
-def _note_ids(root):
-    return [n.id for n in load_notes(root / "inbox.md")]
-
-
-def test_file_as_todo_is_the_body_verbatim_and_drops_the_note(brain_repo):
-    """A21. Mutation: `line = body[0].strip()` - the fixture's n9 has no
-    surrounding whitespace, so ALSO seed a note whose line starts with two
-    spaces; the strip then changes it."""
-    _run(brain_repo, "note add -- " + "  two leading spaces and a trailing one ")
-    nid = _note_ids(brain_repo)[-1]
-    before = snapshot(brain_repo)
-    _run(brain_repo, "file {} acme-migration --as todo --owner me --due 2026-09-11".format(nid))
-    after = snapshot(brain_repo)
-    line = _acme(brain_repo).doc.section_lines("Next actions")[-2]
-    assert line == "- [ ]   two leading spaces and a trailing one   @me  due:2026-09-11"
-    assert nid not in _note_ids(brain_repo)
-    assert _changed(before, after) == {"projects/acme-migration.md", "inbox.md", ROLLUP}
-
-
-def test_file_defaults_to_log(brain_repo):
-    """Mutation: default `--as` to "todo"."""
-    _run(brain_repo, "file n8 q4-budget")
-    log = _section(brain_repo / "projects" / "q4-budget.md", "Log")
-    assert _lines(brain_repo / "projects" / "q4-budget.md")[log[0]].endswith(
-        "- vendor review can probably wait until november") is False  # n8 has two lines: see next test
-
-
-def test_file_refuses_a_multi_line_note_and_writes_nothing(brain_repo):
-    """n7 (four lines) and n8 (two) are meetings' worth. Mutation: count
-    `note.body` including blank lines but compare `<= 4`."""
-    before = snapshot(brain_repo)
-    with pytest.raises(VerbError) as excinfo:
-        _run(brain_repo, "file n7 acme-migration")
-    assert "n7 has 4 lines" in str(excinfo.value)
-    assert snapshot(brain_repo) == before
-
-
-def test_file_ignores_the_flag_line_brain_appended(brain_repo):
-    """`> ?` is brain's notation, not the user's words. Mutation: count the
-    `> ?` line - n9 then has 2 lines and is refused."""
-    _run(brain_repo, "note flag n9 -- which friday?")
-    _run(brain_repo, "file n9 acme-migration --as todo")
-    assert _acme(brain_repo).doc.section_lines("Next actions")[-2] == "- [ ] draft the rollback plan !fri"
-
-
-def test_file_is_one_commit_in_a_batch_and_refuses_a_bad_kind_statically(brain_repo):
-    """Mutation: declare `check=None` on `file`."""
-    with pytest.raises(c.BatchError) as excinfo:
-        c.validate_batch(brain_repo, "file n9 ann --as todo\n")
-    assert "log ann -- " in str(excinfo.value)
-    result = c.apply_batch(brain_repo, "file n9 acme-migration --as todo\nnote drop n8\n")
-    assert "n9" not in _note_ids(brain_repo) and "n8" not in _note_ids(brain_repo)
-
-
-@pytest.mark.parametrize("line, fragment", [
-    ("file n9 acme-migration --as raise", "--as takes"),
-    ("file n9 acme-migration --owner me", "--owner and --due belong to --as todo"),
-])
-def test_file_shapes_are_refused_statically(brain_repo, line, fragment):
-    """Mutation: declare `shape=None` on `file`."""
-    with pytest.raises(VerbError) as excinfo:
-        c.validate(gr.parse_line(line))
-    assert fragment in str(excinfo.value)
-```
-
-Fix `test_file_defaults_to_log` to be a real test: seed a one-line note first (`_run(brain_repo, "note add -- vendor review can wait")`, take its id), file it with no `--as`, assert the project's first `## Log` line is `- {TODAY} - vendor review can wait`. Mutation: default `--as` to `"todo"`.
-
-Run: `python -m pytest tests/test_vocabulary.py -k file -v` — expected FAIL, unknown verb.
-
-- [ ] **Step 2: Implement** after `_note_drop`:
-
-```python
-FILE_AS = ("log", "todo", "decide", "query")
-
-
-def _file_shape(positional, flags, text):
-    as_ = flags.get("as", "log")
-    if as_ not in FILE_AS:
-        raise VerbError("`file`: --as takes one of {}, not {!r}".format(", ".join(FILE_AS), as_))
-    if as_ != "todo" and ({"owner", "due"} & set(flags)):
-        raise VerbError("`file`: --owner and --due belong to --as todo")
-
-
-def _file_check(plan):
-    if plan.flags.get("as", "log") == "todo":
-        _refuse_kind("file --as todo", plan.resolved, TODO_REFUSED)
-
-
-def _user_lines(note) -> List[str]:
-    """The body minus the `> ?` marker `note flag` appended - brain's own
-    notation, never the user's words (R4.6.1)."""
-    body = list(note.body)
-    while body and not body[-1].strip():
-        body.pop()
-    if body and body[-1].lstrip().startswith("> ?"):
-        body.pop()
-    return [l for l in body if l.strip()]
-
-
-@verb("file", arity=(2, 2), allowed_flags=("as", "owner", "due"), ref_kinds=(),
-      ref_index=1, shape=_file_shape, check=_file_check)
-def _file(root, positional, flags, text):
-    """R6.0a: the note's one line becomes the line `--as <verb>` would add,
-    byte for byte, and the note is dropped - so the LLM never retypes the
-    user's words (R7.1.4, R8.3). A note of several lines is a meeting's
-    worth: decomposed with the verbs, not filed."""
-    note_id, target_ref = positional
-    notes = load_notes(Path(root) / "inbox.md")
-    note = next((n for n in notes if n.id == note_id), None)
-    if note is None:
-        raise UnknownReference("no note {!r} in the inbox".format(note_id))
-    lines = _user_lines(note)
-    if len(lines) != 1:
-        raise VerbError(
-            "{} has {} lines - a meeting is decomposed, not filed (R6.0a)".format(
-                note_id, len(lines))
-        )
-    as_ = flags.get("as", "log")
-    sub_flags = {k: v for k, v in flags.items() if k in ("owner", "due")}
-    result = VERBS[(as_,)].run(root, [target_ref], sub_flags, lines[0])
-    rewrite_inbox(root, [n for n in notes if n.id != note_id])
-    return Result(
-        "filed {} as {} on {}".format(note_id, as_, result.message.split()[-1].rstrip(")")),
-        tuple(result.paths) + ("inbox.md",),
-    )
-```
-
-Simplify the message: resolve the target once with `resolve(root, target_ref)` before dispatching and use its `.slug` — `"filed {} as {} on {}".format(note_id, as_, target.slug)` — rather than parsing the sub-result's text.
-
-- [ ] **Step 3: Run; declarations table; commit**
-
-Add `("file",): ()` to `EXPECTED_REF_KINDS`. `test_a_verb_that_resolves_positional_zero_declares_it` reads `positional[0]` — change the test to read `positional[verb.ref_index]` (the AST check compares `slice.value` to `verb.ref_index`), and rename it `test_a_verb_that_resolves_its_primary_positional_declares_it`.
-
-Run: `python -m pytest -q` — green. Mutation checks. Commit:
-
-```bash
-git add brain/commands.py tests/
-git commit -m "file: a one-line note becomes the line, verbatim, and is dropped (R6.0a, A21)
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_013xGqVDq1uaH3ho1HCTAzTf"
-```
-
----
-
-### Task 6: Tombstones, two note types, and the migration
+### Task 5: Tombstones, two note types, and the migration
 
 Remove the eleven old verbs, refuse them with the new spelling (R6.0b), shrink the note types (R4.6.2), and rewrite every test, fixture-batch and comment that used the old vocabulary. Mechanical and wide; one dispatch.
 
@@ -1534,9 +1359,9 @@ Move `tests/test_commands_actions.py`'s tests that still test something `test_vo
 
 `tests/test_acceptance_apply.py`: `A7_BATCH` becomes §6.2's block verbatim (ten lines, including `link arch-board acme-migration` and `log q4-budget -- finance published the codes`); extend `test_a7_…`'s assertions: `arch-board` now also lists `acme-migration` in `projects:` (already there in the fixture → "already follows", so assert the batch still succeeds and the file is unchanged on that line), and `q4-budget`'s `## Log` first line is `- {TODAY} - finance published the codes`.
 
-`tests/test_verb_declarations.py`: `EXPECTED_REF_KINDS` is now `{("log",): (), ("todo",): (), ("decide",): (), ("query",): (), ("set",): (), ("link",): (), ("file",): ()}`; `EXPECTED_FLAG_REFS = {("log",): {"ref": ()}}`; `test_status_and_health_set_declare_value_choices` becomes `test_set_validates_status_and_health_against_the_entity_tuples`: `assert c.SET_CHOICES["status"] is STATUSES and c.SET_CHOICES["health"] is HEALTHS`.
+`tests/test_verb_declarations.py`: `EXPECTED_REF_KINDS` is now `{("log",): (), ("todo",): (), ("decide",): (), ("query",): (), ("set",): (), ("link",): ()}`; `EXPECTED_FLAG_REFS = {("log",): {"ref": ()}}`; `test_status_and_health_set_declare_value_choices` becomes `test_set_validates_status_and_health_against_the_entity_tuples`: `assert c.SET_CHOICES["status"] is STATUSES and c.SET_CHOICES["health"] is HEALTHS`.
 
-`CLAUDE.md` is Task 8; leave it.
+`CLAUDE.md` is Task 7; leave it.
 
 - [ ] **Step 4: Run the suite until green; mutation checks on the four new tests; commit**
 
@@ -1558,7 +1383,7 @@ Claude-Session: https://claude.ai/code/session_013xGqVDq1uaH3ho1HCTAzTf"
 
 ---
 
-### Task 7: The TUI — `i` is the pane, `todo` argv, reply, help
+### Task 6: The TUI — `i` is the pane, `todo` argv, reply, help
 
 **Files:**
 - Modify: `brain/tui.py` — `BINDINGS` (~1829), `action_insert` (~2398), `action_capture` (~2423), `action_cycle_type`/`action_due_prompt`/`action_status_prompt`/`action_health_prompt` (delete), `action_tick` (~2842), `_run_pending` (~2578), the INSERT commit path (~2555: the plain-capture branch goes; only `_run_pending` remains), `_stash_note`/`_unstash_note` and `action_maybe_quit`'s unsent-text guard (the modeline never holds a note now — delete the stash, keep the guard for an open pane), `CaptureScreen.__init__`/`_save`/`_redraw`/the `:t` branch (~271–520), modeline (`_chip` in INSERT and NORMAL, ~967/~1002), `capture_ref` (~2196), `_note_label`/`_note_right` (~1035), `HELP_SECTIONS` (~525), `self.note_type` (~1876), `TYPE_COLORS` (~90)
@@ -1724,7 +1549,7 @@ Run: `python -m pytest tests/test_tui.py -q` — expected: the rewritten and new
         (":todo acme done 2", "tick the second open action"),
         (":set acme status -- blocked", "set a field"),
         (":link acme cloud-migration", "put a project in a program"),
-        (":file n9 acme --as todo", "the note becomes the line"),
+        (":note drop n9", "the note is processed - git keeps it"),
     ]),
 ```
 
@@ -1750,7 +1575,7 @@ Claude-Session: https://claude.ai/code/session_013xGqVDq1uaH3ho1HCTAzTf"
 
 ---
 
-### Task 8: CLAUDE.md
+### Task 7: CLAUDE.md
 
 **Files:**
 - Modify: `CLAUDE.md` — the status paragraph, the milestone-5 paragraph's key list, the Commands block
@@ -1758,7 +1583,7 @@ Claude-Session: https://claude.ai/code/session_013xGqVDq1uaH3ho1HCTAzTf"
 - [ ] **Step 1: Edit**
 
 - Status heading: `## Status: milestone 5b done — the vocabulary is the contract; stop here and use it`.
-- In the milestone-3 verb list, replace the verbs with: `` `init`, `note add`, `note list`, `note show`, `note flag`, `note drop`, **`log`, `todo`, `decide`, `query`, `set`, `link`, `file`** (R6.0a: one shape, every kind, refused by name), `new`, `request add`, `request list`, `request done`, `undo`, `check --authored`, `context`, `search`, `build`, and `apply` ``. Add one sentence: "The milestone-5 names (`raise`, `action add`, `status set`, …) are tombstones (R6.0b): refused with the new spelling, deleted after milestone 6."
+- In the milestone-3 verb list, replace the verbs with: `` `init`, `note add`, `note list`, `note show`, `note flag`, `note drop`, **`log`, `todo`, `decide`, `query`, `set`, `link`** (R6.0a: one shape, every kind, refused by name), `new`, `request add`, `request list`, `request done`, `undo`, `check --authored`, `context`, `search`, `build`, and `apply` ``. Add one sentence: "The milestone-5 names (`raise`, `action add`, `status set`, …) are tombstones (R6.0b): refused with the new spelling, deleted after milestone 6."
 - Milestone-5 paragraph: keys become `` `x`/`e`/`u`/`Q`/`/`/`?`/`ZZ` ``; add "`t`, `d`, `s`, `H` were removed in 5b (R10.7b); `i` on a flagged note replies (R10.13a)."
 - Commands block: replace the `action add`, `action done`, `raise` examples with
 
@@ -1767,13 +1592,12 @@ Claude-Session: https://claude.ai/code/session_013xGqVDq1uaH3ho1HCTAzTf"
 .venv/bin/python -m brain --root ~/mybrain todo acme-portal-rebuild done 1
 .venv/bin/python -m brain --root ~/mybrain log ann-peeters --ref acme-portal-rebuild -- Budget impact of the delay
 .venv/bin/python -m brain --root ~/mybrain set acme-portal-rebuild status -- active
-.venv/bin/python -m brain --root ~/mybrain file n1 acme-portal-rebuild --as todo
 ```
 
 - Add a line to "Load-bearing invariants" **without renumbering**, as a sub-bullet of 13: "`set`'s value is free text too: `set <t> <field> -- <value>` (R6.0a)."
 - Data-model shape paragraph: "Notes carry two capture types, `note` and `meeting`; what a note *is* is decided at processing (R4.6.2)."
 
-- [ ] **Step 2: Verify every command in the block parses** — run each `brain … --dry-run`-able line through `apply --dry-run` against a scratch `brain init` root; the `file` example needs a note — `note add -- x` first.
+- [ ] **Step 2: Verify every command in the block parses** — run each `brain … --dry-run`-able line through `apply --dry-run` against a scratch `brain init` root.
 
 - [ ] **Step 3: Commit**
 
@@ -1789,12 +1613,12 @@ Claude-Session: https://claude.ai/code/session_013xGqVDq1uaH3ho1HCTAzTf"
 
 ## Self-review
 
-**Spec coverage.** R10.13 amended (`i` is the pane) and R10.14 (the head shows the tag) — Task 7. R6.0a table: every cell — Task 2 (`log`/`decide`/`query`), 3 (`todo`), 4 (`set`/`link`), 5 (`file`), verified row by row in Task 6's A20. Bullets under R6.0a: `--ref` (T2), `todo` sub-words and selectors (T3), `set … -- value` (T4), `file` one-line + `--as <verb>` (T5), static refusals (T1 hooks, used T3–T5). R6.0b tombstones (T6). R4.6.2 two types + legacy read (T6). R4.6.3 `re:<id>` (T7). R10.3 key table / R10.7b / R10.13a / R10.15 (T7). §6.2 + R8.1 batch = A7 (T6). A20 (T6), A21 (T5), A22 (T7). §10.6 PNGs: not regenerated by design. CLAUDE.md (T8). Nothing in the spec's Task list is left unassigned.
+**Spec coverage.** R10.13 amended (`i` is the pane) and R10.14 (the head shows the tag) — Task 6. R6.0a table: every cell — Task 2 (`log`/`decide`/`query`), 3 (`todo`), 4 (`set`/`link`), verified row by row in Task 5's A20. Bullets under R6.0a: `--ref` (T2), `todo` sub-words and selectors (T3), `set … -- value` (T4), no `file` (nothing to build), static refusals (T1 hooks, used T3–T4). R6.0b tombstones (T5). R4.6.2 two types + legacy read (T5). R4.6.3 `re:<id>` (T6). R10.3 key table / R10.7b / R10.13a / R10.15 (T6). §6.2 + R8.1 batch = A7 (T5). A20 (T5), A22 (T6); A21 reserved. §10.6 PNGs: not regenerated by design. CLAUDE.md (T7). Nothing in the spec's Task list is left unassigned.
 
-**Placeholders.** `test_file_defaults_to_log` is given as a sketch plus a correction paragraph; the implementer writes the corrected form. Every other test is final as written.
+**Placeholders.** Every test is final as written.
 
 **The harness and inserts.** `assert_only_changed` bounds a length-changing edit to one contiguous region, so an insert plus the distant `updated:` touch cannot be described by it; the module-level `_inserted`/`_in_place`/`_bodies` helpers in `tests/test_vocabulary.py` are the shape for those, and every insert test uses them. Any write to `acme-migration` that changes its open-action count, next action or due date, and `link q4-budget cloud-migration`, regenerate `programs/cloud-migration.md`'s `## Roll-up` in the same commit (R4.3.1a) — the helpers allow exactly that file, and only inside that section.
 
-**Type consistency.** `_saved(root, entity, message)` is defined in T2 and used in T3–T5. `_refuse_kind(label, entity, refused)` T1, used T3 (`TODO_REFUSED`) and T5. `TODO_REFUSED` T3, used T5. `LINK_REF_KINDS` T4. `Plan.resolved_extra` T1, used by `_link_check` T4. `NoteItem.flagged/.question` T7. `TOMBSTONES` T6. Verb decorator keywords `ref_index`, `extra_refs`, `shape`, `check` T1, used T3 (`shape`, `check`), T4 (`shape`, `extra_refs`, `check`), T5 (`ref_index`, `shape`, `check`).
+**Type consistency.** `_saved(root, entity, message)` is defined in T2 and used in T3–T5. `_refuse_kind(label, entity, refused)` T1, used T3 (`TODO_REFUSED`). `LINK_REF_KINDS` T4. `Plan.resolved_extra` T1, used by `_link_check` T4. `NoteItem.flagged/.question` T6. `TOMBSTONES` T5. Verb decorator keywords `extra_refs`, `shape`, `check` T1, used T3 (`shape`, `check`), T4 (`shape`, `extra_refs`, `check`).
 
-**Known cost.** Task 6 is wide (16 test files). It is one dispatch because every edit is the same substitution table; the review reads the diff against that table.
+**Known cost.** Task 5 is wide (16 test files). It is one dispatch because every edit is the same substitution table; the review reads the diff against that table.
