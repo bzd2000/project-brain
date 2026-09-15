@@ -1,149 +1,154 @@
 # The vocabulary, redesigned
 
-**Status:** proposal for the user's decision. Nothing here is implemented.
+**Status:** agreed with the user 2026-09-15; to be implemented as a milestone.
 
-**The observation that started it**, in the user's words after one hour of
-real use: *"we need to review the vocabulary, it should be consistent
-between all entities (no different for boards, projects etc), and they
-should be called from the TUI (contextualized) with simple shortcuts …
-behind it we should have the vocabulary with the commands that can be called
-by the LLM, but it will be rarely called like that by humans."*
+**Where it came from.** The user, after one hour of real use: *"the vocabulary
+should be consistent between all entities … called from the TUI
+(contextualized) with simple shortcuts … behind it the vocabulary the LLM
+uses, rarely called like that by humans."* And then, sharper: **the human has
+one verb — `log`. The LLM decides what a thing is.** That corrects the first
+draft of this document, which had the human choosing between `l`/`a`/`D`/`q`
+at capture time — classification at capture, which R10.13 forbids.
 
-That is a two-layer design, and the current vocabulary is neither layer done
-well.
+## 1. Two layers, one interface
 
-## 1. Two layers, two readers
-
-| Layer | Reader | What it needs |
+| Layer | Reader | Vocabulary |
 |---|---|---|
-| **Keys** — the TUI | a human, looking at something | *press a short key, type words.* The selected thing is the context. No slug, no verb name. |
-| **Verbs** — the grammar | a model emitting a batch; a human at `:` once a week | complete, **regular**, learnable from one table |
+| **Keys** | a human, looking at something | one capture key; three direct edits; navigation |
+| **Verbs** | the LLM emitting a batch; a human at `:` once a week | seven regular verbs, every entity kind, one shape |
 
-Every key is a verb with the selection filled in. So the verbs have to be
-regular *across entity kinds* first, or there is no key that means "add a
-line to whatever I am looking at" — because today the verb depends on what
-you are looking at.
+**The inbox is the interface between them.** Everything the human says goes
+through it. The LLM reads each note and either acts or asks; a question back
+is a flagged note the human answers with another `i`.
 
-## 2. What is wrong with the current 26 verbs
+## 2. Layer 1 — the keys
 
-Three ideas, spelled several ways each:
+| Key | Sends | Meaning |
+|---|---|---|
+| **`i`** | `note add --tag <selected> -f -` | **log something.** The selection is the context; none is fine. The LLM decides the type and the target. |
+| `o` | same, full-screen pane | a meeting's worth |
+| `x` | `todo <selected> done <n>` | tick the action under the cursor |
+| `e` | `todo <selected> edit <n> -- …` | fix the line under the cursor |
+| `u` | `undo` | take back the last write |
+| `Q` | `request add -- …` | queue a job for the agent |
+| `:` | any verb from layer 2 | the rare precise command |
+| `j k h l g G Tab / n N E ? ZZ` | — | navigate, search, read, quit |
 
-| One idea | Today's spellings |
-|---|---|
-| Add a line to a thing's running record | `log` (project, program) · `raise` (stakeholder, board) · `decision add` · `question add` |
-| Add a to-do | `action add` — projects only; a board's "actions from last time" has no verb at all |
-| Change a field | `status set` · `health set` · `field set` — three verbs, one operation |
+**Removed:** `t` (the type chip), `d`, `s`, `H`. Type and target are the LLM's
+call; a human who wants them types `:`.
 
-Consequences:
+**Replying.** A flagged note in INBOX is the LLM asking. Select it and `i` —
+the reply is tagged `re:<id>`, so the LLM sees the thread.
 
-- `l` cannot exist in the TUI: on a project it would be `log`, on a person `raise`.
-- The LLM's table (`AGENTS.md`, milestone 6) must teach an exception per kind.
-- `raise --ref` carries a cross-reference as a *flag*, while the same idea on a
-  note is a `--tag`, and on a captured note (since 375dd10) is also a tag.
-  Three spellings of "this concerns that."
-- Programs have `## Log` but nothing else, so a program is a project with two
-  verbs missing rather than a first-class thing.
-
-## 3. The proposal: seven verbs that work on every kind
+## 3. Layer 2 — the verbs
 
 One shape: **`<verb> <target> [<what>] -- <text>`**. Every verb accepts every
 kind and does the kind-appropriate thing, or refuses **by name**.
 
-| Verb | Project | Program | Stakeholder / Board | Note |
-|---|---|---|---|---|
-| `log <t> -- text` | `## Log` | `## Log` | `## Pending` (today's `raise`) | — |
-| `todo <t> -- text` `todo <t> done/edit/due <n>` | `## Next actions` | refuse: "a program has no actions; pick a project" | `## Pending` as `- [ ]` (the board's "actions from last time") | — |
-| `decide <t> -- text` | `## Decisions` | `## Log` prefixed `decision:` | `## Minutes`/`## History` prefixed `decision:` | — |
-| `ask <t> -- text` | `## Open questions` | `## Log` prefixed `question:` | `## Pending` prefixed `question:` | — |
-| `set <t> <field> <value>` | any field; `status`/`health` validated | any field | any field; `cadence`/`next_meeting` validated | `type`, `tags` |
-| `about <t> <ref>` | `program:` (today's `link`) | — | appends to `projects:` (today's `--ref`) | appends a tag (today's `--tag`) |
-| `file <note> <target>` | — | — | — | the note becomes a log line on the target and is dropped: **the whole daily loop in one verb** |
+| Verb | Project | Program | Stakeholder / Board |
+|---|---|---|---|
+| `log <t> -- text` | `## Log` | `## Log` | `## Pending` |
+| `todo <t> [--owner] [--due] -- text` | `## Next actions` | refuse: "a program has no actions" | `## Pending` as `- [ ]` |
+| `todo <t> done <n\|words>` · `edit <n> -- text` · `due <n> --to <date>` | as today's `action …` | — | on the pending checkbox |
+| `decide <t> -- text` | `## Decisions` | `## Log`, `decision:` prefix | `## Minutes` / `## History` |
+| `ask <t> -- text` | `## Open questions` | `## Log`, `question:` prefix | `## Pending`, `question:` prefix |
+| `set <t> <field> <value>` | any field; `status`/`health` validated | any field | any field; `cadence`/`next_meeting` validated |
+| `link <t> <ref>` | `program:` | — | appends to `projects:` |
 
-Unchanged, because they are already regular: `new`, `note add/list/show/flag/drop`, `search`, `context`, `undo`, `build`, `check`, `apply`, `request …`, `init`, `tui`.
+**The inbox — the LLM's side of the conversation**
 
-Mapping from today:
+```
+file <note> <target> [--as todo|decision|question]   the note becomes that line; note dropped
+note flag <note> -- question                          keep it; ask the user
+note drop <note>                                      done with it
+```
+
+**Unchanged, already regular:** `new`, `note add/list/show`, `search`,
+`context`, `undo`, `build`, `check`, `apply`, `request …`, `init`, `tui`.
+
+### Mapping from today
 
 | Today | Tomorrow |
 |---|---|
 | `log` · `raise` | `log` |
-| `action add` · `action done` · `action edit` · `action due` | `todo` · `todo … done` · `todo … edit` · `todo … due` |
-| `decision add` | `decide` |
-| `question add` | `ask` |
+| `action add` · `done` · `edit` · `due` | `todo` · `todo … done` · `edit` · `due` |
+| `decision add` · `question add` | `decide` · `ask` |
 | `status set` · `health set` · `field set` | `set` |
-| `link --program` · `raise --ref` · `note add --tag` | `about` |
-| (nothing) | `file` |
+| `link --program` · `raise --ref` · `note add --tag` | `link` |
+| — | `file` |
 
-26 verbs → 17. The seven that do the daily work all have the same shape.
+26 verbs → 17. The seven that do the daily work share one shape.
 
-## 4. The keys, once the verbs are regular
+## 4. A day, both layers
 
-Every key is `<verb> <selected>` with the modeline as free text. The
-selection is the context, so **there is no slug anywhere in the TUI's daily
-loop**.
+```
+you, on acme-migration:   i  I need to review the solution design by 18-09-2026
 
-| Key | Sends | On a project | On a person / board | On a note (INBOX) |
-|---|---|---|---|---|
-| `i` | `note add --tag <sel>` | capture, tagged | capture, tagged | capture, untagged |
-| `l` | `log <sel> -- …` | log line | pending item | **`file <note> <its tag>`** — log it where it was captured, drop it |
-| `a` | `todo <sel> -- …` | next action | pending checkbox | `file <note> <tag>` as a todo |
-| `x` | `todo <sel> done <n>` | tick the focused action | tick the focused pending checkbox | — |
-| `e` | `todo <sel> edit <n> -- …` | edit the focused action | same | — |
-| `d` | `todo <sel> due <n> …` | due date | same | — |
-| `D` | `decide <sel> -- …` | decision | decision in minutes | `file` as a decision |
-| `q` | `ask <sel> -- …` | open question | pending question | `file` as a question |
-| `s` `H` | `set <sel> status/health` | as today | refuse by name | — |
-| `f` | `set <sel> <field> …` | any field, prompted | any field | `type`/`tags` |
-| `Q` | `request add -- …` | — same for all — | | |
-| `/` `u` `?` `ZZ` `:` | — unchanged — | | | |
+the LLM:                  todo acme-migration --due 2026-09-18 -- review the solution design
+                          note drop n12
 
-The one new idea that pays for the redesign: **a note under INBOX knows its
-tag, so `l` on it files it as a log line on that entity and drops it.** That
-is capture → read → file → gone, in `i` … `⏎` … `l`. Today it is `i`, `⏎`,
-then `:log acme-migration -- <retype the words>`, then `:note drop n7`.
+you, on nothing:          i  create a new project with code ABSD, ask me for more detail
 
-`o`, `t`, `E`, `Tab`, `j/k/h/l`, `g/G`, `n/N` unchanged. Note the conflict:
-`l` is "expand a program" today (vim's `h`/`l`). Proposal: `l` becomes log;
-expand/collapse stay on `h` (collapse) and `Enter`/`Space` (expand), which
-is what most tree UIs do. Or keep `l` for expand and use `L` for log. **User's
-call.**
+the LLM:                  new project -- ABSD
+                          note flag n13 -- created ABSD. What is it for, who owns it, deadline?
 
-## 5. What this touches
+you, on n13 in INBOX:     i  billing-system replacement, Sara owns it, go-live end of Q1
 
-- **BRAIN-SPEC.md §6.1** — the verb table, rewritten with the LLM as primary
-  reader. §6.3's examples. **A7's batch** (§8.1) rewritten in the new
-  vocabulary — it is the acceptance test and must read naturally.
-- **§10.3** — the key map, and `11-help.png` regenerated.
-- **`brain/commands.py`** — the seven verbs, kind-dispatched. The old names
-  are **kept as aliases for one milestone**, printing a deprecation line,
-  so nothing written in a batch file today breaks tomorrow.
-- **`brain/tui.py`** — the keys become the table above; the argv each sends
-  is what the existing tests already assert on, so the tests change in
-  step and stay falsifiable.
-- **`AGENTS.md`** (milestone 6) — is now one table instead of a table plus
-  exceptions.
+the LLM:                  set absd owner Sara
+                          log absd -- billing-system replacement; go-live end of Q1
+                          link absd cloud-migration
+                          note drop n13
+                          note drop n14
+```
 
-Not touched: the file format (§4), resolution (R6.2), the grammar (R6.4),
-git (§11), the lock, the digest, search.
+A7's batch (§8.1), rewritten:
 
-## 6. Open questions for the user
+```
+# n7 — steering call
+log acme-migration -- steering call: finance published the cost-centre codes
+set q4-budget status active
+todo acme-migration --owner me --due 2026-09-11 -- draft the rollback plan
+todo acme-migration --owner sara --due 2026-09-11 -- confirm cutover window
+decide acme-migration -- terraform over ARM, pending board sign-off
+log arch-board -- terraform vs ARM needs formal sign-off
+link arch-board acme-migration
+log ann -- budget impact of the cost-centre delay — she's asked on the 18th
+note drop n7
+```
 
-1. **`l` for log, or keep `l` for expand?** (§4 above.)
-2. **`todo` or keep `action`?** `todo` is shorter and kind-neutral; `action`
-   matches the section name `## Next actions` and the note type `action`.
-   Either works; consistency with the note type argues for `action`.
-3. **Should `file` exist, or is `l` on a note enough?** `file` is the verb
-   the LLM needs for `process inbox` — one line per note instead of two.
-   Recommend yes.
-4. **Aliases for how long?** One milestone, then removed. `undo` cannot
-   revert a vocabulary, so a batch file written today should keep working
-   until the user has had time to notice.
+Today's version of the same nine lines needs `raise` for the board and the
+person, `status set` for the field, and `raise --ref` for the cross-reference
+— three exceptions to learn. The new form has one shape.
 
-## 7. Why this is worth a milestone rather than a patch
+## 5. What it touches
 
-The verbs are the contract (CLAUDE.md: "if its verbs are wrong, everything
-above them is wrong"). Milestone 6 writes `AGENTS.md` against them and
-tunes `process inbox` against real notes. Changing the vocabulary *after*
-that means retraining the agent's table and re-running every acceptance
-test; changing it *before* costs one milestone and touches nothing the
-agent has learned yet. The week of use surfaced this in an hour — that is
-the moment the schedule was designed to catch it.
+- **§6.1** the verb table, rewritten with the LLM as primary reader; §6.3's
+  examples; **§8.1's batch** — the acceptance test must read naturally.
+- **§10.3** the key map; `11-help.png` regenerated; `03-modes.png` loses the
+  type chip.
+- **`brain/commands.py`** the seven verbs, kind-dispatched. **Old names kept
+  as aliases for one milestone**, each printing a deprecation line — a batch
+  file written today keeps working.
+- **`brain/tui.py`** the keys become §2; the argv each sends is what the
+  tests already assert on.
+- **`AGENTS.md`** (milestone 6) becomes one table, no exceptions.
+
+Untouched: the file format (§4), resolution (R6.2), the grammar (R6.4), git
+(§11), the lock, the digest, search.
+
+## 6. The dependency worth saying out loud
+
+Until milestone 6 builds the LLM side, `i` fills an inbox that nothing
+processes; a human files by `:` in the meantime. The human layer is finished
+by this milestone; **the design is complete only when both layers run.**
+That is the right order — the verbs are the contract, and milestone 6
+writes `AGENTS.md` against them. Changing the vocabulary after the agent has
+learned it costs a retrain; changing it before costs one milestone.
+
+## 7. Decided
+
+- `i` stays the capture key (muscle memory).
+- The detailed vocabulary stays reachable at `:`.
+- `link`, not `about` — the word already exists.
+- `todo`, not `action` — kind-neutral; the note type `action` goes away
+  with the chip, so the consistency argument for `action` is gone too.
