@@ -297,3 +297,72 @@ Deliberately left, each with its reason:
 - `brain context --for inbox` - R6.3's own printed command - errors, per the
   ruling that `--for` takes an entity. The spec example is a stray and should
   say so; one sentence, milestone 5.
+
+## Milestone 5b — the vocabulary, challenged (2026-09-15)
+
+The agreed proposal is `2026-09-14-vocabulary-redesign.md`. Writing it into
+the spec as R6.0a/R6.0b, R4.6.2, R10.7b, R10.13a, R10.15 and A20–A22 changed
+six things in it. Each is a ruling the user can reverse; each says what it
+costs if wrong.
+
+**1. `set <t> <field> -- <value>`, not `set <t> <field> <value>`.** The
+proposal (and the user's own examples, `set q4-budget status active`,
+`:set acme-migration owner Filip`) put the value bare. R6.0 says free text is
+always after ` -- ` and every other positional is enumerated, an integer, a
+sub-word, a field name or a slug. A value is none of those: `owner` is a name
+with a space in it, `title` is a sentence. Making the enumerated fields
+(`status`, `health`) bare and the rest separated would be one shape per
+field — the exceptions the redesign exists to remove. So every `set` takes
+its value after the separator, and `set q4-budget status -- active` is the
+same shape as `set acme owner -- Filip Delperdange`. Cost if wrong: three
+characters per line.
+
+**2. `todo` on a stakeholder or board is refused, not written to `## Pending`
+as a checkbox.** The proposal had it. It would put two line shapes in one
+section (dated bullets and checkboxes), make `met` decide what to do with a
+ticked pending item, make the TUI's `x` work on pending lines, and run
+`parse_action` over a person's pending text — the syntax-collision family
+that has produced twenty-eight defects so far. `log ann -- send her the deck`
+says the same thing in the section that already means "for the next
+meeting". The refusal names it. Cost if wrong: one verb cell in milestone 7,
+when `met` exists and can say what a ticked pending item means.
+
+**3. Tombstones, not aliases.** The proposal kept old names as aliases for
+one milestone, each printing a deprecation line. There is nobody to keep
+working: no `AGENTS.md` has learned the old names, no batch file was ever
+saved, and the tests are rewritten in this milestone anyway. An alias is a
+second way to write the same command (R6.4a). A tombstone is one dict —
+old name → new spelling — consulted only to word the "unknown verb" error,
+so `action add` fails loudly with `todo <project> -- <text>` in the message.
+Removed the milestone after. Cost if wrong: nothing; an alias can be added
+in an afternoon.
+
+**4. `file` refuses a multi-line body.** The proposal did not say what
+`file` does with a note of several lines. Joining them rewrites the user's
+words (R4.6.1's principle); truncating loses them. A one-line note — what
+`i` captures — files verbatim; a meeting note is decomposed with
+`log`/`todo`/`decide`/`query` and dropped, which is what §8.1 already
+describes. `--as` takes the verb's own name (`log|todo|decide|query`) rather
+than a third spelling (`todo|decision|question`).
+
+**5. Two note types, not none.** Removing the chip could have removed the
+type column from the header. It stays, with two values that record *how* the
+note was captured — `note` from `i`, `meeting` from `o` — because the
+digest's `notes: 3 unprocessed (n7 meeting, …)` line is what tells the LLM a
+note may hold many items, and `o` knows that for free. `action` and
+`decision` are classification and go; an old `inbox.md` that has them still
+loads (R4.6.5).
+
+**6. `log --ref` stays.** `raise --ref project` appended `  #project` to the
+pending line, which is what an agenda needs to group by project. The
+proposal replaced it with `link`, but `link` is R4.1's interest declaration
+on front matter — a different fact. `log` keeps `--ref` on every kind; it
+costs one optional flag and the pending-line format does not change.
+
+Not changed from the proposal: the seven verbs and their names; `i` as the
+one capture key; `t`/`d`/`s`/`H` removed; `re:<id>` replies; kind dispatch
+for `log`, `decide`, `query`, `link`; `todo`'s sub-words after the target
+(`todo acme done 2`), which keep the user's shape and `action …`'s selectors.
+
+The milestone is **5b**, not 6: §12's numbers are cited from CLAUDE.md,
+commits and tests, and are not renumbered — like the invariants.

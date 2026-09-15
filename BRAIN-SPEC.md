@@ -271,7 +271,7 @@ has been hand-edited.
 commit.** Roll-ups are the one piece of derived data that lives in the source of
 truth rather than beside it, so C3's "everything derived is disposable" does not
 protect them: a stale roll-up is a wrong answer sitting in a committed file, and
-the user reads it. If `status set` on a project changed its program's roll-up and
+the user reads it. If `set … status` on a project changed its program's roll-up and
 only an explicit `brain build` fixed it, every brain would carry stale roll-ups
 between builds, with nothing to say so.
 
@@ -387,19 +387,29 @@ draft the rollback plan !fri
 body of any length. The header is machine-written; **the body is yours, byte for
 byte, and nothing ever edits it.**
 
-**R4.6.2 Types**, chosen at capture, defaulting to `note`:
+**R4.6.2 Types.** There are two, and neither is a classification: they
+record *how* the note was captured, not what it is.
 
-| Type | Meaning | What processing produces |
+| Type | Written by | Meaning |
 |---|---|---|
-| `note` | An observation, no follow-up implied | A `## Log` entry on each target |
-| `meeting` | Raw capture from a meeting. **May contain many items** | A sitting in the board's `## Minutes` or the stakeholder's `## History`, plus every action, decision and status change found inside it |
-| `action` | Something to be done | A `## Next actions` entry with owner and due date |
-| `decision` | Something settled | A `## Decisions` entry |
+| `note` | `i`, `brain note add` | one thought, a line or a few |
+| `meeting` | `o`, `brain note add meeting` | raw capture from a meeting. **May contain many items** |
+
+**What a note is — a log line, an action, a decision, a question, a new
+project — is decided by whoever processes it, never at capture** (vocabulary
+redesign, 2026-09-15). The user types; the LLM reads the words and emits the
+verb (R6.0a). An earlier draft had four types chosen with a chip at capture
+time; that was classification at capture, which R10.13 forbids, and in an
+hour of use the chip was never touched. `action` and `decision` are still
+*read* from an old `inbox.md` (R4.6.5) and refused by `note add`.
 
 **R4.6.3 Tags.** `@ref` names a project, program, stakeholder or board — resolved
 at processing time, not at capture. `!when` sets a date. `#tag` is free. A note
 may carry any number of refs, or none; resolving an untagged note is the agent's
-problem, not yours.
+problem, not yours. The TUI tags a captured note with the selected entity
+(`--tag <slug>`), so "on acme-migration, `i`" is the context the LLM reads.
+**`re:<id>` names another note**: a reply to a flagged note (R10.13a) is tagged
+`re:n13`, and the LLM reads the two as one thread.
 
 **R4.6.4 Lifecycle.** A note is unprocessed while it is in `inbox.md`. Processing
 deletes it — git holds the history, and the commit message records what it became.
@@ -525,23 +535,24 @@ both; there is no privileged path.
 ### 6.1 Verbs
 
 ```
-brain note add <type> [-f -] [--tag @ref]... [--due when] [-- <text>]
+brain note add [meeting] [-f -] [--tag <ref>]... [-- <text>]
 brain note list [--type t] [--unprocessed]
 brain note show <id>
 brain note flag <id> -- <reason>
 brain note drop <id>
 
-brain log <project> -- <text>
-brain action add <project> [--owner who] [--due when] -- <text>
-brain action done <project> <n> | <project> -- <words>
-brain action due <project> --to <when> <n> | <project> --to <when> -- <words>
-brain decision add <project> -- <text>
-brain question add <project> -- <text>
-brain status set <project> <status>
-brain health set <project> <health>
-brain field set <entity> <key> -- <value>
+# The seven daily verbs. One shape: <verb> <target> [<what>] [--flag v]... -- <text>
+brain log <target> [--ref <entity>] -- <text>
+brain todo <project> [--owner who] [--due when] -- <text>
+brain todo <project> done <n> | done -- <words>
+brain todo <project> edit <n> -- <text>
+brain todo <project> due <n> --to <when> | due --to <when> -- <words>
+brain decide <target> -- <text>
+brain query <target> -- <text>
+brain set <target> <field> -- <value>
+brain link <target> <ref>
+brain file <note> <target> [--as log|todo|decide|query] [--owner who] [--due when]
 
-brain raise <stakeholder|board> [--ref project] -- <text>
 brain agenda material <stakeholder|board>      # deterministic gather, to stdout
 brain agenda set <stakeholder|board> -f -      # write ## Next agenda from stdin
 brain minutes add <board> --date <d> -f -      # append a sitting
@@ -549,7 +560,6 @@ brain met <stakeholder|board> [--date d]       # roll agenda into history, clear
 
 brain init [path]              # create a brain root here (see R6.9)
 brain new project|program|stakeholder|board -- <name>
-brain link <project> --program <program>
 
 brain apply [-f file|-]        # batch: many of the above, one commit, atomic
 brain context [--for <target>] # the compact digest for a model
@@ -561,11 +571,68 @@ brain undo
 brain rewrite <entity> [--finish|--abort]   # escape hatch, §8.4
 ```
 
+**R6.0a One shape, every kind** (vocabulary redesign, 2026-09-15). The seven
+daily verbs — `log`, `todo`, `decide`, `query`, `set`, `link`, `file` — are
+written by the LLM in every batch and by a human at `:` perhaps once a week,
+so they are designed for the LLM: **one shape, and every verb accepts every
+entity kind and does the kind-appropriate thing, or refuses by name, naming
+the verb to use instead.** There are no per-kind verbs — the earlier draft's
+`raise` (a `log` for people and boards), `action add`/`decision add`/
+`question add` (a `todo`/`decide`/`query` for projects only) and
+`status set`/`health set`/`field set` (three `set`s) were exceptions an
+agent had to learn and a user had to remember, and they are gone.
+
+| Verb | Project | Program | Stakeholder · Board |
+|---|---|---|---|
+| `log` | `## Log`, newest first | `## Log` | `## Pending`, dated, oldest first (was `raise`) |
+| `todo` | `## Next actions` | refused: "a program has no actions — `todo` the project" | refused: "`log ann -- …` puts it on her pending list" |
+| `decide` | `## Decisions` | `## Log`, `decision:` prefix | stakeholder `## History`, dated; board `## Minutes`, today's sitting (created at the top if absent, R4.5.2) |
+| `query` | `## Open questions` | `## Log`, `question:` prefix | `## Pending`, `question:` prefix |
+| `set` | any front-matter field; `status`/`health` validated against their lists; `program` refused → `link` | same | same; `projects` refused → `link` |
+| `link` | sets `program:` — `<ref>` must be a program | refused: "programs never list their projects (R4.1) — link the project" | appends `<ref>` (a project) to `projects:`; already there is a no-op that says so |
+| `file` | the note's body becomes the line the named verb would add, byte for byte, and the note is dropped — one line in the batch, both writes | | |
+
+- `log --ref <entity>` appends `  #<slug>` to the line on any kind — the
+  cross-reference `raise --ref` used to make. `link` is not that: `link` is
+  R4.1's *interest* declaration on the party's front matter.
+- `todo <project> done|edit|due` keep `action …`'s selectors exactly: a
+  1-based index into the open actions, or a unique substring after ` -- `
+  (R6.2); `edit` takes a positional selector because its free text is the
+  new wording (R10.10a). The word after the target is `done`, `edit` or
+  `due`, or absent — an addition. `todo acme -- done with the deck` is an
+  addition whose text begins with "done", because free text is after the
+  separator (R6.4) and never looked at.
+- `set <target> <field> -- <value>` takes its value **after the separator,
+  like every other free text** (R6.0) — `set acme owner -- Filip Delperdange`
+  needs no quoting and `set q4-budget status -- active` is the same shape.
+  A value is not enumerated, an integer or a flag, so R6.0 gives it no other
+  place; the earlier `status set q4-budget active` was the exception. Field
+  names are bare `key`s of the front matter; the entity's own title key
+  (`project:`, `stakeholder:`, …) is settable like any other.
+- `file <note> <target> --as <verb>` defaults to `--as log`. It exists so the
+  LLM does not retype the user's words (R7.1.4, R8.3) — the line carries the
+  body verbatim. It **refuses a body of more than one non-blank line** by
+  count ("n7 has 4 lines — a meeting is decomposed, not filed"): the single
+  line is what `i` captures, and a multi-line body would have to be joined or
+  truncated, both of which rewrite the user's words.
+- Refusals are static (R6.5.1): kind is known from the projected namespace,
+  so `todo cloud-migration -- x` fails `--dry-run` naming the line.
+
+**R6.0b Old names are tombstones, not aliases.** `raise`, `action add|done|
+edit|due`, `decision add`, `question add`, `status set`, `health set` and
+`field set` are refused with the new spelling in the message — ``unknown verb
+`action add`: it is `todo <project> -- <text>` now`` — for one milestone, then
+removed. Not aliases: there is no consumer to keep working (no `AGENTS.md`
+exists yet, no batch file was ever saved) and an alias is a second way to
+write the same command, which R6.4a forbids. The tombstone is a dict of
+old → new; it holds no code path.
+
 **R6.0** Free text is always last on the line and always follows a ` -- `
 separator (R6.4) — in every verb, not only the ones in the worked example. Any
-other argument is enumerated (`status`, `health`), a bare integer selector, or a
-flag; `action due` takes `--to` for exactly this reason, so a date can never be
-mistaken for the tail of a substring match. One grammar serves the shell, `brain apply` and the TUI's
+other argument is enumerated (`meeting`, a kind name, `--as`'s verb), a bare
+integer selector, a `done|edit|due` sub-word, a field name or a slug — never
+words of the user's; `todo … due` takes `--to` for exactly this reason, so a
+date can never be mistaken for the tail of a substring match. One grammar serves the shell, `brain apply` and the TUI's
 COMMAND mode, so there is one parser and one thing to learn. `note flag` and
 `check --fix` are verbs because R7.1.5 and R9.3 already depend on them.
 
@@ -632,12 +699,14 @@ which R4.6.1 requires byte for byte, therefore never travel by argv: capture use
 brain apply <<'EOF'
 # n7 — steering call
 log acme-migration -- Steering call: finance published the cost-centre codes
-status set q4-budget active
-action add acme-migration --owner me --due 2026-09-11 -- Draft the rollback plan
-action add acme-migration --owner sara --due 2026-09-11 -- Confirm cutover window
-decision add acme-migration -- Terraform over ARM, pending board sign-off
-raise arch-board --ref acme-migration -- Terraform vs ARM needs formal sign-off
-raise ann -- Budget impact of the cost-centre delay — she's asked on the 18th
+set q4-budget status -- active
+log q4-budget -- finance published the codes
+todo acme-migration --owner me --due 2026-09-11 -- Draft the rollback plan
+todo acme-migration --owner sara --due 2026-09-11 -- Confirm cutover window
+decide acme-migration -- Terraform over ARM, pending board sign-off
+log arch-board --ref acme-migration -- Terraform vs ARM needs formal sign-off
+link arch-board acme-migration
+log ann -- Budget impact of the cost-centre delay — she's asked on the 18th
 note drop n7
 EOF
 ```
@@ -748,13 +817,16 @@ ann asked what this does to the q4 number — she's asked on the 18th
 **R8.1** Processing this must produce, in one `brain apply`:
 
 - a sitting under the arch-board's `## Minutes` for today, quoting the note
-- `status set q4-budget active` — it was blocked on those codes
-- `log q4-budget` — the codes arrived
-- `action add acme-migration "Draft the rollback plan" --owner me --due …`
-- `action add acme-migration "Confirm cutover window" --owner sara --due …`
-- `raise arch-board "Terraform vs ARM needs formal sign-off"`
-- `raise ann "Budget impact of the cost-centre delay"`
+- `set q4-budget status -- active` — it was blocked on those codes
+- `log q4-budget -- finance published the codes`
+- `todo acme-migration --owner me --due … -- Draft the rollback plan`
+- `todo acme-migration --owner sara --due … -- Confirm cutover window`
+- `log arch-board --ref acme-migration -- Terraform vs ARM needs formal sign-off`
+- `log ann -- Budget impact of the cost-centre delay`
 - `note drop n7`
+
+(Exact lines in §6.2. Written in the vocabulary of R6.0a: one shape, no
+`raise`, no `action add`, no `status set`.)
 
 Two projects, one board, one stakeholder, from four scrappy lines. This is the
 capability the whole design exists to deliver, and it is the acceptance test that
@@ -921,18 +993,16 @@ width. The modeline is never hidden. Minimum usable size 60×16.
 
 | Key | Action |
 |---|---|
-| `i` | start a note in the modeline |
-| `o` | open the full-screen capture pane (§10.5) |
-| `t` | cycle note type: note → meeting → action → decision |
+| `i` | **log something** — a note in the modeline, tagged with the selection (`note add --tag <selected> -f -`). The LLM decides what it is and where it goes (R6.0a); no type, no target, no question asked |
+| `o` | the same, full-screen, for a meeting's worth (`note add meeting --tag <selected> -f -`, §10.5) |
 
 **NORMAL — acting**
 
 | Key | Action |
 |---|---|
-| `e` | edit the focused line in place (§10.4) |
+| `e` | edit the focused line in place (§10.4) — `todo <selected> edit <n> -- …` |
 | `E` | toggle the detail pane between rendered and raw source (§10.4) |
-| `x` | tick the focused action |
-| `d` `s` `H` | due date · status · health |
+| `x` | tick the focused action — `todo <selected> done <n>` |
 | `u` / `Ctrl+R` | undo · redo — these are git commits (§11.5) |
 | `Q` | queue a job for the agent in `_request.md` |
 | `:` | COMMAND mode |
@@ -941,6 +1011,17 @@ width. The modeline is never hidden. Minimum usable size 60×16.
 
 **R10.7** `Ctrl+R` for redo is the one exception to R10.2, because vim users
 expect it. Nothing else uses a chord.
+
+**R10.7b Two layers, one interface** (vocabulary redesign, 2026-09-15). The
+keys are the human's vocabulary: one capture key, two direct edits, undo,
+navigation. Everything else a human wants done is *said* with `i` and done
+by the LLM through the inbox with the verbs of R6.0a; `:` reaches those verbs
+directly for the rare precise command. `t` (the type chip), `d`, `s` and `H`
+were removed: each asked the human to classify or to pick a field at the
+keyboard, which is the LLM's job, and in an hour of use none was pressed.
+Until milestone 6 builds the LLM side, `i` fills an inbox that nothing
+processes and a human files by `:` — the human layer is finished by this
+milestone, the design is complete only when both layers run.
 
 **R10.7a Redo is a second revert, never history rewriting.** R11.4 forbids
 `reset` and `amend`, so `brain redo` must revert the most recent `Brain-Undo`
@@ -951,7 +1032,7 @@ teaches the user to stop pressing it. Built when a week of use shows `u`
 being pressed one time too many, and not before.
 
 **R10.8 COMMAND mode maps one-to-one onto the CLI verbs of §6.1.** `:log`,
-`:status`, `:agenda`, `:met`, `:inbox` and the rest are the same verbs with the
+`:set`, `:todo`, `:agenda`, `:met` and the rest are the same verbs with the
 same grammar and the same resolution rules — one implementation, two front doors.
 Tab completes verbs, then slugs. There is no command available in the TUI that
 is not available from the shell.
@@ -982,7 +1063,7 @@ buffer where it sits; `⏎` commits, `Esc` cancels. The write goes through the s
 `Doc` methods as everything else, so **exactly one line changes**. This is the
 common case: fixing a typo, sharpening an action, correcting a log entry.
 
-**R10.10a `e` needs a verb, and at milestone 5 it is `action edit`.** The TUI
+**R10.10a `e` needs a verb, and at milestone 5 it is `action edit`** (since 5b: `todo … edit`, R6.0a)**.** The TUI
 never calls `Doc` itself (R3.1, invariant 1); it shells out. No §6.1 verb
 edits an arbitrary line by position, and one that did would be fragile — line
 numbers move under the agent's writes in the other pane. So milestone 5 adds
@@ -1025,18 +1106,27 @@ negotiable for the sake of a tidier render.
 
 **R10.13 Capture is verbatim, instant and unconditional.** `i` then typing then
 `⏎` appends the text to `inbox.md` exactly as typed, with a timestamp and the
-current type. No parsing that can fail, no question asked, no model, no delay.
-The echo below the modeline shows which `@refs` were recognised — that is a
-*read* of the text, not a change to it.
+selected entity as its tag. No parsing that can fail, no question asked, no
+model, no delay. The echo below the modeline shows which `@refs` were
+recognised — that is a *read* of the text, not a change to it.
+
+**R10.13a Replying.** A flagged note in INBOX (`> ?` line, R4.6.4) is the LLM
+asking. Select it and `i`: the reply is a new note tagged `re:<id>` (R4.6.3),
+and the flagged note stays until the LLM drops both. The INBOX group shows a
+flagged note with its `> ?` line so the question is readable without opening
+it.
 
 **R10.14 `o` opens a full-screen capture pane**, because meeting notes are
-paragraphs, not lines. It shows the type chip, the note id and timestamp being
+paragraphs, not lines. It shows `MEETING`, the note id and timestamp being
 assigned, and the tags recognised so far. `:w` saves it as one note; `Esc`
 discards after a confirmation. Everything in the app: no shelling out to
 `$EDITOR`.
 
-**R10.15 `t` cycles the note type** and the chip is always visible in the
-modeline. Capturing a meeting as a plain note is the mistake this prevents.
+**R10.15** ~~`t` cycles the note type and the chip is always visible in the
+modeline.~~ **Removed 2026-09-15** (R4.6.2, R10.7b). The mistake it guarded
+against — a meeting captured as a plain note — is prevented by `o` stamping
+`meeting` itself; the other types were classification at capture. The
+modeline shows no chip.
 
 ### 10.6 The design
 
@@ -1068,7 +1158,11 @@ canonical); `08` colours `done 28 Aug` inside a minute's prose, which would
 mean parsing free text — it stays plain until a syntax exists. Three screens
 show things later milestones build (`:w save` — R10.11b; `:agenda` and NEXT
 AGENDA content — milestone 7; `n7` ids on pending lines — milestone 6): the
-app says so rather than pretending.
+app says so rather than pretending. **Superseded by the vocabulary redesign
+(2026-09-15):** the type chip in `03`/`04`/`05` and the `t`, `d`, `s`, `H`
+rows of `11` show keys that no longer exist (R10.7b, R10.15); `04`'s "four
+note types and what each becomes" is now R4.6.2's two. The PNGs are not
+regenerated — spec wins on behaviour — and `?` shows §10.3 as it stands.
 
 **R10.16 Colour system.** A warm near-black ground; one teal accent for anything
 live or interactive; violet for people and boards; red, amber and green reserved
@@ -1188,6 +1282,9 @@ Each step independently usable before the next.
 5. **`tui.py`** — tree, detail, capture, search, `_request.md` queueing. At this
    point the whole thing is useful with no model at all. **Pause here and use it
    for a week** before writing a line of `AGENTS.md`.
+   - **5b. Vocabulary** — R6.0a/R6.0b, R4.6.2, R10.7b: the seven verbs, the
+     tombstones, the keys. Inserted after an hour of use, before `AGENTS.md`
+     learns the old names; §12's numbers are not shifted.
 6. **`AGENTS.md`** + `process inbox`, tuned against real captured notes.
 7. **Agendas** — `agenda material`, `agenda set`, `met`, minutes.
 8. **`tidy`, `review`, `rewrite`.**
@@ -1296,6 +1393,24 @@ empty, add a fourth: it is `n4` (R4.6.6).
 
 **A17** Outside a git repository every write verb refuses and exits non-zero, and
 no file is created or modified (R11.1a).
+
+**A20** Every cell of R6.0a's table, table-driven: for each of the seven
+verbs and each of the four kinds, either the named section changes by
+exactly the expected lines (full repo diff, A4) or the verb refuses before
+any write, and the refusal names the verb to use instead. A refused line in
+a batch fails `--dry-run` (R6.5.1). Every tombstone of R6.0b refuses naming
+its replacement, in the shell and in a batch.
+
+**A21** `file n9 acme-migration --as todo --owner me --due 2026-09-11`
+produces exactly the `## Next actions` line `todo` would have produced from
+n9's body, byte for byte, and n9 is gone from `inbox.md` — one commit. A
+two-line note is refused and nothing changes.
+
+**A22** With the TUI on a project, `x` on an open action sends `todo <slug>
+done <n>` and `e` sends `todo <slug> edit <n> -- <text>`; `o` sends `note add
+meeting --tag <slug> -f -`; on a flagged inbox note `i` sends `note add --tag
+re:<id> -f -`. `t`, `d`, `s`, `H` are unbound — pressing one changes nothing
+and no `brain` process starts.
 
 ---
 
