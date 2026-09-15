@@ -570,6 +570,15 @@ brain undo
 brain rewrite <entity> [--finish|--abort]   # escape hatch, §8.4
 ```
 
+**R6.0 ter — two words, two ends of the pipeline.** *A note is raw input
+to the inbox. `log` (and `todo`, `decide`, `query`) is how the inbox is
+processed onto a project, board or stakeholder — by the LLM, or by a human
+who wants to update something directly, not via the inbox.* `note add` is
+the only thing `i` sends and the only way words enter `inbox.md`; `note
+drop` is the only way they leave; `log` never touches the inbox. The two
+share no name, and the key table describes `i` as "capture a note", never
+"log", for exactly that reason.
+
 **R6.0a One shape, every kind** (vocabulary redesign, 2026-09-15). The six
 daily verbs — `log`, `todo`, `decide`, `query`, `set`, `link` — are
 written by the LLM in every batch and by a human at `:` perhaps once a week,
@@ -991,7 +1000,7 @@ width. The modeline is never hidden. Minimum usable size 60×16.
 
 | Key | Action |
 |---|---|
-| `i` | **log something** — opens the capture pane (§10.5), multi-line, headed with the selection; `:w` sends `note add --tag <selected> -f -`. The LLM decides what it is and where it goes (R6.0a); no type, no target, no question asked |
+| `i` | **capture a note** — opens the capture pane (§10.5), multi-line, headed with the selection; `:w` sends `note add --tag <selected> -f -`. The LLM decides what it is and where it goes (R6.0a); no type, no target, no question asked |
 | `o` | the same pane, stamped `meeting` (`note add meeting --tag <selected> -f -`) |
 
 **NORMAL — acting**

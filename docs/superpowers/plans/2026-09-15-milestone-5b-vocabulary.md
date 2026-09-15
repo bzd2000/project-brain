@@ -1530,7 +1530,7 @@ Run: `python -m pytest tests/test_tui.py -q` — expected: the rewritten and new
 
 ```python
     ("NORMAL — CAPTURE", [
-        ("i", "log something - a note, tagged with the selection"),
+        ("i", "capture a note, tagged with the selection"),
         ("o", "the same, full-screen, for a meeting's worth"),
     ]),
     ("NORMAL — ACTING", [
