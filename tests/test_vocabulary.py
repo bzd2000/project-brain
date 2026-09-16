@@ -12,7 +12,7 @@ from conftest import snapshot, assert_only_changed
 from brain import commands as c
 from brain import grammar as gr
 from brain.entities import Board, Program, Project, Stakeholder, load_notes
-from brain.errors import VerbError
+from brain.errors import GrammarError, VerbError
 
 TODAY = date.today().isoformat()
 
@@ -207,7 +207,11 @@ def test_query_on_a_party_is_a_prefixed_pending_item(brain_repo):
 
 @pytest.mark.parametrize("verb", ["log", "decide", "query"])
 def test_the_three_free_text_verbs_need_the_separator(brain_repo, verb):
-    """R6.4a. Mutation: declare `needs_text=False` on the verb."""
-    with pytest.raises(Exception) as excinfo:
-        _run(brain_repo, "{} acme-migration some words".format(verb))
-    assert "--" in str(excinfo.value) or "argument" in str(excinfo.value)
+    """R6.4a. A bare target - exactly one positional, no ` -- ` - satisfies
+    arity=(1, 1) on its own, so `validate` must reach its `needs_text` check
+    to reject it; a second word would trip the arity check first and never
+    exercise `needs_text` at all. Mutation: declare `needs_text=False` on
+    the verb - `validate` then accepts the line."""
+    with pytest.raises(GrammarError) as excinfo:
+        _run(brain_repo, "{} acme-migration".format(verb))
+    assert " -- " in str(excinfo.value)
