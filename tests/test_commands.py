@@ -23,7 +23,7 @@ def test_log_appends_newest_first_and_commits(brain_repo):
     assert g.authored(brain_repo, "projects/acme-migration.md")
 
 
-def test_status_set_touches_only_status_and_updated(brain_repo):
+def test_set_status_touches_only_status_and_updated(brain_repo):
     """R4.2.3 makes `updated:` authoritative and set by every write, so a status
     change is exactly two lines - index 2 and index 6 of the q4-budget fixture.
 
@@ -33,16 +33,16 @@ def test_status_set_touches_only_status_and_updated(brain_repo):
     the hole R5.1's harness exists to close.
     """
     before = snapshot(brain_repo)
-    _run(brain_repo, "status set q4-budget active")
+    _run(brain_repo, "set q4-budget status -- active")
     after = snapshot(brain_repo)
     assert_only_changed(before, after, {"projects/q4-budget.md": {2, 6}})
     assert after["projects/q4-budget.md"][2] == "status: active"
     assert Project(brain_repo / "projects" / "q4-budget.md").status == "active"
 
 
-def test_status_set_rejects_a_value_outside_the_enum(brain_repo):
+def test_set_status_rejects_a_value_outside_the_enum(brain_repo):
     with pytest.raises(VerbError) as excinfo:
-        _run(brain_repo, "status set q4-budget banana")
+        _run(brain_repo, "set q4-budget status -- banana")
     assert "banana" in str(excinfo.value)
 
 

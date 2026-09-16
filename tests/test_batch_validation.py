@@ -87,7 +87,7 @@ def test_a_new_colliding_with_an_earlier_batch_line_is_refused(brain_repo):
 
 
 def test_an_invalid_line_names_its_number(brain_repo):
-    text = "log acme-migration -- fine\nstatus set acme-migration\n"
+    text = "log acme-migration -- fine\nset acme-migration status\n"
     with pytest.raises(BatchError) as excinfo:
         c.validate_batch(brain_repo, text)
     assert excinfo.value.lineno == 2
@@ -121,7 +121,7 @@ def test_validate_batch_neither_writes_nor_locks(brain_repo, monkeypatch):
         monkeypatch.setattr(c.git, name, refuse)
 
     before = _tree_digest(brain_repo)
-    text = "log acme-migration -- fine\nstatus set acme-migration\n"
+    text = "log acme-migration -- fine\nset acme-migration status\n"
     with pytest.raises(BatchError):
         c.validate_batch(brain_repo, text)
     after = _tree_digest(brain_repo)
@@ -197,19 +197,22 @@ def test_a_grammar_error_mid_batch_names_its_line(brain_repo):
 
 def test_a_ref_kind_mismatch_against_a_projected_slug_of_another_kind_is_refused(brain_repo):
     """A projected slug is only a candidate for a reference of a MATCHING
-    kind. Without kind-filtering, `raise acme-two -- ...` (a stakeholder/board
-    reference, R6.0a keeps `raise` refusing by kind) would silently match a
-    projected PROJECT slug that happens to share a prefix, and validation
-    would lie about a line that fails at write time.
+    kind. Without kind-filtering, `link <target> <ref>`'s second positional
+    (`extra_refs`, `kinds=LINK_REF_KINDS` - program or project only) would
+    silently match a projected STAKEHOLDER slug that happens to share a
+    prefix, and validation would lie about a line that fails at write time.
 
-    (`log` itself is kind-agnostic since R6.0a - every kind - so it can no
-    longer exercise this; `raise` still refuses by kind and is unaffected by
-    this milestone.)
+    R6.0a made every OTHER verb's `ref_kinds` empty (any kind - the wrong
+    kind is refused dynamically, by a `check` hook, once the entity is
+    known), so `link`'s `extra_refs` is now the only site left where a
+    projected slug's KIND still has to be filtered before resolution even
+    runs - the scenario `raise`'s kind-restricted `ref_kinds` used to cover
+    on its own target.
 
     Red if `_resolve_against` matches projected slugs without checking kind:
     this would then pass validation instead of raising BatchError.
     """
-    text = "new project -- Acme two\nraise acme-two -- kicked off\n"
+    text = "new stakeholder -- Acme two\nlink acme-migration acme-two\n"
     with pytest.raises(BatchError) as excinfo:
         c.validate_batch(brain_repo, text)
     assert excinfo.value.lineno == 2
@@ -288,16 +291,21 @@ def test_line_creating_does_not_recommend_a_slug_already_on_disk(brain_repo):
     to "move that line above this one": doing so sends them toward a batch
     that still refuses to validate, for a different reason, one line later.
 
-    `action add` (still project-only, ref_kinds=("project",)) stands in for
-    `log` here: R6.0a makes `log` kind-agnostic, so `log ann -- x` now
-    resolves the real stakeholder directly and never reaches the projected-
-    slug path this test exercises.
+    `link`'s second positional (`extra_refs`, `kinds=LINK_REF_KINDS` -
+    program or project only) stands in for the old, kind-restricted `action
+    add ann -- x` here: R6.0a made every other verb's `ref_kinds` empty (any
+    kind), so a kind-agnostic reference to `ann` now resolves the real
+    stakeholder directly (pass 1, exact slug) and never reaches the
+    projected-slug path this test exercises at all - `link`'s extra_refs is
+    the only site left where `ann` (a stakeholder) is EXCLUDED from the
+    candidate list by kind, which is what makes it "matches nothing" in the
+    first place.
 
     Red if `_line_creating` does not check the projected slug against disk:
     the message would then say "line 2 creates it" instead of falling back to
     the plain "matches nothing" `UnknownReference`.
     """
-    text = "action add ann -- x\nnew project -- Ann\n"
+    text = "link acme-migration ann\nnew project -- Ann\n"
     with pytest.raises(BatchError) as excinfo:
         c.validate_batch(brain_repo, text)
     assert excinfo.value.lineno == 1

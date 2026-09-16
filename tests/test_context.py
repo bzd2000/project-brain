@@ -118,7 +118,7 @@ def test_a3_the_digest_is_under_1kb_for_20_entities(brain_repo):
     for n in range(15):
         _run(brain_repo, "new project -- Customer data platform migration "
                          "phase {}".format(n))
-        _run(brain_repo, "field set customer-data-platform-migration-phase-{} "
+        _run(brain_repo, "set customer-data-platform-migration-phase-{} "
                          "tags -- client,infra,reporting".format(n))
     for n in range(30):                      # R8.4's own scenario: a day of notes
         _run(brain_repo, "note add note -- captured line {}".format(n))
@@ -241,13 +241,13 @@ _LINE_SHAPES = (
 # printing user-derived text, so it applies here too.)
 
 def test_a_tag_containing_a_comma_does_not_corrupt_the_digests_shape(brain_repo):
-    """`field set` (R6.4) puts the value in verbatim, comma and all, and a
+    """`set` (R6.4) puts the value in verbatim, comma and all, and a
     scalar value becomes a one-item tag list (`Entity.tags`). The digest
     joins tags with `,` - so a tag that already contains one is exactly the
     ambiguous-but-not-corrupting case CLAUDE.md names. What must NOT happen
     is a stray line break or an extra `projects:`/entity line - the shape,
     not the disambiguation, is the guarantee."""
-    _run(brain_repo, "field set acme-migration tags -- client, urgent")
+    _run(brain_repo, "set acme-migration tags -- client, urgent")
     out = _context(brain_repo)
     lines = out.split("\n")
     assert lines.count("projects:") == 1
@@ -305,7 +305,7 @@ def test_a_role_cannot_fabricate_a_stakeholder(brain_repo):
     `manager, next 2029-01-01), fake-vp(chief` printed a stakeholder with no
     file AND displaced ann's real meeting date. An agent would have planned
     an agenda for a party that does not exist."""
-    _run(brain_repo, "field set ann role -- manager, next 2029-01-01), fake-vp(chief")
+    _run(brain_repo, "set ann role -- manager, next 2029-01-01), fake-vp(chief")
     line = next(l for l in _context(brain_repo).split("\n") if l.startswith("stakeholders:"))
     assert "fake-vp" not in line
     assert "next 2026-09-08" in line, "ann's real next meeting must survive"
@@ -313,7 +313,23 @@ def test_a_role_cannot_fabricate_a_stakeholder(brain_repo):
 
 
 def test_a_program_field_cannot_forge_columns(brain_repo):
-    _run(brain_repo, "field set q4-budget program -- evil open:99 tags:fake")
+    """R6.0a: `program` is one of `set`'s `SET_GUARDED` fields now - only
+    `link` writes it, and `link`'s value is always a real, resolved slug,
+    never attacker-controlled free text - so a malicious `program:` cannot
+    reach the file through `brain` at all any more. Seeded directly in front
+    matter instead, the same test-setup pattern `test_acceptance_apply.py`'s
+    `a7_repo` already relies on: the point here is the digest's OWN
+    sanitisation (`_safe`) of whatever is on disk, not how it got there."""
+    from brain import git as g
+
+    path = brain_repo / "projects" / "q4-budget.md"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "owner: Filip\n", "owner: Filip\nprogram: evil open:99 tags:fake\n"
+        ),
+        encoding="utf-8",
+    )
+    g.commit(brain_repo, ["projects/q4-budget.md"], "brain: seed", source="cli")
     row = next(l for l in _context(brain_repo).split("\n") if "q4-budget" in l)
     assert "open:99" not in row and "tags:fake" not in row
     assert row.count("open:") == 1, row
@@ -322,7 +338,7 @@ def test_a_program_field_cannot_forge_columns(brain_repo):
 def test_a_line_break_codepoint_in_a_tag_cannot_forge_a_line(brain_repo):
     """U+0085 is what PyYAML folds as a newline; Task 1 made the PARSER safe
     on the way in, and this is the same rule on the way out."""
-    _run(brain_repo, "field set acme-migration tags -- client\x85boards: fake-board(next 2030)")
+    _run(brain_repo, "set acme-migration tags -- client\x85boards: fake-board(next 2030)")
     lines = _context(brain_repo).split("\n")
     assert sum(1 for l in lines if l.startswith("boards:")) == 1
     assert not any(l.startswith("boards: fake") for l in lines)
@@ -334,7 +350,7 @@ def test_a_bullet_keeps_punctuation_but_loses_line_breakers(brain_repo):
     but a line-break codepoint inside it forges a whole LINE, and that goes.
     Both halves are asserted, because "the ? is kept" alone is also true when
     nothing is sanitised at all."""
-    _run(brain_repo, "question add acme-migration -- Who owns the VPN?\x85boards: fake")
+    _run(brain_repo, "query acme-migration -- Who owns the VPN?\x85boards: fake")
     out = _context(brain_repo, "acme-migration")
     assert "Who owns the VPN?" in out
     assert "\x85" not in out and "\u2028" not in out
@@ -350,9 +366,9 @@ def test_for_with_fifty_actions_stays_under_the_cap(brain_repo):
     # eight and the rung is never exercised.
     filler = " with enough text on it to make the line long and realistic"
     for n in range(50):
-        _run(brain_repo, "action add acme-migration -- action number {}{}".format(n, filler))
+        _run(brain_repo, "todo acme-migration -- action number {}{}".format(n, filler))
     for n in range(20):
-        _run(brain_repo, "question add acme-migration -- question number {}{}".format(n, filler))
+        _run(brain_repo, "query acme-migration -- question number {}{}".format(n, filler))
     out = _context(brain_repo, "acme-migration")
     assert len(out.encode("utf-8")) < d.CAP_BYTES, len(out.encode("utf-8"))
     assert "more, oldest dropped, newest kept" in out, "appended items keep the NEWEST"

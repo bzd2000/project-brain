@@ -335,7 +335,7 @@ DANGEROUS_FIELD_VALUES = [
     "a\ufffeb",  # a non-character
     "a\uffffb",  # a non-character
     # `\n`/`\r` are NOT here: R6.4b's grammar refuses a command line
-    # containing an embedded line break before `field set`'s free text ever
+    # containing an embedded line break before `set`'s free text ever
     # reaches `render_value` (GrammarError, "a command is one line") - not
     # reachable through the CLI. Covered directly against `render_value`
     # instead, see `test_render_value_escapes_embedded_line_breaks` below.
@@ -344,12 +344,13 @@ DANGEROUS_FIELD_VALUES = [
 
 @pytest.mark.parametrize("value", DANGEROUS_FIELD_VALUES)
 def test_field_set_round_trips_dangerous_values_through_both_parsers(value, brain_repo):
-    """R4.6.1: these are the user's words. `field set` writes them through
-    `Doc.set_field` -> `render_value` (fix round 1, finding 1) - before the
-    fix, `brain field set ann slot -- 12:30` wrote an unquoted `slot: 12:30`
-    that PyYAML reads back as `750`. After writing, the actual bytes on disk
-    must read back as the value the user typed, through EITHER parser -
-    not just whichever one `parse_front_matter` happens to pick.
+    """R4.6.1: these are the user's words. `set` (R6.0a's `field set`
+    before it) writes them through `Doc.set_field` -> `render_value` (fix
+    round 1, finding 1) - before the fix, `brain field set ann slot --
+    12:30` wrote an unquoted `slot: 12:30` that PyYAML reads back as `750`.
+    After writing, the actual bytes on disk must read back as the value the
+    user typed, through EITHER parser - not just whichever one
+    `parse_front_matter` happens to pick.
 
     Fix round 4 (m1's standing rule): for `a\x01b` this used to call
     `_yaml._parse_with_pyyaml`, which falls back to `_parse_subset` on ANY
@@ -359,7 +360,7 @@ def test_field_set_round_trips_dangerous_values_through_both_parsers(value, brai
     prevent. `yaml.safe_load` is called directly now, so a real
     `ReaderError` here is a real test failure."""
     c.execute(brain_repo, gr.parse_line(
-        "field set acme-migration slot -- {}".format(value)))
+        "set acme-migration slot -- {}".format(value)))
     path = brain_repo / "projects" / "acme-migration.md"
     raw_line = next(
         line for line in path.read_text(encoding="utf-8").splitlines()

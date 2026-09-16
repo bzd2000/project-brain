@@ -27,7 +27,7 @@ def _rollup(root):
 def test_a_project_write_updates_its_program_in_the_same_commit(brain_repo):
     """R4.3.1a's whole point: one write, one commit, both files."""
     before = _commits(brain_repo)
-    _run(brain_repo, "status set acme-migration blocked")
+    _run(brain_repo, "set acme-migration status -- blocked")
     assert _commits(brain_repo) == before + 1, "one write must stay one commit"
     touched = git.run(["show", "--name-only", "--format=", "HEAD"], brain_repo)
     assert "projects/acme-migration.md" in touched
@@ -41,7 +41,7 @@ def test_the_regenerated_value_is_the_one_just_written(brain_repo):
     construction. Reading `known_paths()` before the verb ran meant the
     refresh never happened on the single-verb path, so the roll-up showed the
     PREVIOUS value and only caught up on the next write."""
-    _run(brain_repo, "health set acme-migration red")
+    _run(brain_repo, "set acme-migration health -- red")
     row = [l for l in _rollup(brain_repo).splitlines() if "acme-migration" in l]
     assert row and "red" in row[0], row
 
@@ -49,7 +49,7 @@ def test_the_regenerated_value_is_the_one_just_written(brain_repo):
 def test_a_project_in_no_program_widens_nothing(brain_repo):
     """R11.2: a commit must not grow for a project that no roll-up reports.
     `q4-budget` declares no program."""
-    _run(brain_repo, "status set q4-budget active")
+    _run(brain_repo, "set q4-budget status -- active")
     touched = git.run(["show", "--name-only", "--format=", "HEAD"],
                       brain_repo).split()
     assert touched == ["projects/q4-budget.md"], touched
@@ -58,7 +58,7 @@ def test_a_project_in_no_program_widens_nothing(brain_repo):
 def test_regeneration_stays_inside_the_rollup_section(brain_repo):
     """R5.1. The program's Summary and Log must not move."""
     before = snapshot(brain_repo)
-    _run(brain_repo, "status set acme-migration blocked")
+    _run(brain_repo, "set acme-migration status -- blocked")
     after = snapshot(brain_repo)
     changed = {i for i, (a, b) in enumerate(
         zip(before["programs/cloud-migration.md"],
@@ -78,8 +78,8 @@ def test_a_batch_rewrites_the_program_once(brain_repo):
     three-project batch puts three rewrites of one file in one commit."""
     before = _commits(brain_repo)
     c.apply_batch(brain_repo,
-                  "status set acme-migration blocked\n"
-                  "health set acme-migration red\n")
+                  "set acme-migration status -- blocked\n"
+                  "set acme-migration health -- red\n")
     assert _commits(brain_repo) == before + 1
     row = [l for l in _rollup(brain_repo).splitlines() if "acme-migration" in l]
     assert "blocked" in row[0] and "red" in row[0], row
@@ -90,7 +90,7 @@ def test_the_due_column_carries_the_next_open_actions_due_date(brain_repo):
     blank when it has none - not the project's own `due:` field, which is a
     separate value (the fixture's acme-migration carries both, and they
     differ, so a correct implementation cannot pass by accident)."""
-    _run(brain_repo, "status set acme-migration active")   # trigger a rewrite
+    _run(brain_repo, "set acme-migration status -- active")   # trigger a rewrite
     row = [l for l in _rollup(brain_repo).splitlines() if "acme-migration" in l][0]
     assert "| 2026-09-11 |" in row, row
     assert "2026-10-15" not in row, "the project's own due:, not the action's, leaked in"
@@ -110,7 +110,7 @@ def test_a_pipe_in_an_action_cannot_forge_a_column(brain_repo):
     # removed.
     _run(brain_repo, "new project -- Pipe probe")
     _run(brain_repo, "link pipe-probe cloud-migration")
-    _run(brain_repo, "action add pipe-probe -- ship | rollback | decide")
+    _run(brain_repo, "todo pipe-probe -- ship | rollback | decide")
     row = [l for l in _rollup(brain_repo).splitlines() if "pipe-probe" in l][0]
     assert "ship" in row, "the action must actually reach the Next cell"
     # §4.3 added a Due column, so a correct row now carries seven pipes
@@ -121,7 +121,7 @@ def test_a_pipe_in_an_action_cannot_forge_a_column(brain_repo):
 def test_build_repairs_a_hand_edited_rollup(brain_repo):
     """`brain build` exists for a brain edited outside brain (R4.3.1a)."""
     path = brain_repo / "programs" / "cloud-migration.md"
-    _run(brain_repo, "status set acme-migration active")
+    _run(brain_repo, "set acme-migration status -- active")
 
     # Corrupt ONLY the roll-up. A blanket replace also hits the program's own
     # `status:` front matter, which `build` has no business rewriting - so the

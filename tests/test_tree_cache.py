@@ -53,18 +53,19 @@ def test_a_batch_loads_the_tree_once(brain_repo, monkeypatch):
 
 def test_a_single_verb_with_two_reference_sites_loads_the_tree_once(brain_repo,
                                                                    monkeypatch):
-    """`raise` resolves BOTH its positional (a stakeholder or board) and its
-    `--ref` (a project), so before this change it scanned the tree twice.
+    """`log` resolves BOTH its positional (any kind, R6.0a) and its `--ref`
+    (a project), so before this change it scanned the tree twice.
 
     A verb with one reference site cannot test this: it loaded once before and
     loads once now, so no cache-disabling mutation can redden it. The first
-    version of this test used `log`, and the implementer reported it was
-    unfalsifiable rather than leaving it to be found.
+    version of this test used `log` with no `--ref`, and the implementer
+    reported it was unfalsifiable rather than leaving it to be found -
+    `--ref` is what gives `log` its second site.
     """
     calls = _count_loads(monkeypatch)
     c.execute(
         brain_repo,
-        grammar.parse_line("raise ann --ref acme-migration -- needs sign-off"),
+        grammar.parse_line("log ann --ref acme-migration -- needs sign-off"),
     )
     assert calls["n"] == 1
 
@@ -93,7 +94,7 @@ def test_the_tree_does_not_outlive_the_command(brain_repo):
     so a leaked `Tree` was never loaded before the second command's target
     file was written, and the second command's LAZY load read fresh disk
     regardless of whether the leak was actually fixed (`pass`-ing the
-    `contextvars.reset` in `tree.for_command` left this green). `raise ...
+    `contextvars.reset` in `tree.for_command` left this green). `log ...
     --ref ...` forces a real scan (two reference sites) as the first
     command, and the entity the second command needs is created OUTSIDE
     either command - a direct filesystem write standing in for a concurrent
@@ -104,7 +105,7 @@ def test_the_tree_does_not_outlive_the_command(brain_repo):
     """
     c.execute(
         brain_repo,
-        grammar.parse_line("raise ann --ref acme-migration -- needs sign-off"),
+        grammar.parse_line("log ann --ref acme-migration -- needs sign-off"),
     )
     assert tree.current() is None, "no Tree may survive its command (R4.8.1a)"
 
@@ -201,7 +202,7 @@ def test_a_field_written_mid_command_is_visible_to_a_later_resolve(brain_repo):
         before = c.resolve(brain_repo, "acme-migration", kinds=("project",))
         assert before.status == "active"
 
-        plan = c.validate(grammar.parse_line("status set acme-migration blocked"))
+        plan = c.validate(grammar.parse_line("set acme-migration status -- blocked"))
         c.perform(brain_repo, plan)
 
         after = c.resolve(brain_repo, "acme-migration", kinds=("project",))

@@ -12,8 +12,8 @@ from brain.commands import BatchError
 BATCH = """\
 # n7 - steering call
 log acme-migration -- Steering call: finance published the cost-centre codes
-action add acme-migration --owner me --due 2026-09-11 -- Draft the rollback plan
-decision add acme-migration -- Terraform over ARM, pending board sign-off
+todo acme-migration --owner me --due 2026-09-11 -- Draft the rollback plan
+decide acme-migration -- Terraform over ARM, pending board sign-off
 """
 
 
@@ -42,7 +42,7 @@ def test_one_bad_line_among_four_writes_nothing(brain_repo):
     before = snapshot(brain_repo)
     head = git.head(brain_repo)
     with pytest.raises(BatchError):
-        c.apply_batch(brain_repo, BATCH + "status set acme-migration\n")
+        c.apply_batch(brain_repo, BATCH + "set acme-migration status\n")
     assert snapshot(brain_repo) == before
     assert git.head(brain_repo) == head
 
@@ -60,34 +60,36 @@ def test_dry_run_names_each_line_it_would_run(brain_repo):
     result = c.apply_batch(brain_repo, BATCH, dry_run=True)
     joined = "\n".join(result.data)
     assert "acme-migration" in joined
-    assert "log" in joined and "action add" in joined and "decision add" in joined
+    assert "log" in joined and "todo" in joined and "decide" in joined
 
 
 def test_dry_run_includes_a_resolved_flag_reference(brain_repo):
-    """Fix round 2, item 4. `raise <party> --ref <project>` is §8.1's own
-    canonical batch line - `validate_batch` already resolves `--ref`, but
-    the preview used to show only the primary target (`raise -> arch-board`)
-    and silently drop it, so a batch that got `--ref` wrong got no preview
-    of the mistake. Mutation this catches: reverting `_dry_run_effect` to
-    ignore `plan.resolved_flags` - the assertion below then fails because
-    `--ref acme-migration` never appears in the output."""
+    """Fix round 2, item 4. `log <party> --ref <project>` (R6.0a's `raise
+    <party> --ref <project>` before it) is §8.1's own canonical batch line -
+    `validate_batch` already resolves `--ref`, but the preview used to show
+    only the primary target (`log -> arch-board`) and silently drop it, so a
+    batch that got `--ref` wrong got no preview of the mistake. Mutation this
+    catches: reverting `_dry_run_effect` to ignore `plan.resolved_flags` -
+    the assertion below then fails because `--ref acme-migration` never
+    appears in the output."""
     result = c.apply_batch(
         brain_repo,
-        "raise arch-board --ref acme-migration -- sign-off needed\n",
+        "log arch-board --ref acme-migration -- sign-off needed\n",
         dry_run=True,
     )
-    assert result.data == ["line 1: raise -> arch-board (--ref acme-migration)"]
+    assert result.data == ["line 1: log -> arch-board (--ref acme-migration)"]
 
 
 def test_dry_run_includes_the_value_for_a_value_choices_verb(brain_repo):
-    """Fix round 2, item 4: `status set q4-budget active` used to preview as
-    bare `status set -> q4-budget`, which hides WHAT the batch would set it
-    to. Mutation this catches: dropping the `value_choices` branch in
+    """Fix round 2, item 4: `status set q4-budget active` (R6.0a's `set
+    q4-budget status -- active` now) used to preview as bare `status set ->
+    q4-budget`, which hides WHAT the batch would set it to. Mutation this
+    catches: dropping the `("set",)` field-naming branch in
     `_dry_run_effect`."""
     result = c.apply_batch(
-        brain_repo, "status set q4-budget active\n", dry_run=True
+        brain_repo, "set q4-budget status -- active\n", dry_run=True
     )
-    assert result.data == ["line 1: status set -> q4-budget (active)"]
+    assert result.data == ["line 1: set -> q4-budget (status)"]
 
 
 def test_a_failure_part_way_through_the_writes_restores(brain_repo, monkeypatch):
@@ -143,13 +145,13 @@ def test_a_write_time_reference_failure_is_wrapped_naming_its_line(brain_repo):
     """M1, fix round 1 (was `test_a_verberror_from_perform_is_wrapped_...`,
     which injected an `OSError` - a type the old, wrong clause happened to
     catch, so it passed while proving nothing about the case it was named
-    for). Action selectors (`action done`'s index-or-substring) resolve only
-    in `perform`, never in `validate_batch`, so `action done acme-migration
-    99` as line 3 of a 3-line batch validates fine and fails at write time
-    with `UnknownReference` - a SIBLING of `VerbError` under `BrainError`,
-    not a subclass. `except (VerbError, GrammarError, OSError)` missed it and
-    let it escape with no line number; `except (BrainError, OSError)` is the
-    fix. Live trigger from the fix brief, verbatim.
+    for). Action selectors (`todo`'s `done`/`due` index-or-substring) resolve
+    only in `perform`, never in `validate_batch`, so `todo acme-migration
+    done 99` as line 3 of a 3-line batch validates fine and fails at write
+    time with `UnknownReference` - a SIBLING of `VerbError` under
+    `BrainError`, not a subclass. `except (VerbError, GrammarError, OSError)`
+    missed it and let it escape with no line number; `except (BrainError,
+    OSError)` is the fix. Live trigger from the fix brief, verbatim.
 
     No second case (a reference that resolves at validation but not at
     write) was added: every reference `validate_batch` checks is resolved
@@ -171,7 +173,7 @@ def test_a_write_time_reference_failure_is_wrapped_naming_its_line(brain_repo):
             brain_repo,
             "log acme-migration -- line one\n"
             "log acme-migration -- line two\n"
-            "action done acme-migration 99\n",
+            "todo acme-migration done 99\n",
         )
     assert exc_info.value.lineno == 3
     assert "no open action 99" in str(exc_info.value)
@@ -254,7 +256,7 @@ def test_a_failure_after_seq_advances_restores_seq_too(brain_repo):
     after a failed batch mints a duplicate id.
 
     `note add` writes `_seq` at perform time (`commands._note_add` via
-    `next_note_id`), so line 1 advances it; `action done acme-migration 99`
+    `next_note_id`), so line 1 advances it; `todo acme-migration done 99`
     is the M1 write-time failure - an out-of-range selector that validates
     fine (it is not checked until `perform` runs) and fails only there - so
     the batch writes `_seq` and THEN fails, which is the ordering
@@ -264,7 +266,7 @@ def test_a_failure_after_seq_advances_restores_seq_too(brain_repo):
     with pytest.raises(BatchError):
         c.apply_batch(
             brain_repo,
-            "note add note -- x\naction done acme-migration 99\n",
+            "note add note -- x\ntodo acme-migration done 99\n",
         )
     assert _tree_digest(brain_repo) == before
 
@@ -297,7 +299,7 @@ def test_a_file_created_mid_batch_is_pruned_on_restore(brain_repo):
     with pytest.raises(BatchError):
         c.apply_batch(
             brain_repo,
-            "new project -- Zeta thing\naction done zeta-thing 99\n",
+            "new project -- Zeta thing\ntodo zeta-thing done 99\n",
         )
     assert not (brain_repo / "projects" / "zeta-thing.md").exists()
     assert git.run(["status", "--porcelain"], brain_repo) == ""

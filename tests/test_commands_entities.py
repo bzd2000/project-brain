@@ -4,7 +4,7 @@ from brain import commands as c
 from brain import git as g
 from brain import grammar as gr
 from brain.entities import Board, Project, Stakeholder
-from brain.errors import UnknownReference, VerbError
+from brain.errors import VerbError
 
 
 def _run(root, line):
@@ -74,24 +74,13 @@ def test_a_failed_new_leaves_no_file_behind(brain_repo, monkeypatch):
     assert not (brain_repo / "projects" / "should-not-survive.md").exists()
 
 
-def test_raise_adds_a_pending_item_to_a_board_or_stakeholder(brain_repo):
-    """R4.4.2/R4.5: `## Pending` accumulates between meetings."""
-    _run(brain_repo, "raise arch-board --ref acme-migration -- Terraform needs sign-off")
-    pending = Board(brain_repo / "boards" / "arch-board.md").pending()
-    assert any("Terraform needs sign-off" in line for line in pending)
-    assert any("#acme-migration" in line for line in pending)
-
-
-def test_raise_works_without_a_ref(brain_repo):
-    _run(brain_repo, "raise ann -- Budget impact of the delay")
-    assert any("Budget impact" in l
-               for l in Stakeholder(brain_repo / "stakeholders" / "ann.md").pending())
-
-
-def test_raise_refuses_a_project(brain_repo):
-    """`raise` is for the people and bodies you discuss things with."""
-    with pytest.raises(UnknownReference):
-        _run(brain_repo, "raise acme-migration -- nope")
+# R6.0b: `raise`'s old shape (`## Pending` on a stakeholder or board,
+# `--ref` a project) is now `log`'s - see test_vocabulary.py's
+# `test_log_on_a_party_is_a_dated_pending_item_oldest_first` and
+# `test_log_ref_appends_the_slug_as_a_hash_tag`. `raise`'s third case -
+# refusing a project by kind (`raise acme-migration -- nope`) - has no
+# analogue: R6.0a made `log` kind-agnostic (`ref_kinds=()`), so `log` on a
+# project is a real, tested shape (`## Log`, newest-first), not a refusal.
 
 
 def test_request_add_list_done(brain_repo):

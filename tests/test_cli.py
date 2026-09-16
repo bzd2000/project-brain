@@ -213,7 +213,7 @@ def test_apply_json_is_refused_before_it_writes(brain_repo, monkeypatch, capsys)
 def test_apply_a_bad_line_exits_non_zero_naming_the_line(brain_repo, monkeypatch, capsys):
     import io
 
-    monkeypatch.setattr("sys.stdin", io.StringIO("status set acme-migration\n"))
+    monkeypatch.setattr("sys.stdin", io.StringIO("set acme-migration\n"))
     assert _cli("--root", brain_repo, "apply") != 0
     err = capsys.readouterr().err
     assert "line 1" in err

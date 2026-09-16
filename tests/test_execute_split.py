@@ -43,7 +43,7 @@ def test_validate_does_not_take_the_lock(brain_repo, monkeypatch):
 
 def test_validate_rejects_bad_arity():
     with pytest.raises(VerbError):
-        _plan("status set acme-migration")
+        _plan("set acme-migration")
 
 
 def test_validate_rejects_an_unknown_flag():
@@ -58,10 +58,12 @@ def test_validate_rejects_missing_free_text():
 
 def test_arity_is_reported_before_a_bad_value():
     """A line wrong in two ways reports the structural error, not the value one.
-    Moving the `value_choices` block above the arity check must go red here.
+    Moving the `shape` check (R6.0a: `set`'s enum values are validated by
+    `_set_shape`, not a `value_choices` on the verb itself) above the arity
+    check must go red here.
     """
     with pytest.raises(VerbError) as excinfo:
-        _plan("status set acme-migration banana extra")
+        _plan("set acme-migration status banana extra")
     assert "takes 2 argument(s)" in str(excinfo.value)
 
 
@@ -80,35 +82,37 @@ def test_perform_writes_but_does_not_commit(brain_repo):
 
 def test_validate_rejects_a_bad_status_value():
     """R6.5.1: `brain apply --dry-run` must be able to report a bad status
-    value without running anything - so `validate` alone, not just
-    `_status_set`, must catch it."""
+    value without running anything - so `validate` alone, not just `_set`,
+    must catch it (via `_set_shape`, called both statically by `validate`
+    - `set`'s `shape=` - and again by `_set`'s own body as defence in
+    depth)."""
     with pytest.raises(VerbError) as excinfo:
-        _plan("status set acme-migration banana")
+        _plan("set acme-migration status -- banana")
     assert "banana" in str(excinfo.value)
 
 
 def test_validate_rejects_a_bad_health_value():
     with pytest.raises(VerbError) as excinfo:
-        _plan("health set acme-migration purple")
+        _plan("set acme-migration health -- purple")
     assert "purple" in str(excinfo.value)
 
 
-def test_validate_matches_status_set_wording_for_a_bad_value(brain_repo):
+def test_validate_matches_set_wording_for_a_bad_status_value(brain_repo):
     """The user-visible message must not change depending on which layer
-    catches a bad value - `validate`'s early check, or `_status_set`'s own
-    defence-in-depth raise."""
+    catches a bad value - `validate`'s early check (via `_set_shape`), or
+    `_set`'s own call to the same shape function as defence in depth."""
     with pytest.raises(VerbError) as from_validate:
-        _plan("status set acme-migration banana")
+        _plan("set acme-migration status -- banana")
     with pytest.raises(VerbError) as from_verb:
-        c._status_set(brain_repo, ["acme-migration", "banana"], {}, None)
+        c._set(brain_repo, ["acme-migration", "status"], {}, "banana")
     assert str(from_validate.value) == str(from_verb.value)
 
 
-def test_validate_matches_health_set_wording_for_a_bad_value(brain_repo):
+def test_validate_matches_set_wording_for_a_bad_health_value(brain_repo):
     with pytest.raises(VerbError) as from_validate:
-        _plan("health set acme-migration purple")
+        _plan("set acme-migration health -- purple")
     with pytest.raises(VerbError) as from_verb:
-        c._health_set(brain_repo, ["acme-migration", "purple"], {}, None)
+        c._set(brain_repo, ["acme-migration", "health"], {}, "purple")
     assert str(from_validate.value) == str(from_verb.value)
 
 
@@ -136,7 +140,7 @@ def test_a_bad_value_is_reported_before_the_git_repo_check(brain_repo):
     """
     shutil.rmtree(brain_repo / ".git")
     with pytest.raises(VerbError) as excinfo:
-        c.execute(brain_repo, grammar.parse_line("status set acme-migration banana"))
+        c.execute(brain_repo, grammar.parse_line("set acme-migration status -- banana"))
     assert "banana" in str(excinfo.value)
     assert "git" not in str(excinfo.value)
 

@@ -145,7 +145,7 @@ async def test_t_cycles_the_note_type_and_the_chip_shows_it(brain_repo):
             seen.append(pilot.app.note_type)
             assert pilot.app.note_type.upper() in _modeline(pilot)
             await pilot.press("t")
-        assert seen == ["note", "meeting", "action", "decision"]
+        assert seen == ["note", "meeting", "note", "meeting"]
         assert pilot.app.note_type == "note"
         await pilot.press("t", "i")
         assert "MEETING" in _modeline(pilot)
@@ -184,10 +184,10 @@ async def test_colon_runs_a_verb_through_brain(brain_repo, monkeypatch):
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         await pilot.press(":")
         assert pilot.app.mode == "COMMAND" and "COMMAND" in _modeline(pilot)
-        await pilot.press(*"status set q4-budget active", "enter")
+        await pilot.press(*"set q4-budget status -- active", "enter")
         assert pilot.app.mode == "NORMAL"
         await pilot.press(":", *"log q4-budget -- she's  asked -- twice #ok", "enter")
-    assert sent[0] == ["status", "set", "q4-budget", "active"]
+    assert sent[0] == ["set", "q4-budget", "status", "--", "active"]
     assert sent[1] == ["log", "q4-budget", "--", "she's  asked -- twice #ok"]
 
 
@@ -224,10 +224,10 @@ async def test_tab_completes_a_verb_then_a_slug(brain_repo, monkeypatch):
     monkeypatch.setattr(BrainApp, "run_brain",
                         lambda self, argv, stdin=None: (sent.append(argv), 0, "ok", "")[1:])
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press(":", *"stat", "tab", *"se", "tab", *"q4", "tab", *"active")
-        assert pilot.app.command == "status set q4-budget active"
+        await pilot.press(":", *"set", "tab", *"acme-migr", "tab", *"status")
+        assert pilot.app.command == "set acme-migration status"
         await pilot.press(*" -- acm", "tab")
-        assert pilot.app.command == "status set q4-budget active -- acm"
+        assert pilot.app.command == "set acme-migration status -- acm"
 
 
 @pytest.mark.asyncio
@@ -394,7 +394,7 @@ def _focus_open_action(pilot) -> None:
 
 @pytest.mark.asyncio
 async def test_x_ticks_the_focused_open_action(brain_repo, monkeypatch):
-    """`x` on an open action -> `action done <project> <index>` (R10.3's
+    """`x` on an open action -> `todo <project> done <index>` (R10.3's
     table), the index being the 1-based position among OPEN actions
     (R6.2) - not the file's line number."""
     sent = []
@@ -403,7 +403,7 @@ async def test_x_ticks_the_focused_open_action(brain_repo, monkeypatch):
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         _focus_open_action(pilot)
         await pilot.press("x")
-    assert sent == [["action", "done", "acme-migration", "1"]]
+    assert sent == [["todo", "acme-migration", "done", "1"]]
 
 
 @pytest.mark.asyncio
@@ -423,7 +423,7 @@ async def test_x_on_a_non_action_line_sends_nothing(brain_repo, monkeypatch):
 async def test_e_edits_the_focused_action_in_place(brain_repo, monkeypatch):
     """`e` on an open action (R10.10): the INSERT buffer starts AT the
     line's own text (06-editing.png) - "the line becomes an INSERT buffer
-    where it sits" - and `⏎` sends `action edit <project> <index> --
+    where it sits" - and `⏎` sends `todo <project> edit <index> --
     <new text>` (R10.10a)."""
     sent = []
     monkeypatch.setattr(BrainApp, "run_brain",
@@ -436,7 +436,7 @@ async def test_e_edits_the_focused_action_in_place(brain_repo, monkeypatch):
         assert "edit:" in _modeline(pilot)
         await pilot.press(*(["backspace"] * len(pilot.app.buffer)))
         await pilot.press(*"Confirm the DNS cutover window with Sara", "enter")
-    assert sent == [["action", "edit", "acme-migration", "1",
+    assert sent == [["todo", "acme-migration", "edit", "1",
                      "--", "Confirm the DNS cutover window with Sara"]]
 
 
@@ -458,7 +458,7 @@ async def test_e_on_a_non_action_line_sends_nothing(brain_repo, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_d_prompts_for_a_due_date(brain_repo, monkeypatch):
-    """`d` then a date -> `action due <project> <index> --to <date>`."""
+    """`d` then a date -> `todo <project> due <index> --to <date>`."""
     sent = []
     monkeypatch.setattr(BrainApp, "run_brain",
                         lambda self, argv, stdin=None: (sent.append(argv), (0, "due", ""))[1])
@@ -467,12 +467,12 @@ async def test_d_prompts_for_a_due_date(brain_repo, monkeypatch):
         await pilot.press("d")
         assert pilot.app.mode == "INSERT" and "due:" in _modeline(pilot)
         await pilot.press(*"2026-09-20", "enter")
-    assert sent == [["action", "due", "acme-migration", "1", "--to", "2026-09-20"]]
+    assert sent == [["todo", "acme-migration", "due", "1", "--to", "2026-09-20"]]
 
 
 @pytest.mark.asyncio
 async def test_s_prompts_for_a_status(brain_repo, monkeypatch):
-    """`s` then a status -> `status set <project> <status>`, against the
+    """`s` then a status -> `set <project> status -- <status>`, against the
     SELECTED project - no focused line is needed, status is a field."""
     sent = []
     monkeypatch.setattr(BrainApp, "run_brain",
@@ -481,12 +481,12 @@ async def test_s_prompts_for_a_status(brain_repo, monkeypatch):
         await pilot.press("s")
         assert pilot.app.mode == "INSERT" and "status:" in _modeline(pilot)
         await pilot.press(*"blocked", "enter")
-    assert sent == [["status", "set", "acme-migration", "blocked"]]
+    assert sent == [["set", "acme-migration", "status", "--", "blocked"]]
 
 
 @pytest.mark.asyncio
 async def test_H_prompts_for_a_health(brain_repo, monkeypatch):
-    """`H` then a health -> `health set <project> <health>`."""
+    """`H` then a health -> `set <project> health -- <health>`."""
     sent = []
     monkeypatch.setattr(BrainApp, "run_brain",
                         lambda self, argv, stdin=None: (sent.append(argv), (0, "set", ""))[1])
@@ -494,7 +494,7 @@ async def test_H_prompts_for_a_health(brain_repo, monkeypatch):
         await pilot.press("H")
         assert pilot.app.mode == "INSERT" and "health:" in _modeline(pilot)
         await pilot.press(*"red", "enter")
-    assert sent == [["health", "set", "acme-migration", "red"]]
+    assert sent == [["set", "acme-migration", "health", "--", "red"]]
 
 
 @pytest.mark.asyncio
@@ -675,7 +675,8 @@ async def test_the_detail_cursor_survives_a_write(brain_repo, monkeypatch):
         assert pilot.app.focused_line[2] is not None, "no action under the cursor"
         await pilot.press("x")
         await pilot.press("x")   # the second one must ALSO know which action
-    assert len(sent) == 2 and sent[0][:2] == ["action", "done"] == sent[1][:2], sent
+    assert len(sent) == 2 and sent[0][0] == "todo" == sent[1][0] \
+        and sent[0][2] == "done" == sent[1][2], sent
 
 
 # -- the whole-branch review's four week-wasters ---------------------------
@@ -716,7 +717,7 @@ async def test_esc_from_command_mode_cancels_the_line(brain_repo):
     """R10.3a: a command line saves nothing, so Esc cancels it. The earlier
     reading kept it, which needed forty backspaces to clear."""
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press(":", *"status set q4", "escape")
+        await pilot.press(":", *"set q4", "escape")
         assert pilot.app.mode == "NORMAL"
         await pilot.press(":")
         assert pilot.app.command == "", pilot.app.command
@@ -731,7 +732,7 @@ async def test_an_edit_lands_on_the_action_it_started_on(brain_repo, monkeypatch
     # through brain itself - a real write, so the file and the tree agree.
     from brain import commands as c
     from brain import grammar as gr
-    c.execute(brain_repo, gr.parse_line("action add acme-migration -- Second open action"))
+    c.execute(brain_repo, gr.parse_line("todo acme-migration -- Second open action"))
 
     sent = []
     monkeypatch.setattr(BrainApp, "run_brain",
@@ -757,7 +758,7 @@ async def test_an_edit_lands_on_the_action_it_started_on(brain_repo, monkeypatch
         await pilot.press(*" edited", "enter")
     assert sent, "nothing was sent"
     # the edit must land on the action it STARTED on - which is now index 1
-    assert sent[-1][:3] == ["action", "edit", "acme-migration"], sent[-1]
+    assert sent[-1][:3] == ["todo", "acme-migration", "edit"], sent[-1]
     assert sent[-1][3] == "1", "stale index sent: {}".format(sent[-1])
     assert sent[-1][-1].startswith("Second open action")
 

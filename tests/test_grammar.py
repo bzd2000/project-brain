@@ -16,9 +16,9 @@ def test_free_text_is_literal_to_end_of_line():
     why: a shell-style lexer would treat it as an unbalanced quote and A7 would
     fail on its own worked example."""
     parsed = gr.parse_line(
-        "raise ann -- Budget impact of the delay — she's asked on the 18th"
+        "log ann -- Budget impact of the delay — she's asked on the 18th"
     )
-    assert parsed.tokens == ["raise", "ann"]
+    assert parsed.tokens == ["log", "ann"]
     assert parsed.text == "Budget impact of the delay — she's asked on the 18th"
 
 
@@ -30,10 +30,10 @@ def test_only_the_first_separator_splits():
 
 def test_flags_are_parsed_left_of_the_separator():
     parsed = gr.parse_line(
-        "action add acme --owner sara --due 2026-09-11 -- Confirm the window"
+        "todo acme --owner sara --due 2026-09-11 -- Confirm the window"
     )
     positional, flags = gr.split_flags(parsed.tokens)
-    assert positional == ["action", "add", "acme"]
+    assert positional == ["todo", "acme"]
     assert flags == {"owner": "sara", "due": "2026-09-11"}
     assert parsed.text == "Confirm the window"
 
@@ -41,7 +41,7 @@ def test_flags_are_parsed_left_of_the_separator():
 def test_a_hash_only_starts_a_comment_at_the_start_of_a_line():
     assert gr.parse_line("# n7 - steering call") is None
     assert gr.parse_line("   # indented comment") is None
-    parsed = gr.parse_line("raise arch-board -- sign-off needed #acme-migration")
+    parsed = gr.parse_line("log arch-board -- sign-off needed #acme-migration")
     assert parsed.text == "sign-off needed #acme-migration"
 
 
@@ -90,13 +90,13 @@ def test_a_repeated_flag_accumulates():
 
 def test_a_flag_without_a_value_is_an_error():
     with pytest.raises(GrammarError) as excinfo:
-        gr.split_flags(["action", "add", "acme", "--owner"])
+        gr.split_flags(["todo", "acme", "--owner"])
     assert "--owner" in str(excinfo.value)
 
 
 def test_trailing_whitespace_does_not_become_text():
-    parsed = gr.parse_line("status set q4-budget active   ")
-    assert parsed.tokens == ["status", "set", "q4-budget", "active"]
+    parsed = gr.parse_line("set q4-budget status   ")
+    assert parsed.tokens == ["set", "q4-budget", "status"]
     assert parsed.text is None
 
 
