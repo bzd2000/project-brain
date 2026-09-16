@@ -91,6 +91,20 @@ class Verb(NamedTuple):
     # passes it into `split_flags` itself; declared here so both sides read
     # the same tuple rather than each spelling the flag name separately.
     bool_flags: Tuple[str, ...] = ()
+    # Other positionals that name an entity, as (index, kinds) - `link`'s
+    # `<ref>`. Resolved statically like `flag_refs`, shown by `--dry-run`.
+    extra_refs: Tuple[Tuple[int, Tuple[str, ...]], ...] = ()
+    # A static shape check beyond arity (R6.5.1): called by `validate` with
+    # (positional after the verb's words, flags, text); raises `VerbError`.
+    # `todo`'s `done|edit|due` forms each have their own arity, which one
+    # (min, max) cannot express.
+    shape: Optional[Callable[[List[str], Dict[str, str], Optional[str]], None]] = None
+    # A kind refusal (R6.0a, "refusals are static"): called by
+    # `validate_batch` once every reference on the line is resolved, with
+    # the `Plan`; raises `VerbError` naming the verb to use instead. The verb
+    # body makes the same refusal on the real entity - defence in depth,
+    # the pattern `status set` set for `value_choices`.
+    check: Optional[Callable[["Plan"], None]] = None
 
 
 VERBS: Dict[Tuple[str, ...], Verb] = {}
@@ -103,7 +117,10 @@ def verb(*name, needs_text: bool = False, writes: bool = True,
          flag_refs: Optional[Dict[str, Tuple[str, ...]]] = None,
          value_choices: Optional[Tuple[int, Tuple[str, ...]]] = None,
          batchable: bool = True, json_ok: bool = True,
-         bool_flags: Tuple[str, ...] = ()):
+         bool_flags: Tuple[str, ...] = (),
+         extra_refs: Tuple[Tuple[int, Tuple[str, ...]], ...] = (),
+         shape: Optional[Callable[[List[str], Dict[str, str], Optional[str]], None]] = None,
+         check: Optional[Callable[["Plan"], None]] = None):
     """Register a verb.
 
     `arity` is (min, max) positionals AFTER the verb's own words, and
@@ -119,6 +136,7 @@ def verb(*name, needs_text: bool = False, writes: bool = True,
             flag_refs=flag_refs, value_choices=value_choices,
             batchable=batchable, json_ok=json_ok,
             bool_flags=tuple(bool_flags),
+            extra_refs=extra_refs, shape=shape, check=check,
         )
         return func
     return register
@@ -178,6 +196,19 @@ def _value_choice_error(name: Tuple[str, ...], value: str,
             value, article, noun, ", ".join(allowed)
         )
     )
+
+
+def _refuse_kind(verb_label: str, entity, refused: Dict[str, str]) -> None:
+    """R6.0a: a verb that does not apply to this kind refuses BY NAME and
+    names the verb to use instead. `refused` maps kind -> message template;
+    `{slug}` in the template is the entity's slug."""
+    kind = getattr(entity, "kind", None)
+    if kind in refused:
+        raise VerbError(
+            "`{}` does not apply to {} ({}): {}".format(
+                verb_label, entity.slug, kind, refused[kind].format(slug=entity.slug)
+            )
+        )
 
 
 @verb("log", needs_text=True, arity=(1, 1), ref_kinds=("project",))
@@ -813,6 +844,9 @@ class Plan(NamedTuple):
     # batch's own `raise arch-board --ref acme-migration -- ...` line is
     # exactly the shape a wrong `--ref` would have gone unpreviewed on.
     resolved_flags: Optional[Dict[str, object]] = None
+    # positional index -> resolved entity, for `extra_refs` sites (batch
+    # path only, like `resolved`/`resolved_flags`).
+    resolved_extra: Optional[Dict[int, object]] = None
 
 
 def validate(parsed) -> Optional[Plan]:
@@ -870,6 +904,9 @@ def validate(parsed) -> Optional[Plan]:
         raise GrammarError(
             "{!r}: `{}` takes no free text".format(parsed.raw, " ".join(found.name))
         )
+
+    if found.shape is not None:
+        found.shape(rest, flags, parsed.text)
 
     # A batch must be able to report a bad `status`/`health`/note-type value
     # from `--dry-run` alone, without running anything - so the check that
@@ -1013,15 +1050,16 @@ def _numbered_lines(text: str):
 
 
 def _reference_sites(plan: "Plan"):
-    """Where `plan` names an entity, as `(ref, kinds, flag_name)` triples -
-    what a batch must resolve before writing any of it (R6.5.1). `flag_name`
-    is `None` for `positional[0]`'s reference (the PRIMARY target) and the
-    flag's own name (`"ref"`, `"program"`) for a `flag_refs` site, so a
-    caller that wants to tell the two apart - `--dry-run`'s preview, which
-    must not drop `--ref`/`--program` silently (fix round 2, item 4) - does
-    not have to guess from position alone."""
+    """Where `plan` names an entity, as `(ref, kinds, site)` triples - what a
+    batch must resolve before writing any of it (R6.5.1). `site` is `None`
+    for the PRIMARY target (`positional[0]`), an `int` for an
+    `extra_refs` positional, and the flag's own name for a `flag_refs` site,
+    so `--dry-run`'s preview can tell the three apart."""
     if plan.verb.ref_kinds is not None:
         yield plan.positional[0], plan.verb.ref_kinds, None
+    for index, kinds in plan.verb.extra_refs:
+        if index < len(plan.positional):
+            yield plan.positional[index], kinds, index
     for name, kinds in (plan.verb.flag_refs or {}).items():
         if name in plan.flags:
             yield plan.flags[name], kinds, name
@@ -1198,12 +1236,13 @@ def validate_batch(root, text: str) -> List[Tuple[int, "Plan"]]:
                 )
             projected[slug] = (lineno, kind, title)
 
-        # `_reference_sites` tells the PRIMARY target (`flag_name is None`)
-        # apart from a flag reference (`flag_name` is that flag's name).
-        # Both are captured onto the plan so `--dry-run` (L5, and item 4's
-        # flag-reference fix) can name them without `_resolve_against`
-        # walking the tree a second time.
-        for ref, kinds, flag_name in _reference_sites(plan):
+        # `_reference_sites` tells the PRIMARY target (`site is None`) apart
+        # from an `extra_refs` positional (`site` is an `int`) and a flag
+        # reference (`site` is that flag's name). All three are captured
+        # onto the plan so `--dry-run` (L5, and item 4's flag-reference fix)
+        # can name them without `_resolve_against` walking the tree a second
+        # time.
+        for ref, kinds, site in _reference_sites(plan):
             try:
                 found = _resolve_against(root, ref, kinds, projected)
             except AmbiguousReference as exc:
@@ -1217,12 +1256,24 @@ def validate_batch(root, text: str) -> List[Tuple[int, "Plan"]]:
                     "{!r} matches nothing yet - line {} creates it. Move "
                     "that line above this one.".format(ref, creator),
                 )
-            if flag_name is None:
+            if site is None:
                 plan = plan._replace(resolved=found)
+            elif isinstance(site, int):
+                resolved_extra = dict(plan.resolved_extra or {})
+                resolved_extra[site] = found
+                plan = plan._replace(resolved_extra=resolved_extra)
             else:
                 resolved_flags = dict(plan.resolved_flags or {})
-                resolved_flags[flag_name] = found
+                resolved_flags[site] = found
                 plan = plan._replace(resolved_flags=resolved_flags)
+
+        # R6.0a: refuse a wrong kind or a wrong pairing here, statically,
+        # so `--dry-run` reports it and no earlier line has been written.
+        if plan.verb.check is not None:
+            try:
+                plan.verb.check(plan)
+            except VerbError as exc:
+                raise BatchError(lineno, parsed.raw, str(exc))
 
         plans.append((lineno, plan))
     return plans
@@ -1276,6 +1327,8 @@ def _dry_run_effect(plan: "Plan") -> str:
         index, _allowed = plan.verb.value_choices
         if index < len(plan.positional):
             extras.append(plan.positional[index])
+    for index in sorted(plan.resolved_extra or {}):
+        extras.append(_dry_run_target(plan.resolved_extra[index]))
     for name in sorted(plan.resolved_flags or {}):
         extras.append(
             "--{} {}".format(name, _dry_run_target(plan.resolved_flags[name]))
