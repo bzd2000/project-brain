@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 
 from conftest import snapshot, assert_only_changed
@@ -17,7 +19,7 @@ def test_log_appends_newest_first_and_commits(brain_repo):
     result = _run(brain_repo, "log acme-migration -- Codes published at last")
     assert "acme-migration" in result.message
     body = Project(brain_repo / "projects" / "acme-migration.md").doc.section_lines("Log")
-    assert body[0] == "- Codes published at last"
+    assert body[0] == "- {} - Codes published at last".format(date.today().isoformat())
     assert g.authored(brain_repo, "projects/acme-migration.md")
 
 

@@ -197,14 +197,19 @@ def test_a_grammar_error_mid_batch_names_its_line(brain_repo):
 
 def test_a_ref_kind_mismatch_against_a_projected_slug_of_another_kind_is_refused(brain_repo):
     """A projected slug is only a candidate for a reference of a MATCHING
-    kind. Without kind-filtering, `log acme-two -- ...` (a project reference)
-    would silently match a projected STAKEHOLDER slug that happens to share a
-    prefix, and validation would lie about a line that fails at write time.
+    kind. Without kind-filtering, `raise acme-two -- ...` (a stakeholder/board
+    reference, R6.0a keeps `raise` refusing by kind) would silently match a
+    projected PROJECT slug that happens to share a prefix, and validation
+    would lie about a line that fails at write time.
+
+    (`log` itself is kind-agnostic since R6.0a - every kind - so it can no
+    longer exercise this; `raise` still refuses by kind and is unaffected by
+    this milestone.)
 
     Red if `_resolve_against` matches projected slugs without checking kind:
     this would then pass validation instead of raising BatchError.
     """
-    text = "new stakeholder -- Acme two\nlog acme-two -- kicked off\n"
+    text = "new project -- Acme two\nraise acme-two -- kicked off\n"
     with pytest.raises(BatchError) as excinfo:
         c.validate_batch(brain_repo, text)
     assert excinfo.value.lineno == 2
@@ -276,11 +281,16 @@ def test_line_creating_does_not_recommend_a_slug_already_on_disk(brain_repo):
     to "move that line above this one": doing so sends them toward a batch
     that still refuses to validate, for a different reason, one line later.
 
+    `action add` (still project-only, ref_kinds=("project",)) stands in for
+    `log` here: R6.0a makes `log` kind-agnostic, so `log ann -- x` now
+    resolves the real stakeholder directly and never reaches the projected-
+    slug path this test exercises.
+
     Red if `_line_creating` does not check the projected slug against disk:
     the message would then say "line 2 creates it" instead of falling back to
     the plain "matches nothing" `UnknownReference`.
     """
-    text = "log ann -- x\nnew project -- Ann\n"
+    text = "action add ann -- x\nnew project -- Ann\n"
     with pytest.raises(BatchError) as excinfo:
         c.validate_batch(brain_repo, text)
     assert excinfo.value.lineno == 1

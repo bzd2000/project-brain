@@ -137,3 +137,22 @@ def test_stray_checkbox_outside_next_actions_is_not_a_task(brain_tree):
     doc.add_bullet("Log", "- [ ] this looks like a task but is not one", newest_first=True)
     doc.save()
     assert len(Doc(path).tasks()) == 1
+
+
+def test_add_minute_opens_todays_sitting_at_the_top_or_appends_to_it(brain_tree):
+    """R4.5.2: `## Minutes` is newest-first, one `###` per sitting. First
+    call opens `### <day>` above the existing sitting; second call appends
+    to it, not a new heading. Mutation: in `add_minute`, compare the first
+    heading against `"### "` only (drop `+ day`) - the second call then
+    appends under 2026-08-20 and the heading count assertion fails."""
+    doc = Doc(brain_tree / "boards" / "arch-board.md")
+    before = list(doc.lines)
+    doc.add_minute("Minutes", "2026-09-15", "- decided: terraform")
+    doc.add_minute("Minutes", "2026-09-15", "- decided: the cutover window")
+    body = doc.section_lines("Minutes")
+    headings = [l for l in body if l.startswith("### ")]
+    assert headings[0] == "### 2026-09-15"
+    assert headings.count("### 2026-09-15") == 1
+    i = body.index("### 2026-09-15")
+    assert body[i + 1:i + 3] == ["- decided: terraform", "- decided: the cutover window"]
+    assert len(doc.lines) == len(before) + 4   # heading, two lines, one blank

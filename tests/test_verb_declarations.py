@@ -17,7 +17,9 @@ from brain.entities import HEALTHS, STATUSES
 # The declaration is the contract. Adding a verb that resolves a reference
 # without adding a row here is meant to fail.
 EXPECTED_REF_KINDS = {
-    ("log",): ("project",),
+    ("log",): (),                   # any kind (R6.0a)
+    ("decide",): (),                # any kind (R6.0a)
+    ("query",): (),                 # any kind (R6.0a)
     ("status", "set"): ("project",),
     ("health", "set"): ("project",),
     ("action", "add"): ("project",),
@@ -34,6 +36,7 @@ EXPECTED_REF_KINDS = {
 EXPECTED_FLAG_REFS = {
     ("link",): {"program": ("program",)},
     ("raise",): {"ref": ("project",)},
+    ("log",): {"ref": ()},
 }
 
 

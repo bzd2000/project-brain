@@ -211,15 +211,39 @@ def _refuse_kind(verb_label: str, entity, refused: Dict[str, str]) -> None:
         )
 
 
-@verb("log", needs_text=True, arity=(1, 1), ref_kinds=("project",))
+LOG_KINDS = ("project", "program")   # have a `## Log`; a party has `## Pending`
+
+
+def _dated(text: str) -> str:
+    """Every line `log`/`decide` writes carries the day (§4.2-§4.5's examples,
+    and what an agenda gathers by: "everything dated since last_met")."""
+    return "- {} - {}".format(date.today().isoformat(), text)
+
+
+def _saved(root, entity, message: str) -> Result:
+    entity.doc.touch()
+    entity.doc.save()
+    rel = Path(entity.path).relative_to(Path(root)).as_posix()
+    return Result(message, (rel,))
+
+
+@verb("log", needs_text=True, arity=(1, 1), allowed_flags=("ref",),
+      ref_kinds=(), flag_refs={"ref": ()})
 def _log(root, positional, flags, text):
-    project = resolve(root, positional[0], kinds=("project",))
-    doc = project.doc
-    doc.add_log(text)
-    doc.touch()
-    doc.save()
-    rel = Path(project.path).relative_to(Path(root)).as_posix()
-    return Result("logged to {}".format(project.slug), (rel,))
+    """R6.0a: `## Log` on a project or program; `## Pending` on a
+    stakeholder or board (R4.4.2 - what `raise` used to do). `--ref`
+    appends `  #<slug>`, the cross-reference an agenda groups by."""
+    entity = resolve(root, positional[0])
+    line = text
+    if "ref" in flags:
+        line += "  #{}".format(resolve(root, flags["ref"]).slug)
+    if entity.kind in LOG_KINDS:
+        entity.doc.add_bullet("Log", _dated(line), newest_first=True)
+        where = "Log"
+    else:
+        entity.doc.add_bullet("Pending", _dated(line), newest_first=False)
+        where = "Pending"
+    return _saved(root, entity, "logged to {} ({})".format(entity.slug, where))
 
 
 @verb("status", "set", arity=(2, 2), ref_kinds=("project",),
@@ -327,6 +351,37 @@ def _question_add(root, positional, flags, text):
     doc.touch()
     doc.save()
     return Result("added a question to {}".format(project.slug), (rel,))
+
+
+@verb("decide", needs_text=True, arity=(1, 1), ref_kinds=())
+def _decide(root, positional, flags, text):
+    """R6.0a: `## Decisions` on a project; a `decision:` log line on a
+    program; `## History` on a stakeholder; today's sitting in a board's
+    `## Minutes` (R4.5.2)."""
+    entity = resolve(root, positional[0])
+    if entity.kind == "project":
+        entity.doc.add_bullet("Decisions", _dated(text), newest_first=True)
+    elif entity.kind == "program":
+        entity.doc.add_bullet("Log", _dated("decision: " + text), newest_first=True)
+    elif entity.kind == "stakeholder":
+        entity.doc.add_bullet("History", _dated(text), newest_first=True)
+    else:
+        entity.doc.add_minute("Minutes", date.today().isoformat(), _dated(text))
+    return _saved(root, entity, "recorded a decision on {}".format(entity.slug))
+
+
+@verb("query", needs_text=True, arity=(1, 1), ref_kinds=())
+def _query(root, positional, flags, text):
+    """R6.0a: `## Open questions` on a project; a `question:` log line on a
+    program; a `question:` pending item on a stakeholder or board."""
+    entity = resolve(root, positional[0])
+    if entity.kind == "project":
+        entity.doc.add_bullet("Open questions", "- " + text, newest_first=False)
+    elif entity.kind == "program":
+        entity.doc.add_bullet("Log", _dated("question: " + text), newest_first=True)
+    else:
+        entity.doc.add_bullet("Pending", _dated("question: " + text), newest_first=False)
+    return _saved(root, entity, "added a question to {}".format(entity.slug))
 
 
 @verb("health", "set", arity=(2, 2), ref_kinds=("project",),

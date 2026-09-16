@@ -390,6 +390,44 @@ class Doc:
     def add_question(self, text: str) -> int:
         return self.add_bullet("Open questions", "- " + text, newest_first=False)
 
+    def add_minute(self, section: str, day: str, line: str) -> int:
+        """Append `line` to the sitting `### <day>` at the top of `section`,
+        opening that sitting if the section's first heading is not it
+        (R4.5.2: newest-first, one `###` per sitting). Returns the index of
+        the line written. Used by `decide <board>`; `minutes add`
+        (milestone 7) writes whole sittings through the same shape."""
+        self._refuse_if_unclosed_fence()
+        found = self.section(section)
+        if found is None:
+            raise KeyError("no section {!r} in {}".format(section, self.path))
+        first = None
+        for i in range(found.start, found.end):
+            if self.lines[i].startswith("### "):
+                first = i
+                break
+        if first is not None and self.lines[first].strip() == "### " + day:
+            at = first + 1
+            while at < found.end and not self.lines[at].startswith("### "):
+                at += 1
+            while at > first + 1 and self.lines[at - 1].strip() == "":
+                at -= 1
+            self.lines.insert(at, line)
+            self.reindex()
+            return at
+        # Open today's sitting above whatever is there - before the first
+        # content line, or at the section start when it is empty.
+        at = found.start
+        for i in range(found.start, found.end):
+            if self.lines[i].strip():
+                at = i
+                break
+        block = ["### " + day, line]
+        if at < found.end and self.lines[at].strip():
+            block.append("")
+        self.lines[at:at] = block
+        self.reindex()
+        return at + 1
+
     def toggle_task(self, lineno: int) -> int:
         task = parse_action(lineno, self.lines[lineno])
         if task is None:
