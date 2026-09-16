@@ -372,10 +372,16 @@ def test_set_status_touches_only_status_and_updated(brain_repo):
 
 @pytest.mark.parametrize("field, bad", [("status", "banana"), ("health", "purple")])
 def test_set_validates_status_and_health_statically(brain_repo, field, bad):
-    """Mutation: declare `shape=None` on `set` - `validate` accepts the line."""
+    """Mutation: declare `shape=None` on `set` - `validate` accepts the line.
+    Mutation: drop the `("set", "<field>")` entry from `_VALUE_CHOICE_NOUN` -
+    the message falls back to `name[0]` and names the verb ("set") instead
+    of the field, so this test's noun assertion fails while `bad` alone
+    would still be found."""
     with pytest.raises(VerbError) as excinfo:
         c.validate(gr.parse_line("set q4-budget {} -- {}".format(field, bad)))
-    assert bad in str(excinfo.value)
+    message = str(excinfo.value)
+    assert bad in message
+    assert "is not a {}".format(field) in message, message
 
 
 def test_set_takes_a_value_with_spaces_after_the_separator(brain_repo):

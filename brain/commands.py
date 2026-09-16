@@ -197,14 +197,18 @@ def next_note_id(root) -> Tuple[str, int]:
     return "n{}".format(nxt), nxt
 
 
-# The noun each `value_choices` check names in its error message, keyed by
-# verb name. `validate` and a verb's own defence-in-depth raise both build
-# their message through `_value_choice_error` (below), so the two can never
-# drift apart - the user-visible message does not change depending on which
-# layer catches a bad value.
+# The noun each `value_choices`/enumerated-value check names in its error
+# message, keyed by verb name - or, for `set`, by `("set", field)`, since
+# one verb validates two different enums (R6.0a). `validate` and a verb's
+# own defence-in-depth raise both build their message through
+# `_value_choice_error` (below), so the two can never drift apart - the
+# user-visible message does not change depending on which layer catches a
+# bad value.
 _VALUE_CHOICE_NOUN: Dict[Tuple[str, ...], str] = {
     ("note", "add"): "note type",
     ("new",): "entity kind",
+    ("set", "status"): "status",
+    ("set", "health"): "health",
 }
 
 
