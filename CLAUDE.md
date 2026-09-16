@@ -75,6 +75,11 @@ them in commit messages, tests and code comments.
 pip install -e ".[yaml,dev]"     # PyYAML and pytest, both pinned (C1)
 pip install -e ".[yaml,dev,tui]" # + textual, for the TUI only - the suite must pass without it (A11)
 python -m pytest                 # everything
+
+# In a Coder `python` workspace (repo cloned to ~/project, `uv sync` run on start):
+uv sync                          # = pip install -e ".[yaml,dev,tui]"; fallback: uv sync --all-extras
+uv run pytest
+uv run brain --root ~/mybrain tui   # the data root is its own git repo - clone it next to the project
 python -m pytest tests/test_doc_tasks.py -v          # one file
 python -m pytest tests/test_doc_tasks.py::test_toggle_task_changes_exactly_one_line -v
 python -m pytest tests/test_stdlib_only.py -v        # the R3.3 seam

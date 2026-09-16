@@ -23,6 +23,14 @@ dev = ["pytest==8.3.3"]
 # outright when textual is absent (A11), so `dev` alone never needs it.
 tui = ["textual==8.2.8", "pytest-asyncio==0.24.0"]
 
+# `uv sync` (what a Coder `python` workspace runs on start) installs the
+# project plus the `dev` dependency group. The group is the project's own
+# extras, so the pins live in one place: `uv sync` there is
+# `pip install -e ".[yaml,dev,tui]"` here. If a uv version refuses the
+# self-reference, `uv sync --all-extras` is the same set.
+[dependency-groups]
+dev = ["brain[yaml,dev,tui]"]
+
 [tool.setuptools.packages.find]
 include = ["brain*"]
 
