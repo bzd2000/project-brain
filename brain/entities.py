@@ -21,7 +21,8 @@ from .model import (
 
 STATUSES = ("idea", "next", "active", "blocked", "paused", "done")
 HEALTHS = ("green", "amber", "red")
-NOTE_TYPES = ("note", "meeting", "action", "decision")
+NOTE_TYPES = ("note", "meeting")            # what `note add` writes (R4.6.2)
+LEGACY_NOTE_TYPES = ("action", "decision")  # read from an old inbox, never written
 UNKNOWN = "unknown"
 
 # "## n7 · 2026-09-07 14:32 · meeting · @acme @arch-board"  (R4.6.1)
@@ -246,13 +247,18 @@ def load_notes(path):
             continue
         raw_type = (match.group("type") or "").strip()
         problems = []
-        if raw_type not in NOTE_TYPES:
+        # R4.6.5: an old inbox may still hold `action`/`decision` notes from
+        # before R4.6.2 shrank what `note add` writes to `note`/`meeting` -
+        # those must still load without a problem, so the read-side check
+        # (and the value kept) uses both tuples; only NOTE_TYPES is ever
+        # written.
+        if raw_type not in NOTE_TYPES + LEGACY_NOTE_TYPES:
             problems.append("unknown note type: {!r}".format(raw_type))
         tags = (match.group("tags") or "").split()
         notes.append(Note(
             id=match.group("id"),
             captured=(match.group("captured") or "").strip() or None,
-            type=raw_type if raw_type in NOTE_TYPES else "note",
+            type=raw_type if raw_type in NOTE_TYPES + LEGACY_NOTE_TYPES else "note",
             tags=tags,
             body=body,
             problems=problems,

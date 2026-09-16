@@ -35,8 +35,9 @@ class Tree:
 
     def __init__(self, root):
         # Programs whose roll-up a write in this command invalidated by
-        # MOVING a project out of them. `link` and `field set … program`
-        # change a project's `program:`; reading it after the write finds only
+        # MOVING a project out of them. `link` changes a project's
+        # `program:` (R6.0a: `set` refuses that field by name, since `link`
+        # validates the other side); reading it after the write finds only
         # the destination, so the source was left claiming the project - both
         # roll-ups then listed it (R4.3.1a's exact failure). `refresh_path`
         # sees old and new side by side and records the old one here.
@@ -86,8 +87,8 @@ class Tree:
         `Party.projects`/`.cadence`/`.last_met`/`.next_meeting` (entities.py)
         are `_read()` snapshots taken once at construction, not properties -
         so a cached `Entity` in a shared `Tree` goes stale the instant its
-        own file is written again (`status set`, `field set`, `link`'s
-        `program:`) within the same command, and a later line resolving that
+        own file is written again (`set`, `link`'s `program:`) within the
+        same command, and a later line resolving that
         same slug would get the OLD snapshot back. `perform` calls this -
         instead of a full `invalidate()` - for a write that did not change
         WHICH entities exist, so refreshing one written entity costs a

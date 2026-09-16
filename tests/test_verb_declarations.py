@@ -15,28 +15,21 @@ from brain.entities import HEALTHS, STATUSES
 
 
 # The declaration is the contract. Adding a verb that resolves a reference
-# without adding a row here is meant to fail.
+# without adding a row here is meant to fail. R6.0a's one shape per kind
+# means every one of these resolves ANY kind statically - a wrong kind is
+# refused dynamically, by a `check` hook, once the entity is known
+# (`_todo_check`, `_link_check`), not by restricting which candidates
+# `validate_batch` even considers.
 EXPECTED_REF_KINDS = {
-    ("log",): (),                   # any kind (R6.0a)
-    ("decide",): (),                # any kind (R6.0a)
-    ("query",): (),                 # any kind (R6.0a)
-    ("status", "set"): ("project",),
-    ("health", "set"): ("project",),
-    ("action", "add"): ("project",),
-    ("action", "done"): ("project",),
-    ("action", "due"): ("project",),
-    ("action", "edit"): ("project",),
-    ("decision", "add"): ("project",),
-    ("question", "add"): ("project",),
-    ("field", "set"): (),           # any kind
-    ("link",): (),                  # any kind - the pairing is `check`'s job (R6.0a)
-    ("raise",): ("stakeholder", "board"),
-    ("todo",): (),                  # any kind (R6.0a); refused by name in the body
-    ("set",): (),                   # any kind (R6.0a)
+    ("log",): (),      # any kind (R6.0a)
+    ("todo",): (),     # any kind; refused by name in `_todo_check`
+    ("decide",): (),   # any kind (R6.0a)
+    ("query",): (),    # any kind (R6.0a)
+    ("set",): (),      # any kind (R6.0a)
+    ("link",): (),     # any kind - the pairing is `_link_check`'s job (R6.0a)
 }
 
 EXPECTED_FLAG_REFS = {
-    ("raise",): {"ref": ("project",)},
     ("log",): {"ref": ()},
 }
 
@@ -57,18 +50,15 @@ def test_declared_flag_references_match_the_table():
     assert declared == EXPECTED_FLAG_REFS
 
 
-def test_status_and_health_set_declare_value_choices():
-    """`apply --dry-run` must report a bad status/health without running
-    anything, so the legal values need to be known statically. This is
-    defence in depth over the verb bodies' own runtime checks (R6.5.1) - the
-    tuples here must be the SAME objects the bodies check against, not a
-    second copy that can drift out of sync."""
-    status_verb = c.VERBS[("status", "set")]
-    health_verb = c.VERBS[("health", "set")]
-    assert status_verb.value_choices == (1, STATUSES)
-    assert status_verb.value_choices[1] is STATUSES
-    assert health_verb.value_choices == (1, HEALTHS)
-    assert health_verb.value_choices[1] is HEALTHS
+def test_set_validates_status_and_health_against_the_entity_tuples():
+    """R6.0a: `set`'s field is free text, so there is no per-field
+    `value_choices` row on the verb the way `status set`/`health set` used
+    to declare one - `_set_shape` (R6.5.1) checks `status`/`health` against
+    `SET_CHOICES` itself, statically, before any write. The objects must be
+    the SAME ones the body checks against, not a second copy that can drift
+    out of sync - the pattern `value_choices` sets for `new`/`note add`."""
+    assert c.SET_CHOICES["status"] is STATUSES
+    assert c.SET_CHOICES["health"] is HEALTHS
 
 
 @pytest.mark.parametrize("name", sorted(c.VERBS))
@@ -78,15 +68,12 @@ def test_a_verb_that_resolves_positional_zero_declares_it(name):
     A table alone rots - it agrees with itself while the code moves. This reads
     the implementation, so a new verb wired to `resolve` cannot stay undeclared.
 
-    The brief's original check looked for `positional[0]` passed AS AN ARGUMENT
-    to `resolve`, but `_status_set` and `_health_set` unpack
-    `ref = positional[0]` first and call `resolve(root, ref, ...)` - so that
-    check would miss them entirely. Instead: the function reads `positional[0]`
-    ANYWHERE in its body AND calls one of `resolve`, `resolve_action`,
-    `_project_and_doc` somewhere. This correctly excludes `new` (reads
-    `positional[0]` as a kind name, resolves nothing), `request done` (an
-    index) and the `note` verbs (ids resolved against `inbox.md`, not the
-    entity tree).
+    The check looks for `positional[0]` read ANYWHERE in the body AND a call
+    to `resolve` or `resolve_action` somewhere else in it (not necessarily
+    the same expression - a verb may alias `positional[0]` to a local name
+    first). This correctly excludes `new` (reads `positional[0]` as a kind
+    name, resolves nothing), `request done` (an index) and the `note` verbs
+    (ids resolved against `inbox.md`, not the entity tree).
     """
     verb = c.VERBS[name]
     tree = ast.parse(inspect.getsource(verb.run).lstrip())
@@ -99,7 +86,7 @@ def test_a_verb_that_resolves_positional_zero_declares_it(name):
     )
     calls_a_resolver = any(
         isinstance(node, ast.Call)
-        and getattr(node.func, "id", None) in ("resolve", "resolve_action", "_project_and_doc")
+        and getattr(node.func, "id", None) in ("resolve", "resolve_action")
         for node in ast.walk(tree)
     )
     resolves_positional_zero = reads_positional_zero and calls_a_resolver
@@ -122,9 +109,8 @@ def test_a_verb_that_resolves_positional_zero_declares_it(name):
 # would make `validate_batch` accept a reference the verb then refuses at
 # write time - `--dry-run` would report a batch as fine and the real run
 # would fail. These tests read the LITERAL `kinds=` a verb's own source
-# passes to `resolve` (or, via `_project_and_doc`, the fixed kinds that
-# helper passes on its behalf) and check it against the decorator - ground
-# truth from the body, not from the hand-written table.
+# passes to `resolve` and check it against the decorator - ground truth from
+# the body, not from the hand-written table.
 
 
 def _kinds_arg(node):
@@ -167,9 +153,13 @@ def _positional_zero_aliases(func):
     """Local names assigned exactly `positional[0]` - bare, or one element of
     a tuple-unpack assignment - inside `func`.
 
-    `_status_set` and `_health_set` write `ref, value = positional[0],
-    positional[1]` before calling `resolve`, so the call site spells `ref`,
-    not `positional[0]` - this traces that alias back to its source.
+    A verb whose body binds `positional[0]` to a local name before calling
+    `resolve` (`entity = positional[0]`, or a tuple-unpack) spells the call
+    site with that name, not `positional[0]` itself - this traces such an
+    alias back to its source so the test below still finds it. No verb in
+    the current vocabulary does this (each calls `resolve(root,
+    positional[0], ...)` directly), but the check costs nothing to keep
+    general.
     """
     tree = ast.parse(inspect.getsource(func).lstrip())
     names = set()
@@ -188,25 +178,6 @@ def _positional_zero_aliases(func):
     return names
 
 
-def _calls_project_and_doc(func):
-    tree = ast.parse(inspect.getsource(func).lstrip())
-    return any(
-        isinstance(node, ast.Call)
-        and getattr(node.func, "id", None) == "_project_and_doc"
-        for node in ast.walk(tree)
-    )
-
-
-# `_project_and_doc`'s own `kinds=("project",)` - every verb that delegates to
-# it inherits this without repeating it at the call site, so it is read once
-# here, from the same kind of literal `resolve()` call the per-verb tests
-# below read directly.
-_PROJECT_AND_DOC_KINDS = next(
-    kinds for ref, kinds in _unparsed_resolve_calls(c._project_and_doc)
-    if ref == "ref"
-)
-
-
 @pytest.mark.parametrize(
     "name", sorted(n for n, v in c.VERBS.items() if v.ref_kinds is not None)
 )
@@ -216,8 +187,6 @@ def test_declared_ref_kinds_matches_the_resolve_call_in_the_body(name):
     aliases = _positional_zero_aliases(run) | {"positional[0]"}
 
     found = None
-    if _calls_project_and_doc(run):
-        found = _PROJECT_AND_DOC_KINDS
     for ref_expr, kinds in _unparsed_resolve_calls(run):
         if ref_expr in aliases:
             assert found in (None, kinds), (

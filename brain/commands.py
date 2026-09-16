@@ -68,7 +68,7 @@ class Verb(NamedTuple):
     # flags. Readers use `(verb.flag_refs or {})`.
     flag_refs: Optional[Dict[str, Tuple[str, ...]]] = None
     # A positional whose legal values are known statically, as (index, values).
-    # `status set` and `health set` check this in their own bodies too; that is
+    # `new` and `note add` check this in their own bodies too; that is
     # defence in depth, and duplicates a constant reference rather than logic.
     value_choices: Optional[Tuple[int, Tuple[str, ...]]] = None
     # A verb that makes its OWN commit (bypassing `execute`/`apply_batch`'s one
@@ -103,11 +103,26 @@ class Verb(NamedTuple):
     # `validate_batch` once every reference on the line is resolved, with
     # the `Plan`; raises `VerbError` naming the verb to use instead. The verb
     # body makes the same refusal on the real entity - defence in depth,
-    # the pattern `status set` set for `value_choices`.
+    # the pattern `new`/`note add` set for `value_choices`.
     check: Optional[Callable[["Plan"], None]] = None
 
 
 VERBS: Dict[Tuple[str, ...], Verb] = {}
+
+# R6.0b: the milestone-5 names, refused with the new spelling. A dict, not
+# an alias table - no code path hangs off it. Delete after milestone 6.
+TOMBSTONES: Dict[Tuple[str, ...], str] = {
+    ("raise",): "log <stakeholder|board> [--ref <project>] -- <text>",
+    ("action", "add"): "todo <project> [--owner who] [--due when] -- <text>",
+    ("action", "done"): "todo <project> done <n> | done -- <words>",
+    ("action", "edit"): "todo <project> edit <n> -- <text>",
+    ("action", "due"): "todo <project> due <n> --to <date>",
+    ("decision", "add"): "decide <target> -- <text>",
+    ("question", "add"): "query <target> -- <text>",
+    ("status", "set"): "set <project> status -- <status>",
+    ("health", "set"): "set <project> health -- <health>",
+    ("field", "set"): "set <target> <field> -- <value>",
+}
 
 
 def verb(*name, needs_text: bool = False, writes: bool = True,
@@ -148,6 +163,14 @@ def find_verb(positional: List[str]) -> Tuple[Verb, List[str]]:
         key = tuple(positional[:size])
         if key in VERBS:
             return VERBS[key], positional[size:]
+    for size in (2, 1):
+        key = tuple(positional[:size])
+        if key in TOMBSTONES:
+            raise VerbError(
+                "unknown verb `{}`: it is `{}` now (R6.0b)".format(
+                    " ".join(key), TOMBSTONES[key]
+                )
+            )
     raise VerbError(
         "unknown verb {!r}. Try `brain --help`.".format(" ".join(positional[:2]))
     )
@@ -180,8 +203,6 @@ def next_note_id(root) -> Tuple[str, int]:
 # drift apart - the user-visible message does not change depending on which
 # layer catches a bad value.
 _VALUE_CHOICE_NOUN: Dict[Tuple[str, ...], str] = {
-    ("status", "set"): "status",
-    ("health", "set"): "health",
     ("note", "add"): "note type",
     ("new",): "entity kind",
 }
@@ -244,95 +265,6 @@ def _log(root, positional, flags, text):
         entity.doc.add_bullet("Pending", _dated(line), newest_first=False)
         where = "Pending"
     return _saved(root, entity, "logged to {} ({})".format(entity.slug, where))
-
-
-@verb("status", "set", arity=(2, 2), ref_kinds=("project",),
-      value_choices=(1, STATUSES))
-def _status_set(root, positional, flags, text):
-    ref, value = positional[0], positional[1]
-    if value not in STATUSES:
-        raise _value_choice_error(("status", "set"), value, STATUSES)
-    project = resolve(root, ref, kinds=("project",))
-    doc = project.doc
-    doc.set_field("status", value)
-    doc.touch()
-    doc.save()
-    rel = Path(project.path).relative_to(Path(root)).as_posix()
-    return Result("{} is now {}".format(project.slug, value), (rel,))
-
-
-# Fields with a verb of their own. `field set` refuses them because those verbs
-# validate the value, and a second door with no lock on it is worse than no
-# second door.
-GUARDED_FIELDS = {"status": "status set", "health": "health set"}
-
-
-def _project_and_doc(root, ref):
-    project = resolve(root, ref, kinds=("project",))
-    rel = Path(project.path).relative_to(Path(root)).as_posix()
-    return project, project.doc, rel
-
-
-@verb("action", "add", needs_text=True, arity=(1, 1),
-      allowed_flags=("owner", "due"), ref_kinds=("project",))
-def _action_add(root, positional, flags, text):
-    project, doc, rel = _project_and_doc(root, positional[0])
-    doc.add_action(text, owner=flags.get("owner"), due=flags.get("due"))
-    doc.touch()
-    doc.save()
-    return Result("added an action to {}".format(project.slug), (rel,))
-
-
-@verb("action", "done", arity=(1, 2), optional_text=True, ref_kinds=("project",))
-def _action_done(root, positional, flags, text):
-    """R6.2: a 1-based index into the OPEN actions, or a unique substring."""
-    project, doc, rel = _project_and_doc(root, positional[0])
-    selector = positional[1] if len(positional) > 1 else text
-    if selector is None:
-        raise VerbError(
-            "`action done` needs an action: an index, or ` -- some words`"
-        )
-    task = resolve_action(project, selector)
-    doc.toggle_task(task.lineno)
-    doc.touch()
-    doc.save()
-    return Result("ticked {} in {}".format(task.text, project.slug), (rel,))
-
-
-@verb("action", "edit", needs_text=True, arity=(2, 2), ref_kinds=("project",))
-def _action_edit(root, positional, flags, text):
-    """R10.10a: the TUI's `e` on an action line. The selector is positional -
-    an index into the open actions or a unique substring - because the free
-    text after ` -- ` is the new description and may itself contain ` -- `,
-    which would make a free-text selector (`action edit <project> -- <old
-    words> -- <new words>`) ambiguous with `action done`'s own grammar."""
-    project, doc, rel = _project_and_doc(root, positional[0])
-    task = resolve_action(project, positional[1])
-    doc.edit_task(task.lineno, text)
-    doc.touch()
-    doc.save()
-    return Result("edited an action on {}".format(project.slug), (rel,))
-
-
-@verb("action", "due", arity=(1, 2), allowed_flags=("to",), optional_text=True,
-      ref_kinds=("project",))
-def _action_due(root, positional, flags, text):
-    if "to" not in flags:
-        raise VerbError("`action due` needs --to <date>")
-    project, doc, rel = _project_and_doc(root, positional[0])
-    selector = positional[1] if len(positional) > 1 else text
-    if selector is None:
-        raise VerbError("`action due` needs an action: an index, or ` -- words`")
-    task = resolve_action(project, selector)
-    doc.lines[task.lineno] = render_action(
-        task.text, task.owner, flags["to"], done=task.done,
-        indent=task.indent, mark=task.mark,
-    )
-    doc.touch()
-    doc.save()
-    return Result(
-        "{} is now due {}".format(task.text, flags["to"]), (rel,)
-    )
 
 
 TODO_WORDS = ("done", "edit", "due")
@@ -415,24 +347,6 @@ def _todo(root, positional, flags, text):
     return _saved(root, entity, "{} is now due {}".format(task.text, flags["to"]))
 
 
-@verb("decision", "add", needs_text=True, arity=(1, 1), ref_kinds=("project",))
-def _decision_add(root, positional, flags, text):
-    project, doc, rel = _project_and_doc(root, positional[0])
-    doc.add_decision(text)
-    doc.touch()
-    doc.save()
-    return Result("recorded a decision on {}".format(project.slug), (rel,))
-
-
-@verb("question", "add", needs_text=True, arity=(1, 1), ref_kinds=("project",))
-def _question_add(root, positional, flags, text):
-    project, doc, rel = _project_and_doc(root, positional[0])
-    doc.add_question(text)
-    doc.touch()
-    doc.save()
-    return Result("added a question to {}".format(project.slug), (rel,))
-
-
 @verb("decide", needs_text=True, arity=(1, 1), ref_kinds=())
 def _decide(root, positional, flags, text):
     """R6.0a: `## Decisions` on a project; a `decision:` log line on a
@@ -462,36 +376,6 @@ def _query(root, positional, flags, text):
     else:
         entity.doc.add_bullet("Pending", _dated("question: " + text), newest_first=False)
     return _saved(root, entity, "added a question to {}".format(entity.slug))
-
-
-@verb("health", "set", arity=(2, 2), ref_kinds=("project",),
-      value_choices=(1, HEALTHS))
-def _health_set(root, positional, flags, text):
-    value = positional[1]
-    if value not in HEALTHS:
-        raise _value_choice_error(("health", "set"), value, HEALTHS)
-    project, doc, rel = _project_and_doc(root, positional[0])
-    doc.set_field("health", value)
-    doc.touch()
-    doc.save()
-    return Result("{} is now {}".format(project.slug, value), (rel,))
-
-
-@verb("field", "set", needs_text=True, arity=(2, 2), ref_kinds=())
-def _field_set(root, positional, flags, text):
-    key = positional[1]
-    if key in GUARDED_FIELDS:
-        raise VerbError(
-            "use `brain {} …` for {!r}: it validates the value".format(
-                GUARDED_FIELDS[key], key
-            )
-        )
-    entity = resolve(root, positional[0])
-    rel = Path(entity.path).relative_to(Path(root)).as_posix()
-    entity.doc.set_field(key, text)
-    entity.doc.touch()
-    entity.doc.save()
-    return Result("{} {} is now {}".format(entity.slug, key, text), (rel,))
 
 
 # R6.0a: two front-matter fields belong to `link`, because they encode
@@ -796,23 +680,6 @@ def _link(root, positional, flags, text):
     return _saved(root, target, "{} follows {}".format(target.slug, ref.slug))
 
 
-@verb("raise", needs_text=True, arity=(1, 1), allowed_flags=("ref",),
-      ref_kinds=("stakeholder", "board"), flag_refs={"ref": ("project",)})
-def _raise(root, positional, flags, text):
-    """R4.4.2: `## Pending` accumulates between meetings, and is what agenda
-    generation consumes."""
-    party = resolve(root, positional[0], kinds=("stakeholder", "board"))
-    rel = Path(party.path).relative_to(Path(root)).as_posix()
-    line = "- {} - {}".format(date.today().isoformat(), text)
-    if "ref" in flags:
-        project = resolve(root, flags["ref"], kinds=("project",))
-        line += "  #{}".format(project.slug)
-    party.doc.add_bullet("Pending", line, newest_first=False)
-    party.doc.touch()
-    party.doc.save()
-    return Result("raised with {}".format(party.slug), (rel,))
-
-
 class Request(NamedTuple):
     lineno: int
     text: str
@@ -1028,14 +895,14 @@ class Plan(NamedTuple):
     # batch, which never touches this field at all.
     resolved: object = None
     # `{flag_name: what it resolved to}` for every `flag_refs` site
-    # `validate_batch` resolved - `raise --ref <project>` (R6.0a's `link
+    # `validate_batch` resolved - `log --ref <project>` (R6.0a's `link
     # <target> <ref>` resolves its second positional through `extra_refs`/
     # `resolved_extra` below, not a flag). `None` (not `{}`, a mutable
     # `NamedTuple` default - the same reason `Verb.flag_refs` above is
     # `None`) when the verb has none, or the flag was not given. Fix round
     # 2, item 4: without this, `--dry-run` silently dropped `--ref` from its
     # preview even though `validate_batch` had already resolved it - the
-    # §8.1 canonical batch's own `raise arch-board --ref acme-migration --
+    # §8.1 canonical batch's own `log arch-board --ref acme-migration --
     # ...` line is exactly the shape a wrong `--ref` would have gone
     # unpreviewed on.
     resolved_flags: Optional[Dict[str, object]] = None
@@ -1131,8 +998,8 @@ def perform(root, plan: "Plan") -> Result:
     about, or (symmetrically, though nothing removes an entity file today) a
     removal - and invalidate it so the next lookup rescans.
 
-    M3, fix round 1: an ordinary content edit (`log`, `status set`, `field
-    set`, `link`'s `program:` write, ...) touches a path the `Tree` already
+    M3, fix round 1: an ordinary content edit (`log`, `set`, `link`'s
+    `program:` write, ...) touches a path the `Tree` already
     knew about and leaves its EXISTENCE unchanged, so it does not invalidate
     the whole tree - that is what keeps an eight-line batch to one scan
     (`tests/test_tree_cache.py::test_a_batch_loads_the_tree_once`). But it
@@ -1156,7 +1023,7 @@ def perform(root, plan: "Plan") -> Result:
     # path the tree is still unloaded when `perform` starts, `known_paths()`
     # is None, and capturing it up front skipped this whole block. That made
     # `refresh_path` dead code for `execute`, which Task 5's roll-ups then
-    # read a stale `.health` through: `health set acme-migration amber`
+    # read a stale `.health` through: `set acme-migration health -- amber`
     # regenerated the roll-up with the OLD value and only caught up on the
     # NEXT write.
     known = active.known_paths() if active is not None else None
@@ -1489,19 +1356,19 @@ def _dry_run_effect(plan: "Plan") -> str:
     """What `--dry-run` names for one line (fix round 1, L5; extended in fix
     round 2, item 4): the verb, the PRIMARY target `validate_batch` already
     resolved it to, any other reference it also resolved - an `extra_refs`
-    positional (`link <target> <ref>`) or a `--flag` reference (`raise
-    --ref`) - and an enumerated value being set (`status set`, `health
-    set`) - distinguishing a line that CREATES an entity from one that
-    references something that already exists or that an earlier line of the
-    same batch will create.
+    positional (`link <target> <ref>`) or a `--flag` reference (`log
+    --ref`) - and an enumerated value or field being set (`new`'s kind,
+    `set`'s field) - distinguishing a line that CREATES an entity from one
+    that references something that already exists or that an earlier line of
+    the same batch will create.
 
     A flag reference used to be silently dropped from the preview even
     though `validate_batch` had already resolved it - the §8.1 canonical
-    batch's own `raise arch-board --ref acme-migration -- ...` line is
-    exactly the shape that hid a wrong `--ref` from the user. `new`'s own
-    `value_choices` (its entity kind) is already named by the "(creates)"
-    branch, so that branch returns before the enumerated-value logic below
-    would repeat it.
+    batch's own `log arch-board --ref acme-migration -- ...` line (R6.0a's
+    `raise arch-board --ref ...` before it) is exactly the shape that hid a
+    wrong `--ref` from the user. `new`'s own `value_choices` (its entity
+    kind) is already named by the "(creates)" branch, so that branch returns
+    before the enumerated-value logic below would repeat it.
 
     Never the user's free text (R4.6.1's principle, applied to a batch's own
     preview): it is already on their screen, and this only ever names brain's
@@ -1523,6 +1390,12 @@ def _dry_run_effect(plan: "Plan") -> str:
         index, _allowed = plan.verb.value_choices
         if index < len(plan.positional):
             extras.append(plan.positional[index])
+    if plan.verb.name == ("set",):
+        # `set`'s value is free text (R6.0), never previewed (R4.6.1's
+        # principle) - but the FIELD being set is brain's own syntax, and
+        # naming it is what used to distinguish `status set` from `health
+        # set` in the old vocabulary's preview. `set -> q4-budget (status)`.
+        extras.append(plan.positional[1])
     for index in sorted(plan.resolved_extra or {}):
         extras.append(_dry_run_target(plan.resolved_extra[index]))
     for name in sorted(plan.resolved_flags or {}):
@@ -1560,7 +1433,7 @@ def apply_batch(root, text: str, dry_run: bool = False,
     not only while it is writing.
 
     A reference that resolved fine at validation time can still fail at
-    write time - action selectors (`action done`/`action due`'s index-or-
+    write time - action selectors (`todo`'s `done`/`due` index-or-
     substring) resolve only in `perform`, never in `validate_batch` - and
     `validate_batch` only proves what R6.5.1 makes knowable statically in any
     case; a slug's identity is only fixed once its file exists. Such a

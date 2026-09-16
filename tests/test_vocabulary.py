@@ -12,7 +12,7 @@ from conftest import snapshot, assert_only_changed
 from brain import commands as c
 from brain import grammar as gr
 from brain.entities import Board, Program, Project, Stakeholder, load_notes
-from brain.errors import GrammarError, UnknownReference, VerbError
+from brain.errors import AmbiguousReference, GrammarError, UnknownReference, VerbError
 
 TODAY = date.today().isoformat()
 
@@ -319,6 +319,37 @@ def test_todo_refuses_non_projects_by_name_in_dry_run_and_for_real(brain_repo, s
     assert snapshot(brain_repo) == before
 
 
+def test_an_ambiguous_todo_reference_is_an_error(brain_repo):
+    """R6.2 applies to `todo` too, and guessing ticks the wrong one.
+
+    Mutation: in `resolve_action`, return the first candidate instead of
+    raising `AmbiguousReference` when more than one matches."""
+    _run(brain_repo, "todo acme-migration -- Confirm the rollback plan")
+    with pytest.raises(AmbiguousReference):
+        _run(brain_repo, "todo acme-migration done -- Confirm")
+
+
+def test_todo_verbs_refuse_a_done_action(brain_repo):
+    """`resolve_action` indexes only OPEN actions, so a completed one cannot
+    be reached by index - confirm the error says something useful.
+
+    Mutation: index `doc.tasks()` (every task) instead of `open_actions()`
+    in `resolve_action` - a completed action becomes reachable again."""
+    with pytest.raises(UnknownReference):
+        _run(brain_repo, "todo acme-migration done -- Migrate the reporting")
+
+
+def test_todo_edit_text_is_the_users_words(brain_repo):
+    """Twenty-eighth guard: the new text is free text after ` -- ` and may
+    contain anything, including a second ` -- `, a `#` and a `|`.
+
+    Mutation: split `text` on ` -- ` again in `edit_task`'s caller - the
+    words after the first ` -- ` would be dropped."""
+    words = "ship it -- then # celebrate | loudly"
+    _run(brain_repo, "todo acme-migration edit 1 -- " + words)
+    assert _acme(brain_repo).doc.tasks()[0].text == words
+
+
 # ---- set ------------------------------------------------------------------
 
 def test_set_status_touches_only_status_and_updated(brain_repo):
@@ -378,6 +409,31 @@ def test_set_refuses_the_link_fields_by_name(brain_repo, field):
     with pytest.raises(VerbError) as excinfo:
         c.validate(gr.parse_line("set acme-migration {} -- x".format(field)))
     assert "`link " in str(excinfo.value)
+
+
+def test_set_with_a_control_character_does_not_brick_undo(brain_repo):
+    """S1, whole-branch review item 1 - the fix brief's literal repro, through
+    the real single-verb path (`commands.py`'s `execute`:
+    `git.commit(root, result.paths, "brain: " + result.message, ...)`), where
+    `result.message` (`"{slug} {key} is now {text}"`) carries the user's free
+    text verbatim. `test_git_undo.py` proves the fix at the `git.commit`
+    boundary directly; this proves the attack vector through it is actually
+    closed. Before the fix, the second `brain undo`-equivalent call below
+    raised `ValueError: not enough values to unpack` (R11.4 bans amend, so a
+    poisoned subject could never be repaired).
+
+    Mutation: stop sanitising the commit subject in `git.commit` - the
+    `undone is not None` assertion below raises instead of returning."""
+    from brain import git as g
+
+    before = _acme(brain_repo).fm.get("owner")
+    _run(brain_repo, "set acme-migration owner -- Bob\x1eX")
+    # R4.6.1/A13: the file holds the user's byte, control character included -
+    # only the commit SUBJECT is sanitised, never file content.
+    assert _acme(brain_repo).fm["owner"] == "Bob\x1eX"
+    undone = g.undo(brain_repo)
+    assert undone is not None
+    assert _acme(brain_repo).fm.get("owner") == before
 
 
 # ---- link -----------------------------------------------------------------
@@ -460,3 +516,177 @@ def test_link_refuses_an_unknown_target(brain_repo):
     `resolve(..., kinds=LINK_REF_KINDS)` raises before `_link_pair` ever runs."""
     with pytest.raises(UnknownReference):
         _run(brain_repo, "link acme-migration no-such")
+
+
+# ---- tombstones (R6.0b) ---------------------------------------------------
+
+@pytest.mark.parametrize("old, new", sorted(c.TOMBSTONES.items()))
+def test_every_tombstone_refuses_naming_its_replacement(brain_repo, old, new):
+    """Mutation: make `find_verb` raise the plain unknown-verb error."""
+    line = " ".join(old) + " acme-migration 1 -- x"
+    with pytest.raises(VerbError) as excinfo:
+        c.validate(gr.parse_line(line))
+    assert "`{}`".format(" ".join(old)) in str(excinfo.value)
+    assert new in str(excinfo.value)
+    with pytest.raises(c.BatchError) as batch:
+        c.validate_batch(brain_repo, line + "\n")
+    assert new in str(batch.value)
+
+
+def test_the_tombstone_table_is_exactly_the_eleven_old_names():
+    assert set(c.TOMBSTONES) == {
+        ("raise",), ("action", "add"), ("action", "done"), ("action", "edit"),
+        ("action", "due"), ("decision", "add"), ("question", "add"),
+        ("status", "set"), ("health", "set"), ("field", "set"),
+    }
+    assert not (set(c.TOMBSTONES) & set(c.VERBS)), "a tombstone must not also be a verb"
+
+
+# ---- note types (R4.6.2) --------------------------------------------------
+
+def test_note_add_accepts_note_and_meeting_only(brain_repo):
+    """Mutation: leave "action" in NOTE_TYPES."""
+    from brain.entities import NOTE_TYPES
+    assert NOTE_TYPES == ("note", "meeting")
+    _run(brain_repo, "note add meeting -- a sitting")
+    with pytest.raises(VerbError):
+        _run(brain_repo, "note add action -- nope")
+    assert [n.type for n in load_notes(brain_repo / "inbox.md")][-1] == "meeting"
+
+
+def test_an_old_inbox_with_an_action_note_still_loads_without_a_problem(brain_repo):
+    """R4.6.5. The fixture's n9 is `action`. `brain_repo` does not seed
+    `inbox.md` (only the four entity directories - see `conftest.py`), so
+    this copies the fixture file in directly and commits it: test setup
+    describing the tree's starting state, not a `brain` write, the same
+    reasoning `test_acceptance_apply.py`'s `a7_repo` already relies on for
+    the same file. Mutation: remove LEGACY_NOTE_TYPES from the read-side
+    check in `load_notes`."""
+    import shutil
+    from pathlib import Path
+
+    from brain import git as g
+
+    fixtures = Path(__file__).parent / "fixtures" / "brain"
+    shutil.copy(fixtures / "inbox.md", brain_repo / "inbox.md")
+    g.commit(brain_repo, ["inbox.md"], "brain: seed inbox", source="cli")
+
+    n9 = next(n for n in load_notes(brain_repo / "inbox.md") if n.id == "n9")
+    assert n9.type == "action"
+    assert n9.problems == []
+
+
+# ---- A20: the whole table, one row per cell ---------------------------------
+
+TABLE = [
+    # verb line, kind slug, section that changes (None = refused)
+    ("log {} -- x", "acme-migration", "Log"),
+    ("log {} -- x", "cloud-migration", "Log"),
+    ("log {} -- x", "ann", "Pending"),
+    ("log {} -- x", "arch-board", "Pending"),
+    ("todo {} -- x", "acme-migration", "Next actions"),
+    ("todo {} -- x", "cloud-migration", None),
+    ("todo {} -- x", "ann", None),
+    ("todo {} -- x", "arch-board", None),
+    ("decide {} -- x", "acme-migration", "Decisions"),
+    ("decide {} -- x", "cloud-migration", "Log"),
+    ("decide {} -- x", "ann", "History"),
+    ("decide {} -- x", "arch-board", "Minutes"),
+    ("query {} -- x", "acme-migration", "Open questions"),
+    ("query {} -- x", "cloud-migration", "Log"),
+    ("query {} -- x", "ann", "Pending"),
+    ("query {} -- x", "arch-board", "Pending"),
+    ("set {} owner -- x", "acme-migration", "front matter"),
+    ("set {} owner -- x", "cloud-migration", "front matter"),
+    ("set {} owner -- x", "ann", "front matter"),
+    ("set {} owner -- x", "arch-board", "front matter"),
+    # `q4-budget`, not `acme-migration`: the fixture already links
+    # acme-migration to cloud-migration (CLAUDE.md: "acme-migration (in
+    # cloud-migration)"), so re-linking it would touch only `updated:` -
+    # `_bodies` strips that, and "the named section must change" would fail
+    # for a reason unrelated to what this row tests. q4-budget carries no
+    # `program:` yet (matches `test_link_sets_the_program_on_a_project`).
+    ("link {} cloud-migration", "q4-budget", "front matter"),
+    ("link {} acme-migration", "cloud-migration", None),
+    ("link {} q4-budget", "ann", "no-op"),          # ann already follows q4-budget
+    ("link {} q4-budget", "arch-board", "front matter"),
+]
+
+REL = {"acme-migration": "projects/acme-migration.md", "cloud-migration": "programs/cloud-migration.md",
+       "ann": "stakeholders/ann.md", "arch-board": "boards/arch-board.md",
+       "q4-budget": "projects/q4-budget.md"}
+
+
+@pytest.mark.parametrize("template, slug, section", TABLE)
+def test_a20_every_cell_writes_the_named_section_or_refuses_by_name(brain_repo, template, slug, section):
+    """A20. Mutation: for one accepted cell, write to a different section;
+    for one refused cell, declare `check=None` (the dry-run assertion fails)."""
+    line = template.format(slug)
+    rel = REL[slug]
+    before = snapshot(brain_repo)
+    if section == "no-op":
+        assert "already follows" in _run(brain_repo, line).message
+        assert snapshot(brain_repo) == before
+        return
+    if section is None:
+        with pytest.raises(c.BatchError) as excinfo:
+            c.validate_batch(brain_repo, line + "\n")
+        assert "`" in str(excinfo.value), "a refusal names the verb to use"
+        with pytest.raises(VerbError):
+            _run(brain_repo, line)
+        assert snapshot(brain_repo) == before
+        return
+    _run(brain_repo, line)
+    after = snapshot(brain_repo)
+    assert rel in _changed(before, after) and _changed(before, after) <= {rel, ROLLUP}
+    old, new = _bodies(before[rel]), _bodies(after[rel])
+    assert old[section] != new[section], "the named section must change"
+    assert {k: v for k, v in old.items() if k != section} == {k: v for k, v in new.items() if k != section}, (
+        "only the named section (and updated:) may change")
+
+
+def _bodies(lines):
+    """Section name -> its lines; the front matter under "front matter" with
+    `updated:` removed, so R4.2.3's touch does not count as a change."""
+    out, name = {}, "front matter"
+    for line in lines:
+        if line.startswith("## "):
+            name = line[3:].strip()
+            out.setdefault(name, [])
+            continue
+        if name == "front matter" and line.startswith("updated:"):
+            continue
+        out.setdefault(name, []).append(line)
+    return out
+
+
+# ---- R4.2.3: every write verb sets updated ---------------------------------
+
+@pytest.mark.parametrize("line", [
+    "log acme-migration -- one",
+    "todo acme-migration -- two",
+    "decide acme-migration -- three",
+    "query acme-migration -- four",
+    "set acme-migration owner -- five",
+])
+def test_every_project_verb_sets_updated(brain_repo, line):
+    """R4.2.3: `updated:` is set by every write and is authoritative.
+
+    The reset rewrites whatever `updated:` currently holds to a fixed date,
+    so a verb that skipped `touch()` would leave it there.
+
+    Mutation: drop the `touch()` call from `_saved` (or from whichever verb
+    `line` exercises) - that verb's case goes red while the others stay
+    green."""
+    import re as _re
+
+    path = brain_repo / "projects" / "acme-migration.md"
+    path.write_text(
+        _re.sub(r"(?m)^updated: .*$", "updated: 1999-01-01",
+                path.read_text(encoding="utf-8")),
+        encoding="utf-8",
+    )
+    c.git.commit(brain_repo, ["projects/acme-migration.md"], "brain: reset", source="cli")
+    assert Project(path).updated == "1999-01-01", "the reset did nothing"
+    _run(brain_repo, line)
+    assert Project(path).updated != "1999-01-01", line

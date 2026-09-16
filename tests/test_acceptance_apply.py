@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,9 @@ from conftest import snapshot
 from test_batch_validation import _tree_digest
 
 from brain import git, lock
+from brain.entities import Board, Project, Stakeholder
+
+TODAY = date.today().isoformat()
 
 
 def _commit_count(root):
@@ -32,14 +36,14 @@ def _commit_count(root):
 
 FIVE_GOOD = """\
 log acme-migration -- Steering call: finance published the cost-centre codes
-status set q4-budget active
-action add acme-migration --owner me --due 2026-09-11 -- Draft the rollback plan
-decision add acme-migration -- Terraform over ARM, pending board sign-off
-question add acme-migration -- Who signs off the cutover window?
+set q4-budget status -- active
+todo acme-migration --owner me --due 2026-09-11 -- Draft the rollback plan
+decide acme-migration -- Terraform over ARM, pending board sign-off
+query acme-migration -- Who signs off the cutover window?
 """
 
 FIVE_WITH_ONE_BAD = FIVE_GOOD.replace(
-    "status set q4-budget active", "status set q4-budget banana"
+    "set q4-budget status -- active", "set q4-budget status -- banana"
 )
 
 
@@ -221,15 +225,22 @@ def test_dry_run_through_the_cli_writes_nothing(brain_repo):
 
 # --- A7: the batch the whole project exists to deliver (§6.2 / §8.1) -------
 
+# BRAIN-SPEC.md §6.2 / §8.1, verbatim (grep `# n7 — steering call`): the
+# ten-line batch the whole project exists to deliver, in the new vocabulary
+# (R6.0a) - `link arch-board acme-migration` is a no-op against this fixture
+# (arch-board already follows acme-migration), and the batch must still
+# succeed with that line unchanged.
 A7_BATCH = """\
 # n7 — steering call
 log acme-migration -- Steering call: finance published the cost-centre codes
-status set q4-budget active
-action add acme-migration --owner me --due 2026-09-11 -- Draft the rollback plan
-action add acme-migration --owner sara --due 2026-09-11 -- Confirm cutover window
-decision add acme-migration -- Terraform over ARM, pending board sign-off
-raise arch-board --ref acme-migration -- Terraform vs ARM needs formal sign-off
-raise ann -- Budget impact of the cost-centre delay — she's asked on the 18th
+set q4-budget status -- active
+log q4-budget -- finance published the codes
+todo acme-migration --owner me --due 2026-09-11 -- Draft the rollback plan
+todo acme-migration --owner sara --due 2026-09-11 -- Confirm cutover window
+decide acme-migration -- Terraform over ARM, pending board sign-off
+log arch-board --ref acme-migration -- Terraform vs ARM needs formal sign-off
+link arch-board acme-migration
+log ann -- Budget impact of the cost-centre delay — she's asked on the 18th
 note drop n7
 """
 
@@ -281,10 +292,21 @@ def test_a7_the_meeting_note_batch_applies_as_one_commit_and_undoes_as_one(a7_re
     batch is one commit touching two projects, a board, a stakeholder and
     `inbox.md`; that the em dash and the apostrophe land on disk byte for
     byte; and that `brain undo` reverts the whole thing as one commit,
-    n7 included.
+    n7 included. Also pins each of the batch's ten lines to its own
+    section: q4-budget's dated `log`, the two `todo`s with owner/due,
+    arch-board's and ann's one new `## Pending` item apiece, and the
+    `link` line's no-op (arch-board already follows acme-migration).
+
+    Mutation: replace either `todo` line's `--owner`/`--due` pair with a
+    bare `-- text` (dropping the metadata), or swap `arch-board`'s
+    `projects:` fixture so `link arch-board acme-migration` is no longer a
+    no-op - either way at least one assertion below must fail.
     """
     before = _tree_digest(a7_repo)
     before_commits = _commit_count(a7_repo)
+    arch_before = (a7_repo / "boards" / "arch-board.md").read_bytes()
+    ann_pending_before = len(Stakeholder(a7_repo / "stakeholders" / "ann.md").pending())
+    arch_pending_before = len(Board(a7_repo / "boards" / "arch-board.md").pending())
 
     done = _apply(a7_repo, A7_BATCH)
     assert done.returncode == 0, done.stderr
@@ -312,6 +334,41 @@ def test_a7_the_meeting_note_batch_applies_as_one_commit_and_undoes_as_one(a7_re
 
     inbox = (a7_repo / "inbox.md").read_bytes()
     assert b"## n7" not in inbox, "note drop n7 should have removed the note"
+
+    # `log q4-budget -- finance published the codes`: a dated project log line.
+    q4_log = Project(a7_repo / "projects" / "q4-budget.md").doc.section_lines("Log")
+    assert q4_log[0] == "- {} - finance published the codes".format(TODAY)
+
+    # `link arch-board acme-migration`: a no-op against this fixture, so the
+    # `projects:` front-matter line must be byte-identical before and after.
+    arch_after = (a7_repo / "boards" / "arch-board.md").read_bytes()
+    before_line = next(l for l in arch_before.split(b"\n") if l.startswith(b"projects:"))
+    after_line = next(l for l in arch_after.split(b"\n") if l.startswith(b"projects:"))
+    assert after_line == before_line, "link's no-op must not touch projects:"
+
+    # the two `todo` lines: R4.2.2's form, owner and due both kept.
+    acme_actions = Project(a7_repo / "projects" / "acme-migration.md").open_actions()
+    assert any(
+        t.text == "Draft the rollback plan" and t.owner == "me" and t.due == "2026-09-11"
+        for t in acme_actions
+    ), "the first todo line did not land with its owner/due"
+    assert any(
+        t.text == "Confirm cutover window" and t.owner == "sara" and t.due == "2026-09-11"
+        for t in acme_actions
+    ), "the second todo line did not land with its owner/due"
+
+    # `log arch-board --ref acme-migration -- ...`: one new dated Pending
+    # item, hash-tagging the ref (R6.0a).
+    arch_pending_after = Board(a7_repo / "boards" / "arch-board.md").pending()
+    assert len(arch_pending_after) == arch_pending_before + 1
+    assert any(
+        "Terraform vs ARM needs formal sign-off" in l and "#acme-migration" in l
+        for l in arch_pending_after
+    )
+
+    # `log ann -- ...`: one new dated Pending item on the stakeholder.
+    ann_pending_after = Stakeholder(a7_repo / "stakeholders" / "ann.md").pending()
+    assert len(ann_pending_after) == ann_pending_before + 1
 
     undone = _undo(a7_repo)
     assert undone.returncode == 0, undone.stderr

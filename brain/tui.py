@@ -2579,12 +2579,12 @@ class BrainApp(App, inherit_bindings=False):
         text: the same commit key as plain capture, routed to the verb the
         key chose rather than `note add`. Each is a thin argv build against
         the seam `run_brain` is (R10.10a's ruling: no verb the TUI calls here
-        does anything `action edit`/`action due`/`status set`/`health
-        set`/`request add` did not already do from the shell).
+        does anything `todo edit`/`todo due`/`set status`/`set
+        health`/`request add` did not already do from the shell).
 
         An empty value quietly cancels, the same as an empty note (R10.13):
         typing `d`, deciding not to, and hitting `⏎` on nothing is not a
-        request to send `action due --to ''`.
+        request to send `todo … due --to ''`.
         """
         kind, slug, ident = self._pending
         value = self.buffer
@@ -2607,13 +2607,13 @@ class BrainApp(App, inherit_bindings=False):
                 self._render_modeline()
                 return
         if kind == "edit":
-            argv = ["action", "edit", slug, str(index), "--", value]
+            argv = ["todo", slug, "edit", str(index), "--", value]
         elif kind == "due":
-            argv = ["action", "due", slug, str(index), "--to", value]
+            argv = ["todo", slug, "due", str(index), "--to", value]
         elif kind == "status":
-            argv = ["status", "set", slug, value]
+            argv = ["set", slug, "status", "--", value]
         elif kind == "health":
-            argv = ["health", "set", slug, value]
+            argv = ["set", slug, "health", "--", value]
         else:
             assert kind == "request", kind
             argv = ["request", "add", "--", value]
@@ -2783,8 +2783,8 @@ class BrainApp(App, inherit_bindings=False):
 
     def _project_at_cursor(self):
         """The project `s`/`H` set a field on: `self.selected` when it is a
-        project (`status set`/`health set` are project-only verbs, R6.2),
-        else `None`."""
+        project - `status`/`health` are project fields (R6.2), even though
+        `set` itself is kind-agnostic (R6.0a) - else `None`."""
         if self.selected is not None and getattr(self.selected, "kind", None) == "project":
             return self.selected
         return None
@@ -2819,7 +2819,7 @@ class BrainApp(App, inherit_bindings=False):
     def _focused_open_action(self):
         """`(project, task, index)` for the detail pane's focused line,
         where `index` is the task's 1-based position among the project's
-        OPEN actions - the same number `action done`'s own selector takes
+        OPEN actions - the same number `todo … done`'s own selector takes
         (R6.2), derived from `Project.open_actions()` rather than the file's
         line number, which moves under the agent's writes in the other pane.
 
@@ -2840,7 +2840,7 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_tick(self) -> None:
-        """`x`: `action done <project> <index>` (R10.3's table)."""
+        """`x`: `todo <project> done <index>` (R10.3's table)."""
         found = self._focused_open_action()
         if found is None:
             self.notice = Notice(
@@ -2848,7 +2848,7 @@ class BrainApp(App, inherit_bindings=False):
             self._render_modeline()
             return
         project, _task, index = found
-        rc, out, err = self.run_brain(["action", "done", project.slug, str(index)])
+        rc, out, err = self.run_brain(["todo", project.slug, "done", str(index)])
         if rc != 0:
             self.notice = Notice(_first_line(err) or "brain exited {}".format(rc), True)
             self._render_modeline()
@@ -2859,7 +2859,7 @@ class BrainApp(App, inherit_bindings=False):
     def action_edit_line(self) -> None:
         """`e` (R10.10, R10.10a): an open action's INSERT buffer starts at
         its own text - "the line becomes an INSERT buffer where it sits" -
-        and `⏎` sends `action edit <project> <index> -- <new text>`. Any
+        and `⏎` sends `todo <project> edit <index> -- <new text>`. Any
         other focused line sends nothing and names what is editable, per
         the ruling: no verb edits an arbitrary line by position."""
         found = self._focused_open_action()
@@ -2897,7 +2897,7 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_due_prompt(self) -> None:
-        """`d`: prompts `due:`, `⏎` sends `action due <project> <index> --to
+        """`d`: prompts `due:`, `⏎` sends `todo <project> due <index> --to
         <date>`. Same selector rule as `x`/`e` - an open action must be
         focused first."""
         found = self._focused_open_action()
@@ -2917,7 +2917,7 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_status_prompt(self) -> None:
-        """`s`: prompts `status:`, `⏎` sends `status set <project>
+        """`s`: prompts `status:`, `⏎` sends `set <project> status --
         <status>` against the SELECTED project (not a focused line - status
         is a field on the entity, not one line of it)."""
         project = self._project_at_cursor()
@@ -2933,7 +2933,7 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_health_prompt(self) -> None:
-        """`H`: prompts `health:`, `⏎` sends `health set <project>
+        """`H`: prompts `health:`, `⏎` sends `set <project> health --
         <health>`, same target rule as `s`."""
         project = self._project_at_cursor()
         if project is None:
