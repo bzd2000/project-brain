@@ -94,7 +94,7 @@ def test_the_due_column_carries_the_next_open_actions_due_date(brain_repo):
     row = [l for l in _rollup(brain_repo).splitlines() if "acme-migration" in l][0]
     assert "| 2026-09-11 |" in row, row
     assert "2026-10-15" not in row, "the project's own due:, not the action's, leaked in"
-    _run(brain_repo, "link q4-budget --program cloud-migration")
+    _run(brain_repo, "link q4-budget cloud-migration")
     row2 = [l for l in _rollup(brain_repo).splitlines() if "q4-budget" in l][0]
     cells = [c.strip() for c in row2.strip("|").split("|")]
     assert cells[-1] == "", "no open action has a due date, so Due must be blank: {!r}".format(row2)
@@ -109,7 +109,7 @@ def test_a_pipe_in_an_action_cannot_forge_a_column(brain_repo):
     # piped text never reached the cell and this test passed with the escape
     # removed.
     _run(brain_repo, "new project -- Pipe probe")
-    _run(brain_repo, "link pipe-probe --program cloud-migration")
+    _run(brain_repo, "link pipe-probe cloud-migration")
     _run(brain_repo, "action add pipe-probe -- ship | rollback | decide")
     row = [l for l in _rollup(brain_repo).splitlines() if "pipe-probe" in l][0]
     assert "ship" in row, "the action must actually reach the Next cell"
@@ -142,7 +142,7 @@ def test_moving_a_project_between_programs_refreshes_both(brain_repo):
     refreshed and the source went on listing a project it no longer had -
     both roll-ups claimed it. That is R4.3.1a's exact failure."""
     _run(brain_repo, "new program -- Second wave")
-    _run(brain_repo, "link acme-migration --program second-wave")
+    _run(brain_repo, "link acme-migration second-wave")
     old = (brain_repo / "programs" / "cloud-migration.md").read_text(encoding="utf-8")
     new = (brain_repo / "programs" / "second-wave.md").read_text(encoding="utf-8")
     assert "acme-migration" not in old.split("## Roll-up")[1].split("\n## ")[0]

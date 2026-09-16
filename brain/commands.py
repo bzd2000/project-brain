@@ -494,6 +494,34 @@ def _field_set(root, positional, flags, text):
     return Result("{} {} is now {}".format(entity.slug, key, text), (rel,))
 
 
+# R6.0a: two front-matter fields belong to `link`, because they encode
+# R4.1's membership/interest and `link` validates the other side.
+SET_GUARDED = {
+    "program": "`link <project> <program>` sets a project's program (R4.1)",
+    "projects": "`link <stakeholder|board> <project>` declares interest (R4.1)",
+}
+SET_CHOICES = {"status": STATUSES, "health": HEALTHS}
+
+
+def _set_shape(positional, flags, text):
+    field = positional[1]
+    if field in SET_GUARDED:
+        raise VerbError("`set … {}`: {}".format(field, SET_GUARDED[field]))
+    if field in SET_CHOICES and text not in SET_CHOICES[field]:
+        raise _value_choice_error(("set", field), text, SET_CHOICES[field])
+
+
+@verb("set", needs_text=True, arity=(2, 2), ref_kinds=(), shape=_set_shape)
+def _set(root, positional, flags, text):
+    """R6.0a: one front-matter field on any kind. The value is free text
+    after ` -- ` (R6.0); `status`/`health` are validated by `_set_shape`
+    statically and here again."""
+    _set_shape(positional, flags, text)
+    entity = resolve(root, positional[0])
+    entity.doc.set_field(positional[1], text)
+    return _saved(root, entity, "{} {} is now {}".format(entity.slug, positional[1], text))
+
+
 @verb("note", "add", needs_text=True, arity=(0, 1), allowed_flags=("tag",),
       value_choices=(0, NOTE_TYPES))
 def _note_add(root, positional, flags, text):
@@ -723,19 +751,49 @@ def _new(root, positional, flags, text):
     )
 
 
-@verb("link", arity=(1, 1), allowed_flags=("program",),
-      ref_kinds=("project",), flag_refs={"program": ("program",)})
+LINK_REF_KINDS = ("program", "project")
+
+
+def _link_pair(target, ref) -> None:
+    """R6.0a/R4.1: a project links to a program; a party follows a project;
+    a program never lists anything. Refused by name, naming the fix."""
+    if target.kind == "program":
+        raise VerbError(
+            "`link {t} {r}`: programs never list their projects (R4.1) - "
+            "`link {r} {t}` puts the project in the program".format(t=target.slug, r=ref.slug)
+        )
+    if target.kind == "project" and ref.kind != "program":
+        raise VerbError(
+            "`link {t} {r}`: a project links to a program; {r} is a {k}".format(
+                t=target.slug, r=ref.slug, k=ref.kind)
+        )
+    if target.kind in ("stakeholder", "board") and ref.kind != "project":
+        raise VerbError(
+            "`link {t} {r}`: a {k} follows a project; {r} is a {rk}".format(
+                t=target.slug, r=ref.slug, k=target.kind, rk=ref.kind)
+        )
+
+
+def _link_check(plan):
+    _link_pair(plan.resolved, plan.resolved_extra[1])
+
+
+@verb("link", arity=(2, 2), ref_kinds=(), extra_refs=((1, LINK_REF_KINDS),),
+      check=_link_check)
 def _link(root, positional, flags, text):
-    """R4.1: membership is declared on the child. A project belongs to at most
-    one program, and programs never list their projects."""
-    if "program" not in flags:
-        raise VerbError("`link` needs --program <program>")
-    program = resolve(root, flags["program"], kinds=("program",))
-    project, doc, rel = _project_and_doc(root, positional[0])
-    doc.set_field("program", program.slug)
-    doc.touch()
-    doc.save()
-    return Result("{} is in {}".format(project.slug, program.slug), (rel,))
+    """R4.1: membership is declared on the child (`program:`); interest by
+    the interested party (`projects:`)."""
+    target = resolve(root, positional[0])
+    ref = resolve(root, positional[1], kinds=LINK_REF_KINDS)
+    _link_pair(target, ref)
+    if target.kind == "project":
+        target.doc.set_field("program", ref.slug)
+        return _saved(root, target, "{} is in {}".format(target.slug, ref.slug))
+    current = list(target.doc.fm.get("projects") or [])
+    if ref.slug in current:
+        return Result("{} already follows {}".format(target.slug, ref.slug), ())
+    target.doc.set_field("projects", current + [ref.slug])
+    return _saved(root, target, "{} follows {}".format(target.slug, ref.slug))
 
 
 @verb("raise", needs_text=True, arity=(1, 1), allowed_flags=("ref",),
@@ -970,14 +1028,16 @@ class Plan(NamedTuple):
     # batch, which never touches this field at all.
     resolved: object = None
     # `{flag_name: what it resolved to}` for every `flag_refs` site
-    # `validate_batch` resolved - `link --program <program>`, `raise --ref
-    # <project>`. `None` (not `{}`, a mutable `NamedTuple` default - the
-    # same reason `Verb.flag_refs` above is `None`) when the verb has none,
-    # or the flag was not given. Fix round 2, item 4: without this,
-    # `--dry-run` silently dropped `--ref`/`--program` from its preview even
-    # though `validate_batch` had already resolved them - the §8.1 canonical
-    # batch's own `raise arch-board --ref acme-migration -- ...` line is
-    # exactly the shape a wrong `--ref` would have gone unpreviewed on.
+    # `validate_batch` resolved - `raise --ref <project>` (R6.0a's `link
+    # <target> <ref>` resolves its second positional through `extra_refs`/
+    # `resolved_extra` below, not a flag). `None` (not `{}`, a mutable
+    # `NamedTuple` default - the same reason `Verb.flag_refs` above is
+    # `None`) when the verb has none, or the flag was not given. Fix round
+    # 2, item 4: without this, `--dry-run` silently dropped `--ref` from its
+    # preview even though `validate_batch` had already resolved it - the
+    # §8.1 canonical batch's own `raise arch-board --ref acme-migration --
+    # ...` line is exactly the shape a wrong `--ref` would have gone
+    # unpreviewed on.
     resolved_flags: Optional[Dict[str, object]] = None
     # positional index -> resolved entity, for `extra_refs` sites (batch
     # path only, like `resolved`/`resolved_flags`).
@@ -1428,11 +1488,12 @@ def _dry_run_target(entity) -> str:
 def _dry_run_effect(plan: "Plan") -> str:
     """What `--dry-run` names for one line (fix round 1, L5; extended in fix
     round 2, item 4): the verb, the PRIMARY target `validate_batch` already
-    resolved it to, any `--flag` reference it also resolved (`link
-    --program`, `raise --ref`), and an enumerated value being set (`status
-    set`, `health set`) - distinguishing a line that CREATES an entity from
-    one that references something that already exists or that an earlier
-    line of the same batch will create.
+    resolved it to, any other reference it also resolved - an `extra_refs`
+    positional (`link <target> <ref>`) or a `--flag` reference (`raise
+    --ref`) - and an enumerated value being set (`status set`, `health
+    set`) - distinguishing a line that CREATES an entity from one that
+    references something that already exists or that an earlier line of the
+    same batch will create.
 
     A flag reference used to be silently dropped from the preview even
     though `validate_batch` had already resolved it - the §8.1 canonical

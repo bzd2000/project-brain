@@ -3,7 +3,7 @@ import pytest
 from brain import commands as c
 from brain import git as g
 from brain import grammar as gr
-from brain.entities import Board, Project, Stakeholder, load
+from brain.entities import Board, Project, Stakeholder
 from brain.errors import UnknownReference, VerbError
 
 
@@ -72,19 +72,6 @@ def test_a_failed_new_leaves_no_file_behind(brain_repo, monkeypatch):
     with pytest.raises(g.GitError):
         _run(brain_repo, "new project -- Should not survive")
     assert not (brain_repo / "projects" / "should-not-survive.md").exists()
-
-
-def test_link_sets_the_program_on_the_child(brain_repo):
-    """R4.1: membership is declared on the child; programs never list projects."""
-    _run(brain_repo, "link acme-migration --program cloud-migration")
-    assert Project(brain_repo / "projects" / "acme-migration.md").program == "cloud-migration"
-    program = load(brain_repo / "programs" / "cloud-migration.md")
-    assert "acme-migration" not in program.doc.section_lines("Summary")
-
-
-def test_link_refuses_an_unknown_program(brain_repo):
-    with pytest.raises(UnknownReference):
-        _run(brain_repo, "link acme-migration --program no-such-programme")
 
 
 def test_raise_adds_a_pending_item_to_a_board_or_stakeholder(brain_repo):

@@ -249,7 +249,7 @@ def test_a_new_with_no_slug_in_its_text_is_refused_at_validation(brain_repo):
     assert "no letters or digits" in str(excinfo.value)
 
 
-def test_a_flag_reference_normalising_to_empty_is_refused_at_validation(brain_repo):
+def test_an_extra_ref_normalising_to_empty_is_refused_at_validation(brain_repo):
     """M1: `resolve_among`'s empty-after-normalise guard used to live only in
     `resolve`, so a caller that builds its own candidate list and calls
     `resolve_among` directly - `_resolve_against` - reached the unguarded
@@ -259,15 +259,22 @@ def test_a_flag_reference_normalising_to_empty_is_refused_at_validation(brain_re
     (`UnknownReference` from the empty-reference guard, not caught the same
     way a real "matches nothing" is).
 
+    `link zed-run .`'s `.` is now resolved as an `extra_refs` positional
+    (`kinds=LINK_REF_KINDS`, R6.0a), not a `--program` flag - the guard
+    triggers before any candidate pass runs, so it fires the same way
+    whichever site the reference came from.
+
     Red if the guard is only in `resolve()`: `resolve_among` then treats
-    `wanted = ""` as a prefix match against EVERY candidate (`startswith("")`
-    is always `True`). With only one program on disk (`cloud-migration`) and
-    none projected under `kinds=("program",)`, that is a UNIQUE match, not
-    even an ambiguity - `"."` silently resolves to `cloud-migration` and the
-    batch validates clean. Verified: removing the guard makes this test fail
-    with `DID NOT RAISE`, not a different exception.
+    `wanted = ""` as a prefix match against EVERY candidate
+    (`startswith("")` is always `True`) - every program AND project on disk
+    (`LINK_REF_KINDS` is both) plus `zed-run`, projected on line 1 - so it is
+    an `AmbiguousReference`, a DIFFERENT exception than the one this test
+    asserts, not the single silent match the old `--program` shape (kinds
+    restricted to `("program",)` alone) used to produce. Verified: removing
+    the guard makes this test fail with that `AmbiguousReference` message,
+    not `DID NOT RAISE`.
     """
-    text = "new project -- Zed run\nlink zed-run --program .\n"
+    text = "new project -- Zed run\nlink zed-run .\n"
     with pytest.raises(BatchError) as excinfo:
         c.validate_batch(brain_repo, text)
     assert excinfo.value.lineno == 2

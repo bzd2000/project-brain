@@ -29,13 +29,13 @@ EXPECTED_REF_KINDS = {
     ("decision", "add"): ("project",),
     ("question", "add"): ("project",),
     ("field", "set"): (),           # any kind
-    ("link",): ("project",),
+    ("link",): (),                  # any kind - the pairing is `check`'s job (R6.0a)
     ("raise",): ("stakeholder", "board"),
     ("todo",): (),                  # any kind (R6.0a); refused by name in the body
+    ("set",): (),                   # any kind (R6.0a)
 }
 
 EXPECTED_FLAG_REFS = {
-    ("link",): {"program": ("program",)},
     ("raise",): {"ref": ("project",)},
     ("log",): {"ref": ()},
 }
@@ -127,11 +127,25 @@ def test_a_verb_that_resolves_positional_zero_declares_it(name):
 # truth from the body, not from the hand-written table.
 
 
+def _kinds_arg(node):
+    """The kinds a `kinds=` keyword argument names: a literal tuple of
+    strings (`kinds=("program",)`), or a module-level constant name resolved
+    against `brain.commands` (`_link` passes `kinds=LINK_REF_KINDS`, not a
+    literal - `getattr(c, node.id)` reads the same tuple object the
+    decorator's `extra_refs` declares, so the two can't silently drift)."""
+    if isinstance(node, ast.Tuple):
+        return tuple(elt.value for elt in node.elts)
+    if isinstance(node, ast.Name):
+        return getattr(c, node.id)
+    return ()
+
+
 def _unparsed_resolve_calls(func):
     """`(ref_expr, kinds)` for every literal `resolve(...)` call in `func`'s
     source. `ref_expr` is the unparsed source of the reference argument
     (`"positional[0]"`, `"ref"`, `"flags['program']"`, ...); `kinds` is the
-    literal tuple of strings passed as `kinds=`, or `()` when the call has no
+    literal tuple of strings passed as `kinds=` (a literal tuple, or a
+    module-level name resolved by `_kinds_arg`), or `()` when the call has no
     `kinds=` at all - the same "any kind" meaning `ref_kinds=()` declares.
     """
     tree = ast.parse(inspect.getsource(func).lstrip())
@@ -143,8 +157,8 @@ def _unparsed_resolve_calls(func):
         ref_expr = ast.unparse(node.args[1])
         kinds = ()
         for kw in node.keywords:
-            if kw.arg == "kinds" and isinstance(kw.value, ast.Tuple):
-                kinds = tuple(elt.value for elt in kw.value.elts)
+            if kw.arg == "kinds":
+                kinds = _kinds_arg(kw.value)
         calls.append((ref_expr, kinds))
     return calls
 
@@ -286,6 +300,79 @@ def test_every_flag_reference_in_the_body_is_declared(name):
     assert resolved == declared, (
         "{}: body resolves flags {!r} through `resolve`, decorator declares "
         "flag_refs for {!r}".format(" ".join(name), resolved, declared)
+    )
+
+
+def _resolved_extra_ref_indices(func):
+    """The SET of positional indices (other than 0) passed as the `ref`
+    argument to a `resolve(...)` call anywhere in `func`'s body, via a
+    literal `positional[<i>]` subscript - `link`'s `<ref>` is index 1.
+
+    Mirrors `_resolved_flag_names` above, for `extra_refs` instead of
+    `flag_refs`: only the INDICES, not the kinds - `test_declared_extra_
+    refs_matches_the_resolve_calls_in_the_body` below pins the kinds for
+    every verb that already declares one. Parametrising over `v.extra_refs`
+    directly, the way that test does, can only ever check a declaration
+    that already exists, the same gap F5 named for flags - so this feeds a
+    test parametrised over EVERY verb instead.
+    """
+    tree = ast.parse(inspect.getsource(func).lstrip())
+    indices = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and getattr(node.func, "id", None) == "resolve"
+                and len(node.args) >= 2):
+            continue
+        ref_node = node.args[1]
+        if (isinstance(ref_node, ast.Subscript)
+                and getattr(ref_node.value, "id", None) == "positional"):
+            index = getattr(ref_node.slice, "value", None)
+            if isinstance(index, int) and index != 0:
+                indices.add(index)
+    return indices
+
+
+@pytest.mark.parametrize("name", sorted(c.VERBS))
+def test_every_extra_positional_reference_in_the_body_is_declared(name):
+    """The presence check for `extra_refs`, parametrised over EVERY verb so
+    a missing declaration cannot hide the way F5 found `flag_refs` could:
+    deleting `_link`'s `extra_refs=((1, LINK_REF_KINDS),)` must fail here
+    even though nothing else parametrises over `link` for this specific
+    check."""
+    verb = c.VERBS[name]
+    resolved = _resolved_extra_ref_indices(verb.run)
+    declared = {index for index, _kinds in verb.extra_refs}
+    assert resolved == declared, (
+        "{}: body resolves positional[i] (i != 0) at {!r} through "
+        "`resolve`, decorator declares extra_refs for {!r}".format(
+            " ".join(name), resolved, declared
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "name", sorted(n for n, v in c.VERBS.items() if v.extra_refs)
+)
+def test_declared_extra_refs_matches_the_resolve_calls_in_the_body(name):
+    """Content, not just presence (the same pattern `test_declared_ref_
+    kinds_matches_the_resolve_call_in_the_body` and `test_declared_flag_
+    refs_matches_the_resolve_calls_in_the_body` apply to `ref_kinds`/
+    `flag_refs`): `_link` passes `kinds=LINK_REF_KINDS`, a module-level
+    name rather than a literal tuple, so `_kinds_arg` resolves it via
+    `getattr(c, ...)` before comparing - a decorator saying one tuple while
+    the body resolves against a DIFFERENT one would otherwise pass every
+    other test here."""
+    verb = c.VERBS[name]
+    found = {}
+    for ref_expr, kinds in _unparsed_resolve_calls(verb.run):
+        if ref_expr.startswith("positional[") and ref_expr.endswith("]"):
+            index = ast.literal_eval(ref_expr[len("positional["):-1])
+            if index != 0:
+                found[index] = kinds
+
+    assert found == dict(verb.extra_refs), (
+        "{}: body resolves positional[i] with kinds={!r}, decorator "
+        "declares extra_refs={!r}".format(" ".join(name), found, verb.extra_refs)
     )
 
 

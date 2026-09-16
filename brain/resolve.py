@@ -95,7 +95,7 @@ def resolve_among(entities, ref: str):
         # that builds its own candidate list and calls `resolve_among`
         # directly - `apply`'s `_resolve_against`/`_line_creating` - reached
         # `startswith("")` unguarded; `new project -- Zed run` then `link
-        # zed-run --program .` validated and failed at the write instead).
+        # zed-run .` validated and failed at the write instead).
         raise UnknownReference(
             "{!r} is not a reference to anything: it has no letters or digits "
             "in it. Name a slug or a title.".format(ref)

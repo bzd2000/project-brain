@@ -12,7 +12,7 @@ from conftest import snapshot, assert_only_changed
 from brain import commands as c
 from brain import grammar as gr
 from brain.entities import Board, Program, Project, Stakeholder, load_notes
-from brain.errors import GrammarError, VerbError
+from brain.errors import GrammarError, UnknownReference, VerbError
 
 TODAY = date.today().isoformat()
 
@@ -317,3 +317,146 @@ def test_todo_refuses_non_projects_by_name_in_dry_run_and_for_real(brain_repo, s
         _run(brain_repo, "todo {} -- x".format(slug))
     assert fragment in str(excinfo.value)
     assert snapshot(brain_repo) == before
+
+
+# ---- set ------------------------------------------------------------------
+
+def test_set_status_touches_only_status_and_updated(brain_repo):
+    """R4.2.3. Mutation: skip `touch()` in `_set` - only one line changes.
+
+    `assert_only_changed`'s `allowed` set is an UPPER bound (lines outside
+    it may not change), not a lower one - a same-length edit that touches
+    only line 2 is inside `{2, 6}` whether or not `updated:` moved, so it
+    alone would not redden on a skipped `touch()`. The explicit `!=` below
+    does: line 6 is the fixture's `updated: 2026-09-05` unconditionally, so
+    only a real `touch()` changes it."""
+    before = snapshot(brain_repo)
+    _run(brain_repo, "set q4-budget status -- active")
+    after = snapshot(brain_repo)
+    assert_only_changed(before, after, {"projects/q4-budget.md": {2, 6}})
+    assert after["projects/q4-budget.md"][2] == "status: active"
+    assert after["projects/q4-budget.md"][6] != before["projects/q4-budget.md"][6]
+    assert after["projects/q4-budget.md"][6] == "updated: {}".format(TODAY)
+
+
+@pytest.mark.parametrize("field, bad", [("status", "banana"), ("health", "purple")])
+def test_set_validates_status_and_health_statically(brain_repo, field, bad):
+    """Mutation: declare `shape=None` on `set` - `validate` accepts the line."""
+    with pytest.raises(VerbError) as excinfo:
+        c.validate(gr.parse_line("set q4-budget {} -- {}".format(field, bad)))
+    assert bad in str(excinfo.value)
+
+
+def test_set_takes_a_value_with_spaces_after_the_separator(brain_repo):
+    """R6.0: the value is free text. Mutation: `render_value(text.split()[0])`."""
+    _run(brain_repo, "set acme-migration owner -- Filip Delperdange")
+    assert Project(brain_repo / "projects" / "acme-migration.md").fm["owner"] == "Filip Delperdange"
+
+
+def test_set_works_on_every_kind(brain_repo):
+    """Mutation: declare `ref_kinds=("project",)` on `set`.
+
+    `_run` alone would not catch this: `ref_kinds` only gates
+    `validate_batch`'s static resolution (`_reference_sites`), and
+    `execute`'s single-line path never calls it - `_set`'s own body resolves
+    `positional[0]` with no `kinds=` at all, so a wrong decorator would not
+    change what `_run` accepts. The `validate_batch` line below is what
+    actually exercises the declaration: restricted to `("project",)`, `ann`
+    (a stakeholder) would fail to resolve and raise `BatchError`."""
+    c.validate_batch(brain_repo, "set ann role -- CFO\n")
+    _run(brain_repo, "set ann role -- CFO")
+    _run(brain_repo, "set arch-board chair -- ann")
+    _run(brain_repo, "set cloud-migration owner -- Sara")
+    assert Stakeholder(brain_repo / "stakeholders" / "ann.md").fm["role"] == "CFO"
+    assert Board(brain_repo / "boards" / "arch-board.md").fm["chair"] == "ann"
+    assert Program(brain_repo / "programs" / "cloud-migration.md").fm["owner"] == "Sara"
+
+
+@pytest.mark.parametrize("field", ["program", "projects"])
+def test_set_refuses_the_link_fields_by_name(brain_repo, field):
+    """Mutation: empty SET_GUARDED."""
+    with pytest.raises(VerbError) as excinfo:
+        c.validate(gr.parse_line("set acme-migration {} -- x".format(field)))
+    assert "`link " in str(excinfo.value)
+
+
+# ---- link -----------------------------------------------------------------
+
+def test_link_sets_the_program_on_a_project(brain_repo):
+    """R4.1: membership on the child; the program gains a roll-up row, not a
+    list entry. Mutation: set the field on the program instead of the project."""
+    path = brain_repo / "projects" / "q4-budget.md"
+    before = snapshot(brain_repo)
+    _run(brain_repo, "link q4-budget cloud-migration")
+    after = snapshot(brain_repo)
+    assert Project(path).program == "cloud-migration"
+    # q4-budget had no `program:` line: one inserted (before the closing
+    # `---`) plus `updated:` - so `_inserted` is the shape, not `_in_place`.
+    section_free = [l for l in after["projects/q4-budget.md"] if not l.startswith("updated:")]
+    assert "program: cloud-migration" in section_free[:section_free.index("---", 1)]
+    assert _changed(before, after) == {"projects/q4-budget.md", ROLLUP}
+    assert any("q4-budget" in l for l in after[ROLLUP]), "the roll-up now lists it"
+    assert "q4-budget" not in "\n".join(Program(brain_repo / "programs" / "cloud-migration.md").doc.section_lines("Summary"))
+
+
+def test_link_appends_a_project_to_a_partys_interest(brain_repo):
+    """Mutation: replace the list instead of appending - acme-migration is gone.
+
+    Not `_in_place`: the fixture's `arch-board` carries no `updated:` field
+    yet (only projects do), so `_saved`'s `touch()` INSERTS that line rather
+    than editing one in place, and `_in_place`'s same-length zip does not
+    fit an insert. Filtering `updated:` out of both sides first (the same
+    trick `_inserted` uses) recovers a same-length comparison."""
+    path = brain_repo / "boards" / "arch-board.md"
+    before = snapshot(brain_repo)
+    _run(brain_repo, "link arch-board q4-budget")
+    after = snapshot(brain_repo)
+    assert _changed(before, after) == {"boards/arch-board.md"}
+    old = [l for l in before["boards/arch-board.md"] if not l.startswith("updated:")]
+    new = [l for l in after["boards/arch-board.md"] if not l.startswith("updated:")]
+    assert len(old) == len(new), "only `projects:` and `updated:` may change"
+    differing = [i for i, (a, b) in enumerate(zip(old, new)) if a != b]
+    assert differing == [next(i for i, l in enumerate(old) if l.startswith("projects:"))]
+    assert Board(path).projects == ["acme-migration", "dns-cutover", "q4-budget"]
+
+
+def test_link_twice_is_a_no_op_that_says_so(brain_repo):
+    """Mutation: append unconditionally.
+
+    Also proves a `Result` with no paths makes no commit through `execute`:
+    `git.commit` returns `None` for an empty path list and `rollup.refresh`
+    with no paths touches nothing, so the log is exactly as long after as
+    before."""
+    from brain import git as g
+
+    before = snapshot(brain_repo)
+    commits_before = g.run(["log", "--format=%H"], brain_repo).splitlines()
+    result = _run(brain_repo, "link ann acme-migration")
+    assert "already follows" in result.message
+    assert snapshot(brain_repo) == before
+    commits_after = g.run(["log", "--format=%H"], brain_repo).splitlines()
+    assert commits_after == commits_before
+
+
+@pytest.mark.parametrize("line, fragment", [
+    ("link acme-migration q4-budget", "a project links to a program"),
+    ("link ann cloud-migration", "a stakeholder follows a project"),
+    ("link cloud-migration acme-migration", "programs never list their projects"),
+])
+def test_link_pairing_is_refused_by_name_statically(brain_repo, line, fragment):
+    """R6.0a. Mutation: declare `check=None` on `link`."""
+    with pytest.raises(c.BatchError) as excinfo:
+        c.validate_batch(brain_repo, line + "\n")
+    assert fragment in str(excinfo.value)
+    before = snapshot(brain_repo)
+    with pytest.raises(VerbError):
+        _run(brain_repo, line)
+    assert snapshot(brain_repo) == before
+
+
+def test_link_refuses_an_unknown_target(brain_repo):
+    """Step 4: the unknown-reference case, formerly
+    `test_link_refuses_an_unknown_program` in test_commands_entities.py -
+    `resolve(..., kinds=LINK_REF_KINDS)` raises before `_link_pair` ever runs."""
+    with pytest.raises(UnknownReference):
+        _run(brain_repo, "link acme-migration no-such")
