@@ -1792,7 +1792,7 @@ class BrainApp(App, inherit_bindings=False):
     `BrainApp(root).run_test(...)` (Textual's `Pilot`) for tests.
 
     State a test reads: `mode`, `buffer` (the INSERT text), `command` (the
-    COMMAND text), `note_type`, `notice`. Every write goes through
+    COMMAND text), `notice`. Every write goes through
     `run_brain`, which a test stubs on the class."""
 
     # 02-annotated.png: a title bar and a modeline on the raised `--panel2`
@@ -1896,7 +1896,6 @@ class BrainApp(App, inherit_bindings=False):
         self.selected = None
         self.mode = NORMAL
         self.buffer = ""          # INSERT text; a prompt (e/Q//), never a note now
-        self._quit_armed = False  # ZZ warned about unsent text; next ZZ discards
         self.command = ""         # COMMAND text; survives Esc and a refusal
         self.notice: Optional[Notice] = None
         self._focus_before = None
@@ -2953,22 +2952,12 @@ class BrainApp(App, inherit_bindings=False):
         clears `_pending_z` on any OTHER action, so a stray `Z` followed by
         something else never quits on the next, unrelated `Z`.
 
-        R10.3a: Esc now cancels a command line, so `self.command` is always
-        empty by the time NORMAL - and therefore `ZZ` - is reachable again;
-        the modeline no longer holds a note (`i`/`o` open the pane instead),
-        so the guard covers an open `CaptureScreen` with unsent text."""
-        unsent = isinstance(self.screen, CaptureScreen) and self.screen.body().strip()
+        R10.3a made Esc cancel a command line, and `i`/`o` open the capture
+        pane - which asks before discarding (R10.3) - instead of holding a
+        note in the modeline. So by the time NORMAL, and therefore `ZZ`, is
+        reachable there is nothing unsent to guard here: `ZZ` simply quits."""
         if self._pending_z:
             self._pending_z = False
-            if unsent and not self._quit_armed:
-                # R10.3: quitting is not an explicit cancel. Say what would
-                # be lost and require one more ZZ, which is (C1).
-                self._quit_armed = True
-                self.notice = Notice(
-                    "unsent text: {!r} - ZZ again discards it, i or : sends it"
-                    .format(_clip(unsent, 40)), True)
-                self._render_modeline()
-                return
             self.exit()
             return
         self._pending_z = True

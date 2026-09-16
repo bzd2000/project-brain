@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Status: milestone 5 done — stop here and use it
+## Status: milestone 5b done — the vocabulary is the contract; stop here and use it
 
 `brain/model.py` (the `Doc` class), `brain/entities.py` (the four entity types
 plus notes), `brain/_yaml.py` (front-matter parsing), `brain/git.py` (commit,
@@ -14,14 +14,16 @@ registry) and `brain/cli.py` (the argparse front door) now also exist, and
 every verb in §6.1 works from a terminal except the agenda verbs
 (`agenda material`, `agenda set`, `minutes add`, `met`), `check --fix` and
 `rewrite`. That is: `init`, `note add`, `note list`,
-`note show`, `note flag`, `note drop`, `log`, `action add`, `action done`,
-`action due`, `decision add`, `question add`, `status set`, `health set`,
-`field set`, `new`, `link`, `raise`, `request add`, `request list`,
+`note show`, `note flag`, `note drop`, `log`, `todo`, `decide`, `query`,
+`set`, `link` (R6.0a: one shape, every kind, refused by name), `new`,
+`request add`, `request list`,
 `request done`, `undo`, `check --authored`, `context`, `search`, `build`,
 and `apply` (with `--dry-run`,
 validated against a projected slug namespace so a batch may create an entity
 and reference it on a later line, R6.5.1/A18; one lock, one checkpoint, one
-commit, R6.5/A2; A15's two-process race is covered end to end).
+commit, R6.5/A2; A15's two-process race is covered end to end). The
+milestone-5 names (`raise`, `action add`, `status set`, …) are tombstones
+(R6.0b): refused with the new spelling, deleted after milestone 6.
 
 Milestone 4 added `brain/digest.py` (`brain context`, R6.3), `brain/search.py`
 (`brain search`, R6.7), `brain/rollup.py` (`## Roll-up` regeneration and
@@ -34,7 +36,8 @@ consumer - build it there against a measured need, or not at all.
 Milestone 5 added `brain/tui.py` — the only module that imports `textual`
 (R3.3). Three modes, the modeline as the whole application state, capture via
 `note add -f -` on stdin, `:` COMMAND mode through the same grammar as the
-shell, `x`/`e`/`d`/`s`/`H`/`u`/`Q`/`/`/`?`/`ZZ`, mtime polling. **Every write
+shell, `x`/`e`/`u`/`Q`/`/`/`?`/`ZZ`, mtime polling; `t`, `d`, `s`, `H` were
+removed in 5b (R10.7b); `i` on a flagged note replies (R10.13a). **Every write
 goes through one function, `BrainApp.run_brain`, which spawns `brain`; the
 TUI never touches a `Doc`.** Deliberately not built, each with a spec
 requirement saying why: raw-source *save* (R10.11b — needs `brain check`),
@@ -83,9 +86,10 @@ python -m pytest tests/test_stdlib_only.py -v        # the R3.3 seam
 .venv/bin/python -m brain --root ~/mybrain tui       # or cd ~/mybrain && brain tui
 .venv/bin/python -m brain --root ~/mybrain new project -- Acme portal rebuild
 .venv/bin/python -m brain --root ~/mybrain new stakeholder -- Ann Peeters
-.venv/bin/python -m brain --root ~/mybrain action add acme-portal-rebuild -- Draft the kickoff deck
-.venv/bin/python -m brain --root ~/mybrain action done acme-portal-rebuild 1
-.venv/bin/python -m brain --root ~/mybrain raise ann-peeters --ref acme-portal-rebuild -- Budget impact of the delay
+.venv/bin/python -m brain --root ~/mybrain todo acme-portal-rebuild -- Draft the kickoff deck
+.venv/bin/python -m brain --root ~/mybrain todo acme-portal-rebuild done 1
+.venv/bin/python -m brain --root ~/mybrain log ann-peeters --ref acme-portal-rebuild -- Budget impact of the delay
+.venv/bin/python -m brain --root ~/mybrain set acme-portal-rebuild status -- active
 .venv/bin/python -m brain --root ~/mybrain check --authored
 
 .venv/bin/python -m brain --root ~/mybrain context
@@ -165,6 +169,7 @@ Violating any of these silently breaks the design's economics or its trust model
     free-text verb missing the separator is an error naming the line, never a
     guess (R6.4a). Note bodies never travel by argv — capture uses
     `note add -f -` — because argv is pre-tokenised and R4.6.1 demands bytes.
+    - `set`'s value is free text too: `set <t> <field> -- <value>` (R6.0a).
 14. **Git is required** (R11.1a); there is no non-git fallback. `Brain-Source:`
     commit trailers are what `undo` and `check --authored` both read (R11.5,
     R11.6).
@@ -213,6 +218,8 @@ or the nearest ancestor holding an `inbox.md` (R4.0).
 - Generated sections (`## Roll-up`, `## Next agenda`) carry a marker comment and
   are machine-owned; `brain check` warns if they were hand-edited. The UI shows a
   `GENERATED` tag, which tells the user what not to touch.
+- Notes carry two capture types, `note` and `meeting`; what a note *is* is
+  decided at processing (R4.6.2).
 
 ## Build order (§12) — do not run ahead
 
