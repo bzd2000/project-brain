@@ -84,71 +84,84 @@ def _modeline(pilot) -> str:
     return str(pilot.app.query_one("#modeline").render())
 
 
+def _pane_head(pilot) -> str:
+    from brain.tui import Static
+    return str(pilot.app.screen.query_one("#capture-head", Static).render())
+
+
+def _tree_node(pilot, note_id: str):
+    """The INBOX group's leaf for `note_id` - INBOX always leads the tree
+    (R10.4's "the inbox is in the tree")."""
+    inbox = pilot.app.query_one("#tree").root.children[0]
+    return next(n for n in inbox.children if n.data is not None and n.data.slug == note_id)
+
+
+async def _select_note(pilot, note_id: str) -> None:
+    node = _tree_node(pilot, note_id)
+    pilot.app.query_one("#tree").move_cursor(node)
+    await pilot.pause()
+
+
 @pytest.mark.asyncio
-async def test_i_enters_insert_and_esc_returns_keeping_the_text(brain_repo):
-    """R10.1, R10.3. Esc never discards: the buffer survives the round trip
-    and is back on screen the next time `i` is pressed."""
+async def test_i_enters_insert_and_esc_returns_keeping_the_text(brain_repo, monkeypatch):
+    """R10.1, R10.3, R10.14: `i` opens the pane; Esc never discards outright
+    - it asks first ("Discard this note?"), `n` keeps typing with the text
+    intact, and only `y` at that prompt throws it away."""
+    from brain.tui import CaptureScreen
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "ok", ""))[1])
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         assert pilot.app.mode == "NORMAL"
         await pilot.press("i")
-        assert pilot.app.mode == "INSERT" and "INSERT" in _modeline(pilot)
+        assert isinstance(pilot.app.screen, CaptureScreen)
         await pilot.press(*"hello there", "escape")
+        assert isinstance(pilot.app.screen, CaptureScreen), "Esc asks, it does not discard"
+        assert "Discard this note?" in str(pilot.app.screen.query_one("#capture-foot").render())
+        await pilot.press("n")
+        assert pilot.app.screen.lines == ["hello there"], "n keeps typing - the text survives"
+        await pilot.press("escape", "y")
         assert pilot.app.mode == "NORMAL"
-        assert pilot.app.buffer == "hello there"
-        await pilot.press("i")
-        assert "hello there" in _modeline(pilot)
+        assert not isinstance(pilot.app.screen, CaptureScreen)
+    assert sent == [], "a discard never calls brain"
 
 
 @pytest.mark.asyncio
 async def test_insert_keys_are_words_not_commands(brain_repo, monkeypatch):
-    """The biggest new input surface in the project: in INSERT every letter
-    is the user's - `j` must not move the selection, `:` must not open
-    COMMAND, `t` must not cycle the type, `#` and ` -- ` are just
+    """The biggest new input surface in the project: inside the pane every
+    key is the user's - `j`/`k` must not move the selection, `:` mid-line
+    must not open the pane's own command line, `#` and ` -- ` are just
     characters (R10.1, R6.4 does not apply to a note body)."""
     monkeypatch.setattr(BrainApp, "run_brain",
                         lambda self, argv, stdin=None: (0, "captured n1", ""))
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         before = pilot.app.selected.slug
         await pilot.press("i", *"jk:t# -- --authored", "escape")
-        assert pilot.app.buffer == "jk:t# -- --authored"
+        assert pilot.app.screen.lines == ["jk:t# -- --authored"]
         assert pilot.app.selected.slug == before
-        assert pilot.app.note_type == "note"
+        assert pilot.app.screen.note_type == "note"
 
 
 @pytest.mark.asyncio
-async def test_enter_captures_verbatim_via_note_add_on_stdin(brain_repo, monkeypatch):
-    """R10.13 + invariant 13: the body goes to `brain note add <type> -f -`
-    on STDIN, bytes intact - never argv. A stub records what was sent."""
+async def test_w_captures_every_line_verbatim_via_note_add_on_stdin(brain_repo, monkeypatch):
+    """R10.13 + invariant 13: `:w` sends the whole pane to `brain note add
+    -f -` on STDIN, every line intact - never argv. Mutation: `"\\n".join`
+    -> `" ".join` in `CaptureScreen.body`."""
     sent = {}
 
     def fake_run(self, argv, stdin=None):
         sent["argv"], sent["stdin"] = argv, stdin
         return 0, "captured n1", ""
     monkeypatch.setattr(BrainApp, "run_brain", fake_run)
-    body = "call with ann -- she's asked # about the 18th"
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("i", *body, "enter")
-        assert pilot.app.mode == "NORMAL", "enter commits and leaves INSERT (R10.1)"
-        assert pilot.app.buffer == ""
+        await pilot.press("g")                       # the INBOX group header - no ref
+        await pilot.press("i", *"one", "enter", *"two", "enter", *"three", "enter",
+                           ":", "w", "enter")
+        assert pilot.app.mode == "NORMAL", ":w commits and leaves the pane (R10.1)"
         assert "captured n1" in _modeline(pilot)
-    assert sent["argv"][:3] == ["note", "add", "note"] and "-f" in sent["argv"]
-    assert sent["stdin"] == body
-    assert body not in " ".join(sent["argv"]), "note bodies never travel by argv"
-
-
-@pytest.mark.asyncio
-async def test_t_cycles_the_note_type_and_the_chip_shows_it(brain_repo):
-    """R10.15: the chip is always visible, whatever the mode."""
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        seen = []
-        for _ in range(4):
-            seen.append(pilot.app.note_type)
-            assert pilot.app.note_type.upper() in _modeline(pilot)
-            await pilot.press("t")
-        assert seen == ["note", "meeting", "note", "meeting"]
-        assert pilot.app.note_type == "note"
-        await pilot.press("t", "i")
-        assert "MEETING" in _modeline(pilot)
+    assert sent["argv"] == ["note", "add", "-f", "-"]
+    assert sent["stdin"] == "one\ntwo\nthree"
+    assert "one" not in " ".join(sent["argv"]), "note bodies never travel by argv"
 
 
 @pytest.mark.asyncio
@@ -162,12 +175,12 @@ async def test_a_refused_write_is_shown_and_the_text_survives(brain_repo, monkey
         return 1, "", "brain: another brain process holds the write lock (pid 1)"
     monkeypatch.setattr(BrainApp, "run_brain", refused)
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("i", *"keep me", "enter")
-        modeline = _modeline(pilot)
-        assert "lock" in modeline.lower()
-        assert pilot.app.mode == "INSERT" and "keep me" in modeline
-        await pilot.press("enter")  # the retry `⏎ a moment later`
-        assert calls == ["keep me", "keep me"]
+        await pilot.press("i", *"keep me", "enter", ":", "w", "enter")
+        foot = str(pilot.app.screen.query_one("#capture-foot").render())
+        assert "lock" in foot.lower()
+        assert pilot.app.screen.lines == ["keep me", ""]
+        await pilot.press(":", "w", "enter")   # the retry `⏎ a moment later`
+    assert calls == ["keep me", "keep me"]
 
 
 @pytest.mark.asyncio
@@ -232,11 +245,12 @@ async def test_tab_completes_a_verb_then_a_slug(brain_repo, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_o_opens_the_capture_pane_and_w_saves_one_note(brain_repo, monkeypatch):
-    """R10.14: paragraphs, not lines. `:w` saves as ONE note with the type
-    chip's type; Esc asks before discarding (R10.3 - only an explicit cancel
-    discards, and only inside this pane). Inside the pane every key is the
-    user's words, so `:` opens the pane's command line only on an empty
-    line (or from the Esc prompt) - `sara: thursday` stays literal."""
+    """R10.14: paragraphs, not lines. `o` stamps `meeting` itself (R10.7b)
+    and tags with the selection; `:w` saves as ONE note; Esc asks before
+    discarding (R10.3 - only an explicit cancel discards, and only inside
+    this pane). Inside the pane every key is the user's words, so `:` opens
+    the pane's command line only on an empty line (or from the Esc prompt) -
+    `sara: thursday` stays literal."""
     sent = {}
 
     def fake_run(self, argv, stdin=None):
@@ -244,7 +258,8 @@ async def test_o_opens_the_capture_pane_and_w_saves_one_note(brain_repo, monkeyp
         return 0, "captured n1", ""
     monkeypatch.setattr(BrainApp, "run_brain", fake_run)
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("t", "o")                     # type -> meeting, open pane
+        assert pilot.app.selected.slug == "acme-migration"
+        await pilot.press("o")
         assert pilot.app.screen.id == "capture"
         assert pilot.app.mode == "INSERT"
         await pilot.press(*"first line", "enter", *"sara: thursday 8am", "escape")
@@ -253,7 +268,7 @@ async def test_o_opens_the_capture_pane_and_w_saves_one_note(brain_repo, monkeyp
         await pilot.press(*" @acme", "enter", ":", "w", "enter")
         assert pilot.app.screen.id != "capture"
         assert pilot.app.mode == "NORMAL"
-    assert sent["argv"][:3] == ["note", "add", "meeting"]
+    assert sent["argv"] == ["note", "add", "meeting", "--tag", "acme-migration", "-f", "-"]
     assert sent["stdin"] == "first line\nsara: thursday 8am @acme"
     assert "first line" not in " ".join(sent["argv"])
 
@@ -280,16 +295,18 @@ async def test_the_pane_discards_only_on_y_and_keeps_text_on_a_refusal(brain_rep
 
 @pytest.mark.asyncio
 async def test_a_handler_exception_is_a_modeline_message(brain_repo, monkeypatch):
-    """R10.19."""
+    """R10.19 - inside the pane, an exception lands in ITS foot, not the
+    (hidden) modeline, and nothing typed is lost."""
     def boom(self, argv, stdin=None):
         raise RuntimeError("unexpected")
     monkeypatch.setattr(BrainApp, "run_brain", boom)
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("i", "x", "enter")
+        await pilot.press("i", "x", "enter", ":", "w", "enter")
         assert pilot.app.is_running
-        assert "unexpected" in _modeline(pilot)
-        assert pilot.app.buffer == "x", "an exception discards nothing either"
-        await pilot.press("escape", "j")
+        foot = str(pilot.app.screen.query_one("#capture-foot").render())
+        assert "unexpected" in foot
+        assert pilot.app.screen.lines == ["x", ""], "an exception discards nothing either"
+        await pilot.press("escape", "y")
         assert pilot.app.is_running
 
 
@@ -302,7 +319,7 @@ async def test_the_real_brain_captures_the_bytes_and_commits(brain_repo):
     body = "call with ann -- she's asked # about the 18th --authored"
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         assert "0 unprocessed" in _modeline(pilot)
-        await pilot.press("i", *body, "enter")
+        await pilot.press("i", *body, "enter", ":", "w", "enter")
         assert pilot.app.mode == "NORMAL", _modeline(pilot)
         assert "captured n1" in _modeline(pilot)
         assert "1 unprocessed" in _modeline(pilot)
@@ -358,7 +375,7 @@ async def test_no_binding_reaches_a_ctrl_chord(brain_repo):
 async def test_a_failing_poll_does_not_take_the_app_down(brain_repo, monkeypatch):
     """The one path where R10.3 could fail with no user action: a stat() on a
     file the agent unlinked between glob and stat raised out of the timer and
-    killed the app with the buffer in it."""
+    killed the app with the pane's text in it."""
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         await pilot.press("i", *"precious")
         def boom(self):
@@ -366,7 +383,7 @@ async def test_a_failing_poll_does_not_take_the_app_down(brain_repo, monkeypatch
         monkeypatch.setattr(BrainApp, "_scan_mtimes", boom)
         await pilot.pause(1.5)
         assert pilot.app.is_running
-        assert pilot.app.buffer == "precious"
+        assert pilot.app.screen.lines == ["precious"]
 
 
 # -- Task 4: acting keys, search, help, quit (R10.3, R10.7, R10.7a, R10.10,
@@ -454,47 +471,6 @@ async def test_e_on_a_non_action_line_sends_nothing(brain_repo, monkeypatch):
         assert pilot.app.mode == "NORMAL"
         assert "only actions are editable" in _modeline(pilot)
     assert sent == []
-
-
-@pytest.mark.asyncio
-async def test_d_prompts_for_a_due_date(brain_repo, monkeypatch):
-    """`d` then a date -> `todo <project> due <index> --to <date>`."""
-    sent = []
-    monkeypatch.setattr(BrainApp, "run_brain",
-                        lambda self, argv, stdin=None: (sent.append(argv), (0, "due", ""))[1])
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        _focus_open_action(pilot)
-        await pilot.press("d")
-        assert pilot.app.mode == "INSERT" and "due:" in _modeline(pilot)
-        await pilot.press(*"2026-09-20", "enter")
-    assert sent == [["todo", "acme-migration", "due", "1", "--to", "2026-09-20"]]
-
-
-@pytest.mark.asyncio
-async def test_s_prompts_for_a_status(brain_repo, monkeypatch):
-    """`s` then a status -> `set <project> status -- <status>`, against the
-    SELECTED project - no focused line is needed, status is a field."""
-    sent = []
-    monkeypatch.setattr(BrainApp, "run_brain",
-                        lambda self, argv, stdin=None: (sent.append(argv), (0, "set", ""))[1])
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("s")
-        assert pilot.app.mode == "INSERT" and "status:" in _modeline(pilot)
-        await pilot.press(*"blocked", "enter")
-    assert sent == [["set", "acme-migration", "status", "--", "blocked"]]
-
-
-@pytest.mark.asyncio
-async def test_H_prompts_for_a_health(brain_repo, monkeypatch):
-    """`H` then a health -> `set <project> health -- <health>`."""
-    sent = []
-    monkeypatch.setattr(BrainApp, "run_brain",
-                        lambda self, argv, stdin=None: (sent.append(argv), (0, "set", ""))[1])
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("H")
-        assert pilot.app.mode == "INSERT" and "health:" in _modeline(pilot)
-        await pilot.press(*"red", "enter")
-    assert sent == [["set", "acme-migration", "health", "--", "red"]]
 
 
 @pytest.mark.asyncio
@@ -680,38 +656,27 @@ async def test_the_detail_cursor_survives_a_write(brain_repo, monkeypatch):
 
 
 # -- the whole-branch review's four week-wasters ---------------------------
-
-async def test_zz_refuses_while_unsent_text_exists_then_discards_on_a_second_zz(brain_repo):
-    """C1, R10.3: quitting is not an explicit cancel. `i`, type, Esc, ZZ
-    exited with the note still only in memory."""
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("i", *"remember sara", "escape", "Z", "Z")
-        assert pilot.app.is_running, "first ZZ must refuse and say what would be lost"
-        assert "remember sara" in _modeline(pilot)
-        await pilot.press("Z", "Z")
-        assert not pilot.app.is_running, "the second ZZ is the explicit discard"
-
-
-async def test_a_prompt_does_not_clobber_a_kept_note(brain_repo, monkeypatch):
-    """C2, R10.3: every prompt key stomped the buffer. `i`, type, Esc, then
-    `d` - the note was gone. It is parked while the prompt runs and comes
-    back for `i`.
-
-    R10.3a (design review): Esc from a prompt CANCELS it - a half-typed date
-    is not captured text, and the design's own modeline says "esc cancel".
-    An earlier version of this test asserted the opposite."""
-    monkeypatch.setattr(BrainApp, "run_brain", lambda self, a, stdin=None: (0, "ok", ""))
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("i", *"remember sara", "escape")
-        _focus_open_action(pilot)
-        await pilot.press("d", *"2026-1", "escape")          # half a date, then Esc
-        await pilot.press("i")
-        assert pilot.app.buffer == "remember sara", pilot.app.buffer
-        await pilot.press("escape")
-        _focus_open_action(pilot)
-        await pilot.press("d")
-        assert pilot.app.buffer == "", "R10.3a: Esc cancelled the prompt; nothing is kept"
-
+#
+# Two of the original four are gone with this task's redesign (R10.7b,
+# R10.13's amendment) rather than rewritten:
+#
+# `test_zz_refuses_while_unsent_text_exists_then_discards_on_a_second_zz`
+# drove `i` typing straight into the modeline buffer, Esc returning
+# immediately to NORMAL with the text kept, then ZZ warning about it. `i`
+# now opens `CaptureScreen`; its own Esc ASKS before discarding (confirmed
+# by `test_i_enters_insert_and_esc_returns_keeping_the_text` above) rather
+# than dropping back to NORMAL with the text riding in `app.buffer`, and
+# `check_action` refuses every NORMAL-only action (including `maybe_quit`)
+# while that screen is open - so `ZZ` cannot even reach `action_maybe_quit`
+# until the pane is left, and leaving it always empties it (`:w` sends it,
+# `y` discards it). There is no longer a reachable "quit with an unsent
+# note" state for `ZZ`'s guard to catch; R10.3 protection now lives in the
+# pane's own Esc-confirms mechanism instead.
+#
+# `test_a_prompt_does_not_clobber_a_kept_note` tested C2's stash (`i`, Esc,
+# then a `d`/`s`/`H` prompt did not stomp the parked note). `_stash_note`/
+# `_unstash_note` are deleted with those prompts (R10.7b) - the modeline no
+# longer holds a note for a prompt to clobber in the first place.
 
 async def test_esc_from_command_mode_cancels_the_line(brain_repo):
     """R10.3a: a command line saves nothing, so Esc cancels it. The earlier
@@ -788,12 +753,12 @@ async def test_reload_survives_a_file_vanishing_between_scans(brain_repo, monkey
         return real(self)
     monkeypatch.setattr(BrainApp, "_scan_mtimes", flaky)
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("i", *"precious", "escape")
+        await pilot.press("i", *"precious")
         (brain_repo / "inbox.md").write_text("changed\n", encoding="utf-8")
         countdown["n"] = 1          # next scan (the poll's) succeeds and sees the change;
         await pilot.pause(1.6)      # the one after (reload's, if it scans) raises
         assert pilot.app.is_running
-        assert pilot.app.buffer == "precious"
+        assert pilot.app.screen.lines == ["precious"]
 
 
 async def test_a_hung_brain_does_not_hang_the_app(brain_repo, monkeypatch):
@@ -803,10 +768,11 @@ async def test_a_hung_brain_does_not_hang_the_app(brain_repo, monkeypatch):
         raise sp.TimeoutExpired(cmd=a[0], timeout=30)
     monkeypatch.setattr(sp, "run", hang)
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("i", *"hello", "enter")
+        await pilot.press("i", *"hello", "enter", ":", "w", "enter")
         assert pilot.app.is_running
-        assert "abandoned" in _modeline(pilot)
-        assert pilot.app.buffer == "hello", "the text is kept for a retry"
+        foot = str(pilot.app.screen.query_one("#capture-foot").render())
+        assert "abandoned" in foot
+        assert pilot.app.screen.lines == ["hello", ""], "the text is kept for a retry"
 
 
 # -- the inbox in the tree (first finding of the week of use) -------------
@@ -876,9 +842,9 @@ async def test_a_note_captured_on_an_entity_is_tagged_with_it(brain_repo, monkey
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         assert pilot.app.selected.slug == "acme-migration"
         await pilot.press("i")
-        assert "#acme-migration" in _modeline(pilot), "the ref must be visible before typing"
-        await pilot.press(*"bram wants sign-off", "enter")
-    assert sent["argv"] == ["note", "add", "note", "--tag", "acme-migration", "-f", "-"], sent["argv"]
+        assert "#acme-migration" in _pane_head(pilot), "the ref must be visible before typing"
+        await pilot.press(*"bram wants sign-off", "enter", ":", "w", "enter")
+    assert sent["argv"] == ["note", "add", "--tag", "acme-migration", "-f", "-"], sent["argv"]
     assert sent["stdin"] == "bram wants sign-off"
 
 
@@ -891,5 +857,70 @@ async def test_a_note_captured_on_a_group_header_or_a_note_has_no_ref(brain_repo
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         await pilot.press("g")                       # the INBOX group header
         assert pilot.app.selected is None
-        await pilot.press("i", *"loose thought", "enter")
-    assert sent[-1] == ["note", "add", "note", "-f", "-"], sent[-1]
+        await pilot.press("i", *"loose thought", "enter", ":", "w", "enter")
+    assert sent[-1] == ["note", "add", "-f", "-"], sent[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["t", "d", "s", "H"])
+async def test_removed_keys_do_nothing_and_start_no_process(brain_repo, monkeypatch, key):
+    """R10.7b/R10.15: unbound, not bound to a message. Mutation: leave the
+    `d` binding in BINDINGS - `sent` is non-empty or the mode changes."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "ok", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        _focus_open_action(pilot)
+        modeline = _modeline(pilot)
+        await pilot.press(key)
+        assert pilot.app.mode == "NORMAL"
+        assert _modeline(pilot) == modeline
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_i_on_a_flagged_note_replies_with_a_re_tag(brain_repo, monkeypatch):
+    """R10.13a. Mutation: return None from `capture_ref` for every note."""
+    from brain import commands as c
+    from brain import grammar as gr
+    # `brain_repo` seeds entities but not `inbox.md` (unlike `brain_tree`) -
+    # advance `_seq` so the note this test adds lands on n8.
+    (brain_repo / "_seq").write_text("7\n", encoding="utf-8")
+    c.execute(brain_repo, gr.parse_line("note add -- a placeholder"))
+    c.execute(brain_repo, gr.parse_line("note flag n8 -- which november?"))
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "captured n10", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await _select_note(pilot, "n8")
+        assert "?" in str(_tree_node(pilot, "n8").label), "a flagged note is marked in the tree"
+        await pilot.press("i")
+        assert "#re:n8" in _pane_head(pilot)
+        await pilot.press(*"the second week", "enter", ":", "w", "enter")
+    assert sent == [["note", "add", "--tag", "re:n8", "-f", "-"]]
+
+
+@pytest.mark.asyncio
+async def test_i_on_an_unflagged_note_has_no_ref(brain_repo, monkeypatch):
+    """Mutation: tag every selected note `re:`."""
+    from brain import commands as c
+    from brain import grammar as gr
+    (brain_repo / "_seq").write_text("7\n", encoding="utf-8")
+    c.execute(brain_repo, gr.parse_line("note add -- a placeholder"))
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "captured n10", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await _select_note(pilot, "n8")
+        await pilot.press("i", *"x", "enter", ":", "w", "enter")
+    assert sent == [["note", "add", "-f", "-"]]
+
+
+@pytest.mark.asyncio
+async def test_no_type_chip_anywhere(brain_repo):
+    """R10.15 struck. Mutation: put `_chip("note")` back in the NORMAL modeline."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        assert " NOTE " not in _modeline(pilot)
+        await pilot.press("i")
+        assert " NOTE " in _pane_head(pilot), "the pane says what it is"
+        assert " NOTE " not in _modeline(pilot)

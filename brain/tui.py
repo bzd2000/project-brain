@@ -13,17 +13,19 @@ command in flight here, so there is nothing to lock and nothing to share via
 `tree.for_command`.
 
 Three modes (R10.1). NORMAL is the resting state and every letter is a
-command. INSERT is typing - into the modeline (`i`) or the full-screen
-capture pane (`o`); `⏎` commits. COMMAND (`:`) is a `brain` verb typed out,
-split exactly the way the grammar splits it (R10.8, R6.4). What `Esc` does
-follows R10.3a's one rule: a NOTE (`i`, `o`) is captured text with nowhere
-else it lives yet, so `Esc` keeps it; an EDIT (`e`) or a COMMAND (`:`, and
-the `d`/`s`/`H`/`Q`/`/` prompts, which are command lines in this sense) has
-nothing riding on the half-typed value, so `Esc` cancels it. Everything
-typed in INSERT or COMMAND is the user's words until it reaches `brain`:
-nothing here parses a note body, and a body travels on stdin (`note add
-<type> -f -`), never argv (invariant 13, R4.6.1). The acting keys (`e`, `x`,
-`d`, `s`, `H`, ...) are Task 4 and go through the same seam.
+command. INSERT is typing - a Task 4 prompt in the modeline (`e`, `Q`, `/`)
+or the full-screen capture pane (`i`, `o`; R10.13/R10.14); `⏎` commits.
+COMMAND (`:`) is a `brain` verb typed out, split exactly the way the grammar
+splits it (R10.8, R6.4). What `Esc` does follows R10.3a's one rule: a NOTE
+(the capture pane) is captured text with nowhere else it lives yet, so `Esc`
+asks before it is thrown away; an EDIT (`e`) or a COMMAND (`:`, and the
+`Q`/`/` prompts, which are command lines in this sense) has nothing riding
+on the half-typed value, so `Esc` cancels it outright. Everything typed in
+the pane, in a prompt, or in COMMAND is the user's words until it reaches
+`brain`: nothing here parses a note body, and a body travels on stdin
+(`note add [meeting] -f -`), never argv (invariant 13, R4.6.1). `t`, `d`,
+`s`, `H` are unbound (R10.7b, R10.15) - the LLM classifies and sets fields
+through the inbox, not the keyboard.
 """
 from __future__ import annotations
 
@@ -322,7 +324,8 @@ class CaptureScreen(Screen):
     }
     """
 
-    def __init__(self, preview_id: str) -> None:
+    def __init__(self, preview_id: str, note_type: str, ref: Optional[str],
+                 party: bool = False) -> None:
         super().__init__(id="capture")
         self.lines: List[str] = [""]
         self.cmd: Optional[str] = None          # the `:` line, when open
@@ -330,6 +333,16 @@ class CaptureScreen(Screen):
         self.confirming = False                 # the Esc prompt
         self.notice: Optional[Notice] = None
         self.preview_id = preview_id
+        # `note_type` is `"note"` (`i`) or `"meeting"` (`o`); `ref` is the
+        # tag - the selection at the MOMENT the key was pressed, or
+        # `re:<id>` replying to a flagged note (R10.13a) - read once by
+        # `BrainApp._open_capture` rather than here, because the tree's
+        # selection can change under a poll while the pane stays open, and
+        # the note is about what was looked at when the key was pressed.
+        # `party` colours that tag violet for a stakeholder/board (R10.16).
+        self.note_type = note_type
+        self.ref = ref
+        self.party = party
         self.stamp = datetime.now().strftime("%d %b %H:%M")
 
     def compose(self) -> ComposeResult:
@@ -423,8 +436,6 @@ class CaptureScreen(Screen):
             self._save(took_empty)
         elif name == "q":
             self.confirming = True
-        elif name == "t":
-            self.app.action_cycle_type()
         else:
             # Not a command, so it was the user's words (R10.3: nothing typed
             # is discarded without an explicit cancel). `:30 late, sara joins`
@@ -432,8 +443,7 @@ class CaptureScreen(Screen):
             # the guard that keeps `sara: thursday` as text cannot help here.
             # Put the whole thing back where it was typed.
             self.lines[-1] = ":" + (self.cmd_raw or name)
-            self.notice = Notice(
-                "kept as text - :w saves, :t cycles the type, esc cancels", True)
+            self.notice = Notice("kept as text - :w saves, esc cancels", True)
 
     def body(self, drop_trailing_empty: bool = False) -> str:
         lines = list(self.lines)
@@ -447,7 +457,16 @@ class CaptureScreen(Screen):
             self.notice = Notice("nothing to save", True)
             return
         app = self.app
-        rc, out, err = app.run_brain(["note", "add", app.note_type, "-f", "-"], stdin=body)
+        # R6.0a/R4.6.2: the type is `meeting` or nothing (plain `note add` is
+        # the default); the ref travels as a TAG in the machine-written
+        # header (R4.6.1), never in the body.
+        argv = ["note", "add"]
+        if self.note_type == "meeting":
+            argv.append("meeting")
+        if self.ref:
+            argv += ["--tag", self.ref]
+        argv += ["-f", "-"]
+        rc, out, err = app.run_brain(argv, stdin=body)
         if rc != 0:
             # R10.18a: a refusal is normal. Every line stays.
             self.notice = Notice(_first_line(err) or "brain exited {}".format(rc), True)
@@ -463,11 +482,16 @@ class CaptureScreen(Screen):
 
     # -- rendering ------------------------------------------------------
     def _redraw(self) -> None:
-        app = self.app
         width = max(0, self.size.width - 4)
         head = Text()
-        head.append_text(_chip(app.note_type))
-        head.append("  new note", style=MUTED)
+        head.append_text(_chip(self.note_type))
+        head.append("  new meeting note" if self.note_type == "meeting" else "  new note",
+                     style=MUTED)
+        if self.ref:
+            # R10.14: the tag this note will carry - `#acme-migration`, or
+            # `#re:n13` replying to a flagged note (R10.13a) - so the target
+            # is visible before a word is typed.
+            head.append("  #" + self.ref, style=VIOLET if self.party else TEAL)
         stamp = Text("{} · {}".format(self.preview_id, self.stamp), style=DIM)
         head.append(" " * max(2, width - head.cell_len - stamp.cell_len))
         head.append_text(stamp)
@@ -510,7 +534,6 @@ class CaptureScreen(Screen):
         else:
             key(":w", "save")
             key("Esc", "cancel")
-            key(":t", "type")
         if self.notice is not None:
             foot.append("    ")
             foot.append(self.notice.text, style=(RED if self.notice.error else MUTED))
@@ -531,15 +554,13 @@ HELP_SECTIONS = [
         ("/ n N", "search · next · previous match"),
     ]),
     ("NORMAL — CAPTURE", [
-        ("i", "start a note in the modeline"),
-        ("o", "open the full-screen pane, for meeting notes"),
-        ("t", "cycle type: note → meeting → action → decision"),
+        ("i", "capture a note, tagged with the selection"),
+        ("o", "the same, full-screen, for a meeting's worth"),
     ]),
     ("NORMAL — ACTING", [
         ("e", "edit the focused action, in place"),
         ("E", "show the file as raw source"),
         ("x", "tick the focused action"),
-        ("d s H", "due date · status · health"),
         ("u", "undo — a git commit, reverted"),
         ("Q", "queue a job for the agent in _request.md"),
         (":", "run a brain command"),
@@ -547,15 +568,15 @@ HELP_SECTIONS = [
         ("ZZ", "quit"),
     ]),
     ("INSERT", [
-        ("Esc", "keeps a note (i/o) - cancels an edit or command (R10.3a)"),
-        ("⏎", "capture the note, or commit the line edit"),
+        ("Esc", "cancels a half-typed edit or command (R10.3a)"),
+        ("⏎", "commit the line edit, or send the prompt"),
     ]),
     ("COMMAND :", [
-        (":log", "log against the selection"),
-        (":status blocked", "set a field"),
-        (":agenda ann", "build a stakeholder or board agenda"),
-        (":met ann", "record that the meeting happened"),
-        (":inbox", "list what is waiting to be processed"),
+        (":log ann -- …", "a log line, or a pending item on a person"),
+        (":todo acme done 2", "tick the second open action"),
+        (":set acme status -- blocked", "set a field"),
+        (":link acme cloud-migration", "put a project in a program"),
+        (":note drop n9", "the note is processed - git keeps it"),
     ]),
 ]
 
@@ -918,8 +939,9 @@ def _portfolio_summary(n_projects: int, n_open: int, n_blocked: int,
 
 
 def _chip(note_type: str) -> Text:
-    """The type chip (R10.15): always visible, because capturing a meeting
-    as a plain note is the mistake it prevents."""
+    """The type chip: R10.15 struck it from the modeline (R10.7b - `o`
+    stamping `meeting` itself is what prevents the mistake now), so this
+    draws only in `CaptureScreen`'s own head (R10.14)."""
     return Text(" {} ".format(note_type.upper()),
                 style="bold {} on {}".format(GROUND, TYPE_COLORS.get(note_type, TEAL)))
 
@@ -939,9 +961,9 @@ def _tail(text: str, width: int) -> str:
 
 def _modeline_text(app: "BrainApp") -> Text:
     """R10.5: the modeline is the entire application state - mode, selection,
-    the type `i` would capture as, what is waiting. 03-modes.png draws the
-    three variants: the label in its mode's colour, the right-hand hint at
-    the far edge (it gives way to the last notice)."""
+    what is waiting (R10.15 struck the type chip, R10.7b). 03-modes.png draws
+    the three variants: the label in its mode's colour, the right-hand hint
+    at the far edge (it gives way to the last notice)."""
     t = Text()
     right = Text()
     if app.mode == INSERT and app.prompt == "edit:":
@@ -956,29 +978,21 @@ def _modeline_text(app: "BrainApp") -> Text:
         t.append(" cancel", style=DIM)
         hint = "one line is rewritten — nothing else in the file moves"
     elif app.mode == INSERT:
+        # R10.13's amendment: plain note capture no longer lives in the
+        # modeline (`i`/`o` open `CaptureScreen` instead), so INSERT here is
+        # only ever a Task 4 prompt (`e`, `Q`, `/`) and `app.prompt` is
+        # always set - there is no capture chip or `#ref` echo to draw.
         t.append("-- INSERT --", style="bold " + GREEN)
         t.append("  ")
-        if app.prompt:
-            # Task 4's acting keys (e, d, s, H, Q, /) each name what they are
-            # asking for instead of the capture type chip - same mechanism
-            # as `i`, a different label (ruling: R10.3, R10.10a).
-            t.append(app.prompt, style="bold " + TEAL)
-        else:
-            t.append_text(_chip(app.note_type))
-            ref = app.capture_ref
-            if ref:
-                # The note will be tagged with the selected entity, so the
-                # filer - you, or the agent - knows where it belongs without
-                # you typing an @ref (R10.13). Shown so you can see it. To
-                # capture with no reference, select the INBOX group or a
-                # note first: the note carries what you are looking at.
-                t.append("  #" + ref, style=VIOLET if app.selected_is_party else TEAL)
+        # `_open_capture` sets mode INSERT with no prompt while the pane
+        # takes over the screen - this modeline sits hidden underneath it,
+        # so `app.prompt` being None here is reachable, just never seen.
+        t.append(app.prompt or "", style="bold " + TEAL)
         t.append("  ▸ ", style=DIM)
         t.append(_tail(app.buffer, app.size.width - 4 - t.cell_len - 20), style=FG)
         t.append_text(_cursor(TEAL))
-        # R10.3a: a prompt (d/s/H/Q//) is a command line - esc cancels it;
-        # plain note capture (i) is captured text - esc keeps it.
-        hint = "⏎ send · esc cancel" if app.prompt else "⏎ capture · esc keeps it"
+        # R10.3a: a prompt (e/Q//) is a command line - esc cancels it.
+        hint = "⏎ send · esc cancel"
     elif app.mode == COMMAND:
         t.append("-- COMMAND --", style="bold " + VIOLET)
         t.append("  ")
@@ -999,8 +1013,9 @@ def _modeline_text(app: "BrainApp") -> Text:
             t.append("  ⟳ changed on disk", style=AMBER)
         if app.raw_view:
             t.append("  RAW", style="bold " + AMBER)
-        right.append_text(_chip(app.note_type))
-        right.append("  ")
+        # R10.15 struck: the modeline shows no type chip (R10.7b - the
+        # mistake it guarded against is now prevented by `o` stamping
+        # `meeting` itself).
         # 03-modes.png: dimmed here, whatever the count - the title bar is
         # where the count is live (teal), the modeline only repeats it.
         n = app._unprocessed_count
@@ -1030,6 +1045,13 @@ class NoteItem:
     def __init__(self, note):
         self.note = note
         self.slug = note.id or "?"
+        # R10.13a: a flagged note (R4.6.4's `> ?` line) is the LLM asking -
+        # `i` on it replies. The marker is always the note's own last
+        # non-blank body line (`note flag` never appends anywhere else).
+        body = [l for l in note.body if l.strip()]
+        last = body[-1].lstrip() if body else ""
+        self.flagged = last.startswith("> ?")
+        self.question = last[3:].strip() if self.flagged else ""
 
 
 def _note_label(item: NoteItem) -> Text:
@@ -1037,10 +1059,16 @@ def _note_label(item: NoteItem) -> Text:
     t.append("▶ ", style=TYPE_COLORS.get(item.note.type, TEAL))
     t.append(item.slug, style=FG)
     t.append("  " + item.note.type, style=MUTED)
+    if item.flagged:
+        t.append("  ?", style="bold " + AMBER)
     return t
 
 
 def _note_right(item: NoteItem) -> Text:
+    if item.flagged:
+        # The question itself, in place of the date - it is what the row
+        # is FOR (R10.13a: readable in the tree without opening the note).
+        return Text(item.question, style=AMBER)
     captured = (item.note.captured or "")[:10]
     return Text(_fmt_short_date(captured), style=DIM)
 
@@ -1834,14 +1862,12 @@ class BrainApp(App, inherit_bindings=False):
         Binding("G", "nav_bottom", "bottom", show=False),
         Binding("i", "insert", "note", show=False),
         Binding("o", "capture", "capture", show=False),
-        Binding("t", "cycle_type", "type", show=False),
+        # R10.7b/R10.15: `t`, `d`, `s`, `H` are unbound - each asked the human
+        # to classify or pick a field the LLM should decide instead (A22).
         # Task 4: acting keys, search, help, quit (R10.3's "acting" table).
         Binding("e", "edit_line", "edit", show=False),
         Binding("E", "toggle_raw", "raw", show=False),
         Binding("x", "tick", "done", show=False),
-        Binding("d", "due_prompt", "due", show=False),
-        Binding("s", "status_prompt", "status", show=False),
-        Binding("H", "health_prompt", "health", show=False),
         Binding("u", "undo", "undo", show=False),
         Binding("Q", "queue_request", "request", show=False),
         Binding("slash", "search_prompt", "search", show=False),
@@ -1869,11 +1895,9 @@ class BrainApp(App, inherit_bindings=False):
         self.root = Path(root)
         self.selected = None
         self.mode = NORMAL
-        self.buffer = ""          # INSERT text; survives Esc (R10.3)
-        self._stash = None        # an `i` note parked while a prompt runs (C2)
+        self.buffer = ""          # INSERT text; a prompt (e/Q//), never a note now
         self._quit_armed = False  # ZZ warned about unsent text; next ZZ discards
         self.command = ""         # COMMAND text; survives Esc and a refusal
-        self.note_type = ent.NOTE_TYPES[0]
         self.notice: Optional[Notice] = None
         self._focus_before = None
         self._slugs: List[str] = []
@@ -1885,9 +1909,10 @@ class BrainApp(App, inherit_bindings=False):
         self._mtimes: Dict[str, float] = {}
         self._changed_marker = False
         self._unprocessed_count = 0
-        # Task 4: what an acting-key prompt (e, d, s, H, Q, /) is asking for,
-        # shown in the modeline in place of the capture chip (R10.3's "same
-        # mechanism as i"). `prompt` is the label; `_pending` is
+        # Task 4: what an acting-key prompt (e, Q, /) is asking for, shown
+        # in the modeline - the only thing INSERT there draws now (R10.13's
+        # amendment moved plain capture to the pane). `prompt` is the label;
+        # `_pending` is
         # `(kind, project_slug_or_None, action_index_or_None)`, consumed by
         # `_run_pending` on `⏎` and cleared by every fresh entry point so a
         # leftover from one key never answers for another (see `check_action`
@@ -2194,13 +2219,17 @@ class BrainApp(App, inherit_bindings=False):
 
     @property
     def capture_ref(self) -> Optional[str]:
-        """The slug a note captured with `i` will be tagged with: the
-        selected entity. A selected NOTE (or nothing) is no reference - you
-        cannot file a note against a note, and selecting one is how you
-        capture without a tag."""
+        """The tag a note captured with `i` or `o` will carry: the selected
+        entity's slug, or - R10.13a's reply - `re:<id>` when the selection is
+        a FLAGGED note in INBOX (the LLM asking a question). An unflagged
+        note, a group header, or nothing selected is no reference: you
+        cannot file a note against a note, and selecting one (or the INBOX
+        header, on an empty inbox) is how you capture without a tag."""
         sel = self.selected
-        if sel is None or getattr(sel, "kind", None) in (None, "note"):
+        if sel is None:
             return None
+        if getattr(sel, "kind", None) == "note":
+            return "re:" + sel.slug if sel.flagged else None
         return sel.slug
 
     @property
@@ -2394,15 +2423,24 @@ class BrainApp(App, inherit_bindings=False):
             self._leave_to_normal()
         self.reload()
 
-    @_guarded
-    def action_insert(self) -> None:
-        """`i`: a note in the modeline (R10.13). The buffer is whatever Esc
-        left there last time. Always plain capture - clears any Task 4
-        acting-key prompt (`e`/`d`/`s`/`H`/`Q`/`/`) so a leftover `_pending`
-        never answers for `⏎` here."""
+    def _open_capture(self, note_type: str) -> None:
+        """R10.13/R10.14: `i` and `o` open the same pane; the type is the
+        only difference. The tag is read NOW - the selection may change under
+        a poll while the pane is open, and the note is about what was looked
+        at when the key was pressed."""
+        self.notice = None
         self.prompt = None
         self._pending = None
-        self._enter(INSERT)
+        self.mode = INSERT
+        self._focus_before = self.focused
+        self.push_screen(CaptureScreen(
+            self._preview_note_id(), note_type, self.capture_ref, self.selected_is_party))
+        self._render_modeline()
+
+    @_guarded
+    def action_insert(self) -> None:
+        """`i`: capture a note, tagged with the selection (R10.13)."""
+        self._open_capture("note")
 
     @_guarded
     def action_command(self) -> None:
@@ -2410,25 +2448,9 @@ class BrainApp(App, inherit_bindings=False):
         self._enter(COMMAND)
 
     @_guarded
-    def action_cycle_type(self) -> None:
-        """`t`: note -> meeting -> action -> decision -> note (R10.15)."""
-        types = ent.NOTE_TYPES
-        self.note_type = types[(types.index(self.note_type) + 1) % len(types)]
-        self.notice = None
-        self._render_modeline()
-        if isinstance(self.screen, CaptureScreen):
-            self.screen._redraw()
-
-    @_guarded
     def action_capture(self) -> None:
-        """`o`: the full-screen pane (R10.14). INSERT, like the modeline."""
-        self.notice = None
-        self.prompt = None
-        self._pending = None
-        self.mode = INSERT
-        self._focus_before = self.focused
-        self.push_screen(CaptureScreen(self._preview_note_id()))
-        self._render_modeline()
+        """`o`: the same pane, stamped `meeting` (R10.14)."""
+        self._open_capture("meeting")
 
     def _preview_note_id(self) -> str:
         """The id `note add` will assign if nothing else captures first - a
@@ -2447,17 +2469,17 @@ class BrainApp(App, inherit_bindings=False):
     @_guarded
     def action_escape(self) -> None:
         """Esc: from anywhere, back to NORMAL (R10.3). R10.3a is the one
-        rule that decides what survives the trip: a NOTE (`i`, `o`) is
-        captured text with nowhere else it lives yet, so Esc keeps it
-        absolutely; an EDIT (`e`) or a COMMAND (`:`, and the `d`/`s`/`H`/`Q`/
-        `/` prompts, which are command lines in this sense) has the original
-        still safe in the file or nothing at all riding on it, so Esc
-        CANCELS it - the half-typed value is discarded, never remembered for
-        next time. In the capture pane Esc asks first (R10.14); in the help
-        screen it closes it (`escape` is a priority binding, so it never
-        reaches `HelpScreen.on_key` - see that class's docstring); in NORMAL
-        it clears search results or the raw-source view before it falls back
-        to returning DOM focus from the detail pane to the tree."""
+        rule that decides what survives the trip: a NOTE (the `i`/`o` pane)
+        is captured text with nowhere else it lives yet, so its own Esc asks
+        before losing it (R10.14, handled below); an EDIT (`e`) or a COMMAND
+        (`:`, and the `Q`/`/` prompts, which are command lines in this
+        sense) has the original still safe in the file or nothing at all
+        riding on it, so Esc CANCELS it here - the half-typed value is
+        discarded, never remembered for next time. In the help screen Esc
+        closes it (`escape` is a priority binding, so it never reaches
+        `HelpScreen.on_key` - see that class's docstring); in NORMAL it
+        clears search results or the raw-source view before it falls back to
+        returning DOM focus from the detail pane to the tree."""
         if isinstance(self.screen, HelpScreen):
             self.pop_screen()
             return
@@ -2467,12 +2489,11 @@ class BrainApp(App, inherit_bindings=False):
         if self.mode != NORMAL:
             self.notice = None
             if self._pending is not None:
-                # R10.3a: an edit or a prompt (e/d/s/H/Q//) cancels - the
-                # half-typed value is not remembered. The note that was
-                # parked when the prompt started (if any) comes back for `i`.
+                # R10.3a: an edit or a prompt (e/Q//) cancels - the
+                # half-typed value is not remembered.
                 self._pending = None
                 self.prompt = None
-                self._unstash_note()
+                self.buffer = ""
             elif self.mode == COMMAND:
                 # R10.3a: a command line cancels too - nothing is kept.
                 self.command = ""
@@ -2546,58 +2567,37 @@ class BrainApp(App, inherit_bindings=False):
         self._render_modeline()
 
     def _capture_buffer(self) -> None:
-        """`⏎` in INSERT: either a Task 4 acting-key prompt waiting on typed
-        text (`_pending` set - `e`, `d`, `s`, `H`, `Q`, `/`), or plain note
-        capture (R10.13): `note add <type> -f -`, the body on stdin exactly
-        as typed - never argv (invariant 13). No parsing, no question, no
-        model."""
+        """`⏎` in INSERT: a Task 4 acting-key prompt waiting on typed text
+        (`_pending` set - `e`, `Q`, `/`). Plain note capture no longer lives
+        here (R10.13's amendment): `i`/`o` open `CaptureScreen` instead, so
+        with `_pending is None` there is nothing to commit - just leave."""
         if self._pending is not None:
             self._run_pending()
             return
-        body = self.buffer
-        if not body.strip():
-            self._leave_to_normal()
-            return
-        argv = ["note", "add", self.note_type]
-        if self.capture_ref:
-            # The reference travels as a TAG in the note's machine-written
-            # header - `note add --tag`, the same slot `raise` uses - never in
-            # the body, which stays byte for byte what was typed (R4.6.1).
-            argv += ["--tag", self.capture_ref]
-        rc, out, err = self.run_brain(argv + ["-f", "-"], stdin=body)
-        if rc != 0:
-            # R10.18a: a refusal (the agent holds the lock) is normal. Stay
-            # in INSERT with the text, so `⏎` a moment later retries it.
-            self.notice = Notice(_first_line(err) or "brain exited {}".format(rc), True)
-            self._render_modeline()
-            return
-        self.buffer = ""
-        self._finish_write(out)
+        self._leave_to_normal()
 
     def _run_pending(self) -> None:
-        """`⏎` in INSERT when `e`, `d`, `s`, `H` or `Q` is waiting on typed
-        text: the same commit key as plain capture, routed to the verb the
-        key chose rather than `note add`. Each is a thin argv build against
-        the seam `run_brain` is (R10.10a's ruling: no verb the TUI calls here
-        does anything `todo edit`/`todo due`/`set status`/`set
-        health`/`request add` did not already do from the shell).
+        """`⏎` in INSERT when `e`, `Q` or `/` is waiting on typed text: the
+        commit key routed to the verb the key chose. Each is a thin argv
+        build against the seam `run_brain` is (R10.10a's ruling: no verb the
+        TUI calls here does anything `todo edit`/`request add` did not
+        already do from the shell).
 
         An empty value quietly cancels, the same as an empty note (R10.13):
-        typing `d`, deciding not to, and hitting `⏎` on nothing is not a
-        request to send `todo … due --to ''`.
+        typing `e`, deciding not to, and hitting `⏎` on nothing is not a
+        request to send `todo … edit … -- ''`.
         """
         kind, slug, ident = self._pending
         value = self.buffer
         if not value.strip():
             self._pending = None
             self.prompt = None
-            self._unstash_note()
             self._leave_to_normal()
             return
         if kind == "search":
             self._run_search(value)
             return
-        if kind in ("edit", "due"):
+        if kind == "edit":
             index = self._current_index(slug, ident)
             if index is None:
                 # R10.18a's shape: a refusal, text kept, so the user can look
@@ -2606,14 +2606,7 @@ class BrainApp(App, inherit_bindings=False):
                     "that action moved or changed under you - re-select it and try again", True)
                 self._render_modeline()
                 return
-        if kind == "edit":
             argv = ["todo", slug, "edit", str(index), "--", value]
-        elif kind == "due":
-            argv = ["todo", slug, "due", str(index), "--to", value]
-        elif kind == "status":
-            argv = ["set", slug, "status", "--", value]
-        elif kind == "health":
-            argv = ["set", slug, "health", "--", value]
         else:
             assert kind == "request", kind
             argv = ["request", "add", "--", value]
@@ -2623,7 +2616,6 @@ class BrainApp(App, inherit_bindings=False):
             self.notice = Notice(_first_line(err) or "brain exited {}".format(rc), True)
             self._render_modeline()
             return
-        self._unstash_note()
         self.prompt = None
         self._pending = None
         self._finish_write(out)
@@ -2645,7 +2637,7 @@ class BrainApp(App, inherit_bindings=False):
         self.search_hits = hits
         self.search_query = query
         self.search_cursor = 0
-        self._unstash_note()
+        self.buffer = ""
         self.prompt = None
         self._pending = None
         self.notice = Notice(
@@ -2776,33 +2768,10 @@ class BrainApp(App, inherit_bindings=False):
         tree_widget.move_cursor_to_line(tree_widget.last_line)
 
     # -- acting (R10.3 "acting", R10.7, R10.10, R10.10a, R10.11b) -------
-    # Every handler below ends in one `run_brain` call (or, for `e`/`d`/`s`/
-    # `H`/`Q`/`/`, sets up a prompt whose `⏎` does). None of them touches a
-    # `Doc` or `git` - the selector math (which open action, which index) is
-    # the only thing computed here; the verb itself validates and writes.
-
-    def _project_at_cursor(self):
-        """The project `s`/`H` set a field on: `self.selected` when it is a
-        project - `status`/`health` are project fields (R6.2), even though
-        `set` itself is kind-agnostic (R6.0a) - else `None`."""
-        if self.selected is not None and getattr(self.selected, "kind", None) == "project":
-            return self.selected
-        return None
-
-    def _stash_note(self) -> None:
-        """A prompt (`e`, `d`, `s`, `H`, `Q`, `/`) is about to take over the
-        INSERT buffer. If it still holds a note the user typed with `i` and
-        kept with Esc, that note is not the prompt's to discard (R10.3 - C2:
-        every prompt stomped it silently). Park it; `_unstash_note` puts it
-        back when the prompt ends, so `i` finds it again."""
-        if self.buffer and self._stash is None:
-            self._stash = self.buffer
-
-    def _unstash_note(self) -> None:
-        if self._stash is not None:
-            self.buffer, self._stash = self._stash, None
-        else:
-            self.buffer = ""
+    # Every handler below ends in one `run_brain` call (or, for `e`/`Q`/`/`,
+    # sets up a prompt whose `⏎` does). None of them touches a `Doc` or
+    # `git` - the selector math (which open action, which index) is the only
+    # thing computed here; the verb itself validates and writes.
 
     def _current_index(self, slug, text):
         """Re-find an open action by its exact text, RIGHT NOW, and return its
@@ -2876,7 +2845,6 @@ class BrainApp(App, inherit_bindings=False):
         # and report success (C3). `_current_index` re-finds the task by its
         # text at commit time and refuses if it is gone or ambiguous.
         self._pending = ("edit", project.slug, task.text)
-        self._stash_note()
         # R10.3a: an edit always starts fresh at the line's own text - Esc
         # cancels a half-typed edit rather than remembering it for next time.
         self.buffer = task.text
@@ -2896,57 +2864,6 @@ class BrainApp(App, inherit_bindings=False):
         self._render_modeline()
 
     @_guarded
-    def action_due_prompt(self) -> None:
-        """`d`: prompts `due:`, `⏎` sends `todo <project> due <index> --to
-        <date>`. Same selector rule as `x`/`e` - an open action must be
-        focused first."""
-        found = self._focused_open_action()
-        if found is None:
-            self.notice = Notice(
-                "d sets the due date of the focused open action - focus one first", True)
-            self._render_modeline()
-            return
-        project, task, _index = found
-        self._pending = ("due", project.slug, task.text)
-        self._stash_note()
-        # R10.3a: a prompt always starts empty - Esc cancels it, never keeps
-        # a half-typed value for the next time this key is pressed.
-        self.buffer = ""
-        self.prompt = "due:"
-        self._enter(INSERT)
-
-    @_guarded
-    def action_status_prompt(self) -> None:
-        """`s`: prompts `status:`, `⏎` sends `set <project> status --
-        <status>` against the SELECTED project (not a focused line - status
-        is a field on the entity, not one line of it)."""
-        project = self._project_at_cursor()
-        if project is None:
-            self.notice = Notice("s sets a project's status - select a project first", True)
-            self._render_modeline()
-            return
-        self._pending = ("status", project.slug, None)
-        self._stash_note()
-        self.buffer = ""   # R10.3a: a prompt always starts empty
-        self.prompt = "status:"
-        self._enter(INSERT)
-
-    @_guarded
-    def action_health_prompt(self) -> None:
-        """`H`: prompts `health:`, `⏎` sends `set <project> health --
-        <health>`, same target rule as `s`."""
-        project = self._project_at_cursor()
-        if project is None:
-            self.notice = Notice("H sets a project's health - select a project first", True)
-            self._render_modeline()
-            return
-        self._pending = ("health", project.slug, None)
-        self._stash_note()
-        self.buffer = ""   # R10.3a: a prompt always starts empty
-        self.prompt = "health:"
-        self._enter(INSERT)
-
-    @_guarded
     def action_undo(self) -> None:
         """`u`: `undo` (§11.5) - one more git commit, forward only, that
         reverts the last one. No prompt: there is nothing to type."""
@@ -2962,7 +2879,6 @@ class BrainApp(App, inherit_bindings=False):
         """`Q`: prompts `request:`, `⏎` sends `request add -- <text>` - a
         job for the agent in `_request.md`, never run here."""
         self._pending = ("request", None, None)
-        self._stash_note()
         self.buffer = ""   # R10.3a: a prompt always starts empty
         self.prompt = "request:"
         self._enter(INSERT)
@@ -2973,7 +2889,6 @@ class BrainApp(App, inherit_bindings=False):
         (R6.7, R8.4.1) and `_run_search` replaces the detail pane with the
         grouped hits."""
         self._pending = ("search", None, None)
-        self._stash_note()
         self.buffer = ""   # R10.3a: a prompt always starts empty
         self.prompt = "search:"
         self._enter(INSERT)
@@ -3040,8 +2955,9 @@ class BrainApp(App, inherit_bindings=False):
 
         R10.3a: Esc now cancels a command line, so `self.command` is always
         empty by the time NORMAL - and therefore `ZZ` - is reachable again;
-        the guard covers only the note buffer (`i`/`o`, parked or not)."""
-        unsent = self.buffer or self._stash
+        the modeline no longer holds a note (`i`/`o` open the pane instead),
+        so the guard covers an open `CaptureScreen` with unsent text."""
+        unsent = isinstance(self.screen, CaptureScreen) and self.screen.body().strip()
         if self._pending_z:
             self._pending_z = False
             if unsent and not self._quit_armed:
