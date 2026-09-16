@@ -31,6 +31,7 @@ EXPECTED_REF_KINDS = {
     ("field", "set"): (),           # any kind
     ("link",): ("project",),
     ("raise",): ("stakeholder", "board"),
+    ("todo",): (),                  # any kind (R6.0a); refused by name in the body
 }
 
 EXPECTED_FLAG_REFS = {

@@ -74,6 +74,18 @@ def _inserted(before, after, rel):
     return section, position, new[i]
 
 
+def _rollup_region(lines):
+    """(prefix, suffix) of a program file around its `## Roll-up` section -
+    prefix ends at (and includes) the heading, suffix starts at the next
+    `## ` heading. Only the content between them may be regenerated, and
+    regeneration can change its length: the fixture's roll-up starts empty
+    (R4.3.1a's table has never been built) and gains rows on first touch, so
+    a length-preserving zip can't be used to bound the edit."""
+    start = next(i for i, l in enumerate(lines) if l.strip() == "## Roll-up") + 1
+    end = next((i for i in range(start, len(lines)) if lines[i].startswith("## ")), len(lines))
+    return lines[:start], lines[end:]
+
+
 def _in_place(before, after, rel, allowed):
     """A same-length edit: exactly `allowed` indexes differ in `rel`, no
     other file moves except the program roll-up, and inside it only lines
@@ -82,13 +94,11 @@ def _in_place(before, after, rel, allowed):
     differing = {i for i, (a, b) in enumerate(zip(before[rel], after[rel])) if a != b}
     assert len(before[rel]) == len(after[rel]) and differing == allowed, differing
     if ROLLUP in _changed(before, after):
-        inside, ok = False, True
-        for i, (a, b) in enumerate(zip(before[ROLLUP], after[ROLLUP])):
-            if a.startswith("## "):
-                inside = a.strip() == "## Roll-up"
-            if a != b and not inside:
-                ok = False
-        assert ok, "the roll-up regeneration touched a line outside ## Roll-up"
+        b_pre, b_suf = _rollup_region(before[ROLLUP])
+        a_pre, a_suf = _rollup_region(after[ROLLUP])
+        assert b_pre == a_pre and b_suf == a_suf, (
+            "the roll-up regeneration touched a line outside ## Roll-up"
+        )
 
 
 # ---- log ------------------------------------------------------------------
@@ -215,3 +225,95 @@ def test_the_three_free_text_verbs_need_the_separator(brain_repo, verb):
     with pytest.raises(GrammarError) as excinfo:
         _run(brain_repo, "{} acme-migration".format(verb))
     assert " -- " in str(excinfo.value)
+
+
+# ---- todo -----------------------------------------------------------------
+
+def _acme(root):
+    return Project(root / "projects" / "acme-migration.md")
+
+
+def test_todo_adds_the_R4_2_2_form(brain_repo):
+    """Mutation: swap owner and due in the `add_action` call."""
+    _run(brain_repo, "todo acme-migration --owner sara --due 2026-09-11 -- Confirm the cutover window")
+    assert _acme(brain_repo).doc.section_lines("Next actions")[-2] == (
+        "- [ ] Confirm the cutover window  @sara  due:2026-09-11"
+    )
+
+
+def test_todo_done_by_index_ticks_exactly_one_line(brain_repo):
+    """Mutation: in the `done` branch call `edit_task` with the text instead
+    of `toggle_task` - the set of changed lines differs."""
+    path = brain_repo / "projects" / "acme-migration.md"
+    task = _acme(brain_repo).open_actions()[0]
+    before = snapshot(brain_repo)
+    _run(brain_repo, "todo acme-migration done 1")
+    after = snapshot(brain_repo)
+    # The open count changes, so the program's roll-up regenerates in the
+    # same commit (R4.3.1a) - `_in_place` allows exactly that and nothing else.
+    _in_place(before, after, "projects/acme-migration.md", {task.lineno, _updated_index(path)})
+    assert after["projects/acme-migration.md"][task.lineno].startswith("- [x] ")
+
+
+def test_todo_done_by_words(brain_repo):
+    """Mutation: use `positional[2]` as the selector even when text is given."""
+    _run(brain_repo, "todo acme-migration done -- DNS cutover")
+    assert _acme(brain_repo).open_actions() == []
+
+
+def test_todo_edit_changes_exactly_one_line_and_keeps_metadata(brain_repo):
+    """R10.10a, unchanged from action edit. Mutation: drop `owner=` from the
+    re-render - the `@sara` suffix disappears."""
+    path = brain_repo / "projects" / "acme-migration.md"
+    task = _acme(brain_repo).open_actions()[0]
+    before = snapshot(brain_repo)
+    _run(brain_repo, "todo acme-migration edit 1 -- Confirm the DNS window with Sara -- twice")
+    after = snapshot(brain_repo)
+    _in_place(before, after, "projects/acme-migration.md", {task.lineno, _updated_index(path)})
+    assert after["projects/acme-migration.md"][task.lineno] == (
+        "- [ ] Confirm the DNS window with Sara -- twice  @sara  due:2026-09-11"
+    )
+
+
+def test_todo_due_sets_the_date(brain_repo):
+    """Mutation: write `flags["to"]` into the owner slot."""
+    _run(brain_repo, "todo acme-migration due 1 --to 2026-09-20")
+    assert _acme(brain_repo).open_actions()[0].due == "2026-09-20"
+
+
+@pytest.mark.parametrize("line, fragment", [
+    ("todo acme-migration", "adds an action"),
+    ("todo acme-migration 2", "`done`, `edit` or `due`"),
+    ("todo acme-migration done", "needs an action"),
+    ("todo acme-migration done 1 -- words", "needs an action"),
+    ("todo acme-migration edit 1", "edit <n> -- <new text>"),
+    ("todo acme-migration due 1", "needs --to"),
+    ("todo acme-migration --to 2026-09-20 -- x", "belongs to `todo <project> due`"),
+    ("todo acme-migration done 1 --owner me", "takes no flags"),
+])
+def test_todo_shapes_are_refused_statically(brain_repo, line, fragment):
+    """R6.5.1: each wrong shape is refused by `validate`, before any write.
+    Mutation: declare `shape=None` on `todo` - the first case then reaches
+    the body and fails with a different message (or writes)."""
+    with pytest.raises(VerbError) as excinfo:
+        c.validate(gr.parse_line(line))
+    assert fragment in str(excinfo.value)
+
+
+@pytest.mark.parametrize("slug, fragment", [
+    ("cloud-migration", "a program has no actions"),
+    ("ann", "log ann -- "),
+    ("arch-board", "log arch-board -- "),
+])
+def test_todo_refuses_non_projects_by_name_in_dry_run_and_for_real(brain_repo, slug, fragment):
+    """R6.0a. Mutation: declare `check=None` on `todo` - the batch validates
+    and only the real run refuses (the second assertion still holds, the
+    first fails)."""
+    with pytest.raises(c.BatchError) as excinfo:
+        c.validate_batch(brain_repo, "todo {} -- x\n".format(slug))
+    assert fragment in str(excinfo.value)
+    before = snapshot(brain_repo)
+    with pytest.raises(VerbError) as excinfo:
+        _run(brain_repo, "todo {} -- x".format(slug))
+    assert fragment in str(excinfo.value)
+    assert snapshot(brain_repo) == before

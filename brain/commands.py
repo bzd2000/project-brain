@@ -335,6 +335,86 @@ def _action_due(root, positional, flags, text):
     )
 
 
+TODO_WORDS = ("done", "edit", "due")
+
+# R6.0a: refused by name, naming the verb to use. `{slug}` is filled in.
+TODO_REFUSED = {
+    "program": "a program has no actions - `todo` one of its projects",
+    "stakeholder": "a person has no actions - `log {slug} -- <text>` puts it on their pending list",
+    "board": "a board has no actions - `log {slug} -- <text>` puts it on its pending list",
+}
+
+
+def _todo_shape(positional, flags, text):
+    """The word after the project picks the form, and each form has its own
+    arity and flags - checked here, statically (R6.5.1), because (1, 3)
+    cannot say it."""
+    word = positional[1] if len(positional) > 1 else None
+    selector = positional[2] if len(positional) > 2 else None
+    if word is None:
+        if text is None:
+            raise VerbError(
+                "`todo <project> -- <text>` adds an action; `todo <project> "
+                "done|edit|due …` changes one"
+            )
+        if "to" in flags:
+            raise VerbError("`--to` belongs to `todo <project> due`")
+        return
+    if word not in TODO_WORDS:
+        raise VerbError(
+            "`todo {}`: after the project comes `done`, `edit` or `due`, or "
+            "` -- <text>` to add - not {!r}".format(positional[0], word)
+        )
+    if word == "done":
+        if flags:
+            raise VerbError("`todo … done` takes no flags")
+        if (selector is None) == (text is None):
+            raise VerbError("`todo <project> done` needs an action: an index, or ` -- some words`")
+    elif word == "edit":
+        if flags:
+            raise VerbError("`todo … edit` takes no flags")
+        if selector is None or text is None:
+            raise VerbError("`todo <project> edit <n> -- <new text>`")
+    else:
+        if set(flags) - {"to"}:
+            raise VerbError("`todo … due` takes only --to")
+        if "to" not in flags:
+            raise VerbError("`todo … due` needs --to <date>")
+        if (selector is None) == (text is None):
+            raise VerbError("`todo <project> due` needs an action: an index, or ` -- some words`")
+
+
+def _todo_check(plan):
+    _refuse_kind("todo", plan.resolved, TODO_REFUSED)
+
+
+@verb("todo", arity=(1, 3), allowed_flags=("owner", "due", "to"),
+      optional_text=True, ref_kinds=(), shape=_todo_shape, check=_todo_check)
+def _todo(root, positional, flags, text):
+    """R6.0a: add, or `done`/`edit`/`due` one, with `action …`'s selectors
+    (R6.2: a 1-based index into the OPEN actions, or a unique substring)."""
+    entity = resolve(root, positional[0])
+    _refuse_kind("todo", entity, TODO_REFUSED)
+    doc = entity.doc
+    word = positional[1] if len(positional) > 1 else None
+    selector = positional[2] if len(positional) > 2 else text
+    if word is None:
+        doc.add_action(text, owner=flags.get("owner"), due=flags.get("due"))
+        return _saved(root, entity, "added an action to {}".format(entity.slug))
+    task = resolve_action(entity, selector)
+    if word == "done":
+        doc.toggle_task(task.lineno)
+        return _saved(root, entity, "ticked {} in {}".format(task.text, entity.slug))
+    if word == "edit":
+        doc.edit_task(task.lineno, text)
+        return _saved(root, entity, "edited an action on {}".format(entity.slug))
+    doc.lines[task.lineno] = render_action(
+        task.text, task.owner, flags["to"], done=task.done,
+        indent=task.indent, mark=task.mark,
+    )
+    return _saved(root, entity, "{} is now due {}".format(task.text, flags["to"]))
+
+
 @verb("decision", "add", needs_text=True, arity=(1, 1), ref_kinds=("project",))
 def _decision_add(root, positional, flags, text):
     project, doc, rel = _project_and_doc(root, positional[0])
