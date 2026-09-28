@@ -170,3 +170,39 @@ def test_unclosed_fence_is_recorded_and_refuses_writes(tmp_path):
         with pytest.raises(ValueError):
             call()
     assert doc.lines == ["## Log", "- entry", "", "```", "never closed"]
+
+
+def test_set_field_over_a_block_list_takes_its_items_with_it(brain_tree):
+    """R5.1 is "the minimum number of lines", and a block list's `- item` lines
+    are part of the field being replaced: leaving them behind produces front
+    matter that no longer parses. Mutation: replace only the `key:` line."""
+    path = brain_tree / "stakeholders" / "ann.md"
+    doc = Doc(path)
+    at = next(i for i, l in enumerate(doc.lines) if l.startswith("projects:"))
+    doc.lines[at:at + 1] = ["projects:", "  - acme-migration", "  - q4-budget"]
+    doc.reindex()
+    doc.set_field("projects", ["acme-migration", "q4-budget", "dns-cutover"])
+    doc.save()
+    reloaded = Doc(path)
+    assert reloaded.problems == []
+    assert reloaded.fm["projects"] == ["acme-migration", "q4-budget", "dns-cutover"]
+    assert not [l for l in reloaded.lines if l.lstrip().startswith("- ")
+                and reloaded.fm_range[0] < reloaded.lines.index(l) < reloaded.fm_range[1]]
+    assert reloaded.fm["tags"] == ["client"], "the key after the list survives"
+
+
+def test_set_field_leaves_a_body_list_alone(brain_tree):
+    """A scalar still touches exactly one line (R5.1) now that `set_field`
+    consumes continuation lines.
+
+    Not a mutation test: the closing `---` ends the scan on its own, so the
+    `fm_end` bound cannot be seen from outside - it is there to say why the
+    loop is safe, not because a case reaches it. This pins the scalar path."""
+    before = snapshot(brain_tree)
+    path = brain_tree / "projects" / "acme-migration.md"
+    doc = Doc(path)
+    doc.set_field("status", "paused")
+    doc.save()
+    at = next(i for i, l in enumerate(snapshot(brain_tree)["projects/acme-migration.md"])
+              if l.startswith("status:"))
+    assert_only_changed(before, snapshot(brain_tree), {"projects/acme-migration.md": {at}})

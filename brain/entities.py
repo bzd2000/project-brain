@@ -125,7 +125,11 @@ class Party(Entity):
     """Boards and stakeholders are structurally the same shape (R4.5.3)."""
 
     def _read(self):
-        self.projects = self.fm.get("projects", []) or []
+        # R4.2.4 loads a hand-written `projects: acme-migration` as a `str`;
+        # every reader (and `link`, which appends to it) wants a list, and
+        # `list("acme-migration")` is fourteen characters. Same shape as `tags`.
+        value = self.fm.get("projects") or []
+        self.projects = value if isinstance(value, list) else [value]
         self.cadence = self.fm.get("cadence")
         self.last_met = self.fm.get("last_met")
         self.next_meeting = self.fm.get("next_meeting")

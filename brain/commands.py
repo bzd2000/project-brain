@@ -245,6 +245,25 @@ def _dated(text: str) -> str:
     return "- {} - {}".format(date.today().isoformat(), text)
 
 
+def _bullet(entity, section: str, line: str, newest_first: bool = False) -> int:
+    """Write one bullet into `section`, creating it if the file lacks it.
+
+    R4.2.4 loads a file whose sections are missing, and since R6.0a took
+    `log`/`decide`/`query` to all four kinds any of them can meet one:
+    `add_bullet` raises `KeyError` there, which R6.1 would print as a
+    traceback. R4.2.1 fixes each kind's section names and order, so where the
+    heading belongs is not a guess.
+    """
+    entity.doc.ensure_section(section, entity.SECTIONS)
+    return entity.doc.add_bullet(section, line, newest_first=newest_first)
+
+
+def _minute(entity, section: str, day: str, line: str) -> int:
+    """`add_minute` for a section the file may not have yet (see `_bullet`)."""
+    entity.doc.ensure_section(section, entity.SECTIONS)
+    return entity.doc.add_minute(section, day, line)
+
+
 def _saved(root, entity, message: str) -> Result:
     entity.doc.touch()
     entity.doc.save()
@@ -263,10 +282,10 @@ def _log(root, positional, flags, text):
     if "ref" in flags:
         line += "  #{}".format(resolve(root, flags["ref"]).slug)
     if entity.kind in LOG_KINDS:
-        entity.doc.add_bullet("Log", _dated(line), newest_first=True)
+        _bullet(entity, "Log", _dated(line), newest_first=True)
         where = "Log"
     else:
-        entity.doc.add_bullet("Pending", _dated(line), newest_first=False)
+        _bullet(entity, "Pending", _dated(line), newest_first=False)
         where = "Pending"
     return _saved(root, entity, "logged to {} ({})".format(entity.slug, where))
 
@@ -335,6 +354,7 @@ def _todo(root, positional, flags, text):
     word = positional[1] if len(positional) > 1 else None
     selector = positional[2] if len(positional) > 2 else text
     if word is None:
+        doc.ensure_section("Next actions", entity.SECTIONS)   # see `_bullet`
         doc.add_action(text, owner=flags.get("owner"), due=flags.get("due"))
         return _saved(root, entity, "added an action to {}".format(entity.slug))
     task = resolve_action(entity, selector)
@@ -358,13 +378,13 @@ def _decide(root, positional, flags, text):
     `## Minutes` (R4.5.2)."""
     entity = resolve(root, positional[0])
     if entity.kind == "project":
-        entity.doc.add_bullet("Decisions", _dated(text), newest_first=True)
+        _bullet(entity, "Decisions", _dated(text), newest_first=True)
     elif entity.kind == "program":
-        entity.doc.add_bullet("Log", _dated("decision: " + text), newest_first=True)
+        _bullet(entity, "Log", _dated("decision: " + text), newest_first=True)
     elif entity.kind == "stakeholder":
-        entity.doc.add_bullet("History", _dated(text), newest_first=True)
+        _bullet(entity, "History", _dated(text), newest_first=True)
     else:
-        entity.doc.add_minute("Minutes", date.today().isoformat(), _dated(text))
+        _minute(entity, "Minutes", date.today().isoformat(), _dated(text))
     return _saved(root, entity, "recorded a decision on {}".format(entity.slug))
 
 
@@ -374,11 +394,11 @@ def _query(root, positional, flags, text):
     program; a `question:` pending item on a stakeholder or board."""
     entity = resolve(root, positional[0])
     if entity.kind == "project":
-        entity.doc.add_bullet("Open questions", "- " + text, newest_first=False)
+        _bullet(entity, "Open questions", "- " + text, newest_first=False)
     elif entity.kind == "program":
-        entity.doc.add_bullet("Log", _dated("question: " + text), newest_first=True)
+        _bullet(entity, "Log", _dated("question: " + text), newest_first=True)
     else:
-        entity.doc.add_bullet("Pending", _dated("question: " + text), newest_first=False)
+        _bullet(entity, "Pending", _dated("question: " + text), newest_first=False)
     return _saved(root, entity, "added a question to {}".format(entity.slug))
 
 
@@ -677,7 +697,7 @@ def _link(root, positional, flags, text):
     if target.kind == "project":
         target.doc.set_field("program", ref.slug)
         return _saved(root, target, "{} is in {}".format(target.slug, ref.slug))
-    current = list(target.doc.fm.get("projects") or [])
+    current = list(target.projects)   # coerced by `Party._read` (R4.2.4)
     if ref.slug in current:
         return Result("{} already follows {}".format(target.slug, ref.slug), ())
     target.doc.set_field("projects", current + [ref.slug])

@@ -696,3 +696,79 @@ def test_every_project_verb_sets_updated(brain_repo, line):
     assert Project(path).updated == "1999-01-01", "the reset did nothing"
     _run(brain_repo, line)
     assert Project(path).updated != "1999-01-01", line
+
+
+# ---- R4.2.4 tolerance meets `link`'s list write ---------------------------
+
+def _rewrite_projects(path, replacement):
+    """Hand-write the `projects:` line in one of the two forms R4.2.4 has to
+    tolerate. Returns nothing; the file is the fixture minus brain's spelling."""
+    lines = _lines(path)
+    at = next(i for i, l in enumerate(lines) if l.startswith("projects:"))
+    lines[at:at + 1] = replacement
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_link_appends_to_a_hand_written_scalar_projects(brain_repo):
+    """R4.2.4 loads `projects: acme-migration` as a `str`; R3.1 makes brain the
+    only writer, so exploding that string into its characters is brain
+    corrupting the source of truth.
+
+    Mutation: `list(self.fm.get("projects") or [])` in `_link` - which yields
+    one entry per character."""
+    path = brain_repo / "stakeholders" / "ann.md"
+    _rewrite_projects(path, ["projects: acme-migration"])
+    _run(brain_repo, "link ann q4-budget")
+    assert Stakeholder(path).projects == ["acme-migration", "q4-budget"]
+    assert "projects: [acme-migration, q4-budget]" in _lines(path)
+
+
+def test_link_over_a_block_list_consumes_its_items(brain_repo):
+    """A block-style list is valid YAML that R4.2.4 loads. `set_field` writes
+    the flow form onto the `projects:` line, so its `- item` lines have to go
+    with it or the front matter no longer parses.
+
+    Mutation: leave `set_field` replacing exactly one line - the orphans
+    remain and `parse_front_matter` reports a problem."""
+    path = brain_repo / "boards" / "arch-board.md"
+    _rewrite_projects(path, ["projects:", "  - acme-migration", "  - dns-cutover"])
+    _run(brain_repo, "link arch-board q4-budget")
+    board = Board(path)
+    assert board.projects == ["acme-migration", "dns-cutover", "q4-budget"]
+    assert board.doc.problems == []
+    front = _lines(path)[1:_lines(path).index("---", 1)]
+    assert not [l for l in front if l.lstrip().startswith("- ")], \
+        "no orphan item survives the write"
+    assert board.chair, "a key after the list is not consumed with it"
+
+
+# ---- R6.1: a missing section is not a traceback ---------------------------
+
+@pytest.mark.parametrize("line, section", [
+    ("decide bob -- Terraform it is", "History"),
+    ("log bob -- chased the invoice", "Pending"),
+    ("query bob -- who signs off?", "Pending"),
+])
+def test_a_verb_creates_the_section_a_tolerant_file_lacks(brain_repo, line, section):
+    """R4.2.4 loads a file missing its sections; R4.2.1 fixes their name and
+    order, so the verb creates the one it needs rather than raising the
+    `KeyError` `add_bullet` throws. R6.1 wants one line, never a traceback.
+
+    Mutation: call `doc.add_bullet` directly, as before - `KeyError` escapes
+    `execute` and the CLI prints a traceback."""
+    path = brain_repo / "stakeholders" / "bob.md"
+    path.write_text("---\nstakeholder: Bob\n---\n\n## Concerns\n\n- the invoice\n",
+                    encoding="utf-8")
+    from brain import git as g
+    g.commit(brain_repo, ["stakeholders/bob.md"], "seed bob", source="cli")
+    _run(brain_repo, line)
+    lines = _lines(path)
+    assert "## " + section in lines
+    body = [lines[i] for i in _section(path, section)]
+    assert [l for l in body if l.strip()], "the bullet landed in it"
+    assert Stakeholder(path).doc.problems == []
+    from brain.model import STAKEHOLDER_SECTIONS
+
+    headings = [l[3:].strip() for l in lines if l.startswith("## ")]
+    assert headings == [n for n in STAKEHOLDER_SECTIONS if n in headings], \
+        "the new section is in canonical order (R4.2.1)"

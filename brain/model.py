@@ -222,12 +222,36 @@ class Doc:
         for i in range(start + 1, end):
             stripped = self.lines[i].lstrip()
             if stripped.startswith(key + ":") and not stripped.startswith("#"):
+                indent = len(self.lines[i]) - len(stripped)
                 self.lines[i] = rendered
+                del self.lines[i + 1:self._continuations_end(i, indent, end)]
                 self.reindex()
                 return i
         self.lines.insert(end, rendered)
         self.reindex()
         return end
+
+    def _continuations_end(self, at: int, indent: int, fm_end: int) -> int:
+        """The index one past the last line belonging to the field on `at`.
+
+        A block-style list (`projects:` then `  - acme`) is valid YAML that
+        R4.2.4 loads, and `render_value` writes the flow form onto the `key:`
+        line - so its item lines are part of the field being replaced. R5.1's
+        "minimum number of lines" is the whole field, not one line of it:
+        leaving the items behind produces front matter that no longer parses.
+        The scan stops at the closing `---` (`fm_end`), so a `- item` in the
+        body belongs to its section and is never touched.
+        """
+        i = at + 1
+        while i < fm_end:
+            stripped = self.lines[i].lstrip()
+            if not stripped:
+                break
+            deeper = len(self.lines[i]) - len(stripped) > indent
+            if not (deeper or stripped == "-" or stripped.startswith("- ")):
+                break
+            i += 1
+        return i
 
     def touch(self, today: Optional[str] = None) -> int:
         """Set `updated:`, which R4.2.3 makes authoritative over mtime."""
