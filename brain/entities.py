@@ -161,7 +161,8 @@ class Board(Party):
 
     def _read(self):
         super()._read()
-        self.members = self.fm.get("members", []) or []
+        value = self.fm.get("members") or []      # a scalar is one member (R4.2.4)
+        self.members = value if isinstance(value, list) else [value]
         self.chair = self.fm.get("chair")
 
 

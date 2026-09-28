@@ -380,3 +380,61 @@ for `log`, `decide`, `query`, `link`; `todo`'s sub-words after the target
 
 The milestone is **5b**, not 6: §12's numbers are cited from CLAUDE.md,
 commits and tests, and are not renumbered — like the invariants.
+
+## Milestone 5b, reviewed (2026-09-28)
+
+A whole-branch review after the merge to master found seven defects. Three
+needed no ruling and were fixed against the spec as it stood — `link` exploding
+a hand-written scalar `projects:` into its characters (R3.1: brain is the only
+writer, so brain is what corrupted the file), `set_field` leaving a block
+list's `- item` lines orphaned below the flow form it wrote (R5.1's "minimum
+number of lines" is the whole field), and `log`/`decide`/`query` raising
+`KeyError` on a tolerantly-loaded file missing the section they write to
+(R4.2.4 loads it; R4.2.1 says where the heading belongs; R6.1 wants one line,
+not a traceback). The other four are rulings. Each is reversible; each says
+what it costs if wrong.
+
+**1. A list-valued field is split on commas or spaces, not guarded.** `set`'s
+value is free text (R6.0), and `set arch-board members -- ann bram cara` wrote
+`members: ann bram cara` — a `str` where every reader expects a list, which the
+digest rendered as `members a,n,n,,b,r,a,m`. The alternative was to add
+`members`/`tags` to `SET_GUARDED`, as `projects`/`program` are. But those two
+are guarded because `link` owns them and validates the other side; nothing owns
+`members`, so guarding it would refuse the field with no verb to send the user
+to. A slug holds neither a space nor a comma, so splitting on both is lossless.
+Cost if wrong: a member whose name needs a space cannot be set from the CLI —
+and members are slugs (`platform-team`), not names.
+
+**2. `link`'s wrong-kind reference is refused for its kind; the kind filter
+stays.** `link acme-migration ann` said `'ann' matches nothing` of a name
+plainly on disk, because the second positional resolves with
+`kinds=LINK_REF_KINDS` and a stakeholder is filtered out before `_link_pair`
+can refuse it by name (R6.0a). The obvious fix — resolve across all kinds and
+let `_link_pair` word the refusal — was rejected: that filter is the only site
+left where a **projected** slug's kind is checked before resolution, which
+three batch-validation tests pin, and widening it would let a cross-kind link
+against a slug a later `new` line creates validate clean and fail at write
+time. So the candidate list is unchanged and the message is fixed, in
+`refused_for_its_kind`, called by both `resolve` and `_resolve_against` so
+`apply` and the shell word it identically. Cost if wrong: the message names
+what the reference *is* rather than the verb to use instead, which is a weaker
+form of R6.0a's promise than `_link_pair` gives.
+
+**3. A board minute is not dated; its sitting is.** `decide <board>` wrote
+`- <day> - <text>` inside `### <day>`, so the day appeared twice on one line —
+unlike the fixture's own shape. Settled now rather than in milestone 7 because
+`minutes add` writes through the same code path, and a format that changes
+after real minutes exist has to migrate them. Cost if wrong: a one-line change
+and a `rewrite` pass over minutes written before it.
+
+**4. `note list --type` accepts the legacy types.** `entities.py` splits
+`NOTE_TYPES` from `LEGACY_NOTE_TYPES` so an old inbox's `action`/`decision`
+notes load without a problem (R4.6.2), and `note list --type action` — the one
+command that could find them — refused the name. It accepts them; `note add`
+still refuses them, which is the half that keeps the two current types the only
+ones written. Cost if wrong: nothing; no inbox in existence has one yet.
+
+Findings not from a ruling, worth keeping in view: `brain check` is
+authorship-only until milestone 6, so it reported nothing about front matter it
+could no longer parse. The corruption was visible only by reloading the file.
+That is the gap `check --fix` closes.

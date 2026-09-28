@@ -16,7 +16,8 @@ from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from . import digest
 from . import search, git, grammar, lock, rollup, tree
-from .entities import HEALTHS, KINDS, NOTE_TYPES, STATUSES, load_notes
+from .entities import (HEALTHS, KINDS, LEGACY_NOTE_TYPES, NOTE_TYPES, STATUSES,
+                       load_notes)
 from .errors import (
     AmbiguousReference,
     BrainError,
@@ -33,7 +34,8 @@ from .model import (
     Doc,
     render_action,
 )
-from .resolve import _candidates, normalise, resolve, resolve_among, resolve_action
+from .resolve import (_candidates, normalise, refused_for_its_kind, resolve,
+                      resolve_among, resolve_action)
 
 
 class Result(NamedTuple):
@@ -384,7 +386,9 @@ def _decide(root, positional, flags, text):
     elif entity.kind == "stakeholder":
         _bullet(entity, "History", _dated(text), newest_first=True)
     else:
-        _minute(entity, "Minutes", date.today().isoformat(), _dated(text))
+        # R4.5.2: `### <day>` heads the sitting, so the minute under it is not
+        # dated again - the fixture's shape, and what `minutes add` will write.
+        _minute(entity, "Minutes", date.today().isoformat(), "- " + text)
     return _saved(root, entity, "recorded a decision on {}".format(entity.slug))
 
 
@@ -410,6 +414,17 @@ SET_GUARDED = {
 }
 SET_CHOICES = {"status": STATUSES, "health": HEALTHS}
 
+# R6.0a: `set`'s value is free text (R6.0), but these fields hold LISTS -
+# written as one string, `Board.members` is a `str` and every reader that
+# iterates it walks characters. A slug holds neither a space nor a comma, so
+# splitting on both is lossless and the user types the list the way it reads.
+# `projects` is not here: it belongs to `link`, which validates the other side.
+SET_LISTS = ("tags", "members")
+
+
+def _split_list(text: str):
+    return [part for part in re.split(r"[,\s]+", text.strip()) if part]
+
 
 def _set_shape(positional, flags, text):
     field = positional[1]
@@ -426,8 +441,11 @@ def _set(root, positional, flags, text):
     statically and here again."""
     _set_shape(positional, flags, text)
     entity = resolve(root, positional[0])
-    entity.doc.set_field(positional[1], text)
-    return _saved(root, entity, "{} {} is now {}".format(entity.slug, positional[1], text))
+    field = positional[1]
+    value = _split_list(text) if field in SET_LISTS else text
+    entity.doc.set_field(field, value)
+    shown = ", ".join(value) if isinstance(value, list) else value
+    return _saved(root, entity, "{} {} is now {}".format(entity.slug, field, shown))
 
 
 @verb("note", "add", needs_text=True, arity=(0, 1), allowed_flags=("tag",),
@@ -476,9 +494,14 @@ def _note_list(root, positional, flags, text):
     """R4.6: every unprocessed note. `--type` narrows; `--unprocessed` is not a
     flag because every note in inbox.md is unprocessed by definition (R4.6.4)."""
     wanted = flags.get("type")
-    if wanted and wanted not in NOTE_TYPES:
+    if wanted and wanted not in NOTE_TYPES + LEGACY_NOTE_TYPES:
+        # The legacy types are accepted HERE and refused by `note add`: R4.6.2
+        # keeps an old inbox's `action`/`decision` notes readable, and this is
+        # the only command that can find them.
         raise VerbError(
-            "{!r} is not a note type. One of: {}".format(wanted, ", ".join(NOTE_TYPES))
+            "{!r} is not a note type. One of: {} (or {}, readable in an old "
+            "inbox but never written)".format(
+                wanted, ", ".join(NOTE_TYPES), ", ".join(LEGACY_NOTE_TYPES))
         )
     notes = [n for n in load_notes(Path(root) / "inbox.md")
              if wanted is None or n.type == wanted]
@@ -1204,14 +1227,22 @@ def _resolve_against(root, ref: str, kinds, projected):
     for `--dry-run`'s benefit (fix round 1, L5) - does not have to resolve
     the same reference a second time.
     """
-    candidates = list(_candidates(root, kinds))
-    for slug, (lineno, kind, title) in projected.items():
-        if not kinds or kind in kinds:
-            candidates.append(
-                _ProjectedEntity(slug=slug, title=title, kind=kind,
-                                  pending_line=lineno)
-            )
-    return resolve_among(candidates, ref)
+    def stand_ins(for_kinds):
+        return [_ProjectedEntity(slug=slug, title=title, kind=kind,
+                                 pending_line=lineno)
+                for slug, (lineno, kind, title) in projected.items()
+                if not for_kinds or kind in for_kinds]
+
+    candidates = list(_candidates(root, kinds)) + stand_ins(kinds)
+    try:
+        return resolve_among(candidates, ref)
+    except UnknownReference as exc:
+        # The same refusal `resolve` makes in a shell: a reference of the wrong
+        # KIND is refused for what it is, not reported as matching nothing
+        # (R6.5.1 - `apply` and the shell say the same thing about one line).
+        raise refused_for_its_kind(
+            candidates, list(_candidates(root, None)) + stand_ins(None),
+            ref, kinds, exc) from None
 
 
 def _line_creating(root, text: str, after_lineno: int, ref: str, kinds):

@@ -298,12 +298,17 @@ def test_line_creating_does_not_recommend_a_slug_already_on_disk(brain_repo):
     stakeholder directly (pass 1, exact slug) and never reaches the
     projected-slug path this test exercises at all - `link`'s extra_refs is
     the only site left where `ann` (a stakeholder) is EXCLUDED from the
-    candidate list by kind, which is what makes it "matches nothing" in the
-    first place.
+    candidate list by kind, which is what makes it fail to resolve here.
+
+    What it fails WITH changed with review finding 4: the reference is refused
+    for its kind rather than reported as matching nothing (`resolve` and
+    `_resolve_against` both call `refused_for_its_kind`). The M3 guard is
+    unaffected and still exercised - `_line_creating` is consulted, finds line
+    2 would create `ann`, sees `ann` already on disk, and returns `None`.
 
     Red if `_line_creating` does not check the projected slug against disk:
-    the message would then say "line 2 creates it" instead of falling back to
-    the plain "matches nothing" `UnknownReference`.
+    the message would then say "line 2 creates it" instead of the refusal
+    `_resolve_against` raised.
     """
     text = "link acme-migration ann\nnew project -- Ann\n"
     with pytest.raises(BatchError) as excinfo:
@@ -311,7 +316,7 @@ def test_line_creating_does_not_recommend_a_slug_already_on_disk(brain_repo):
     assert excinfo.value.lineno == 1
     message = str(excinfo.value)
     assert "line 2" not in message
-    assert "matches nothing" in message
+    assert "'ann' is a stakeholder" in message
 
 
 def test_a_new_colliding_with_disk_names_the_colliding_kind(brain_repo):

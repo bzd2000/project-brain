@@ -175,18 +175,24 @@ def test_decide_on_a_stakeholder_is_a_dated_history_line_newest_first(brain_repo
 
 
 def test_decide_on_a_board_lands_in_todays_sitting(brain_repo):
-    """Mutation: call `add_bullet("Minutes", ...)` instead of `add_minute` -
-    no `### <today>` heading appears."""
+    """R4.5.2: the sitting heading carries the day, so the minute under it does
+    not repeat it - the fixture's own shape (`### 2026-08-20` / `- Approved the
+    phased cutover.`), and what `minutes add` will write in milestone 7.
+
+    Mutation: call `add_bullet("Minutes", ...)` instead of `add_minute` - no
+    `### <today>` heading appears. Second mutation: pass `_dated(text)` - the
+    day appears twice on one line."""
     path = brain_repo / "boards" / "arch-board.md"
     _run(brain_repo, "decide arch-board -- approved the phased cutover")
     _run(brain_repo, "decide arch-board -- terraform, formally")
     body = [_lines(path)[i] for i in _section(path, "Minutes")]
     i = body.index("### " + TODAY)
     assert body[i + 1:i + 3] == [
-        "- {} - approved the phased cutover".format(TODAY),
-        "- {} - terraform, formally".format(TODAY),
+        "- approved the phased cutover",
+        "- terraform, formally",
     ]
     assert body.count("### " + TODAY) == 1
+    assert TODAY not in " ".join(body[i + 1:i + 3]), "the sitting dates it, once"
 
 
 # ---- query ----------------------------------------------------------------
@@ -772,3 +778,87 @@ def test_a_verb_creates_the_section_a_tolerant_file_lacks(brain_repo, line, sect
     headings = [l[3:].strip() for l in lines if l.startswith("## ")]
     assert headings == [n for n in STAKEHOLDER_SECTIONS if n in headings], \
         "the new section is in canonical order (R4.2.1)"
+
+
+# ---- review findings 3, 4, 7: rulings recorded in the amendments doc -------
+
+def test_set_writes_a_list_valued_field_as_a_list(brain_repo):
+    """Finding 3. `set`'s value is free text (R6.0), but `tags` and `members`
+    are LISTS: written as a string, `Board.members` is a `str` and every reader
+    that iterates it walks characters. Slugs hold neither a space nor a comma,
+    so splitting on both is lossless.
+
+    Mutation: `set_field(field, text)` for every field - `members` becomes one
+    string and the digest renders it per character."""
+    path = brain_repo / "boards" / "arch-board.md"
+    _run(brain_repo, "set arch-board members -- ann bram cara")
+    assert Board(path).members == ["ann", "bram", "cara"]
+    assert "members: [ann, bram, cara]" in _lines(path)
+
+
+def test_set_a_list_field_takes_commas_or_spaces(brain_repo):
+    """Finding 3: the user types the list the way it reads. Mutation: split on
+    whitespace alone - the entries keep their commas."""
+    path = brain_repo / "projects" / "q4-budget.md"
+    _run(brain_repo, "set q4-budget tags -- internal, finance")
+    assert Project(path).tags == ["internal", "finance"]
+
+
+def test_a_hand_written_scalar_members_reads_as_one_member(brain_repo):
+    """Finding 3: the reader half. R4.2.4 loads `members: ann` as a `str`;
+    `Board.members` is a list like `tags` and `projects` are.
+
+    Mutation: `self.fm.get("members", []) or []` - `["a", "n", "n"]` by way of
+    every caller that iterates it."""
+    path = brain_repo / "boards" / "arch-board.md"
+    lines = _lines(path)
+    at = next(i for i, l in enumerate(lines) if l.startswith("members:"))
+    lines[at] = "members: ann"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert Board(path).members == ["ann"]
+
+
+def test_link_refuses_a_party_reference_for_what_it_is(brain_repo):
+    """Finding 4. `link`'s second positional is resolved with
+    `kinds=LINK_REF_KINDS`, so a stakeholder is filtered out of the candidate
+    list and the user was told `ann` "matches nothing" - of a name plainly on
+    disk. The kind filter stays (a PROJECTED slug of the wrong kind must not
+    match, which three batch tests pin); the message tells the truth.
+
+    Mutation: drop the refinement in `resolve` - "matches nothing" returns."""
+    with pytest.raises(UnknownReference) as excinfo:
+        _run(brain_repo, "link acme-migration ann")
+    message = str(excinfo.value)
+    assert "matches nothing" not in message
+    assert "is a stakeholder" in message
+    assert "program or project" in message
+
+
+def test_the_same_refusal_reaches_a_batch(brain_repo):
+    """Finding 4: `apply` and the shell say the same thing about the same line
+    (R6.5.1). Mutation: refine only in `resolve` and not in
+    `_resolve_against` - the batch keeps the old lie."""
+    with pytest.raises(c.BatchError) as excinfo:
+        c.validate_batch(brain_repo, "link acme-migration ann\n")
+    assert "is a stakeholder" in str(excinfo.value)
+
+
+def test_note_list_finds_a_legacy_type(brain_repo):
+    """Finding 7. `entities.py` keeps `action`/`decision` readable so an old
+    inbox loads (R4.6.2), and `note list --type` was the one command that could
+    find them - it refused. Mutation: validate against `NOTE_TYPES` alone."""
+    (brain_repo / "inbox.md").write_text(
+        "## n1 · 2026-09-01 10:00 · action\nchase finance\n", encoding="utf-8")
+    result = _run(brain_repo, "note list --type action")
+    assert [n["id"] for n in result.data] == ["n1"]
+
+
+def test_note_list_still_refuses_a_type_that_is_not_one(brain_repo):
+    """Finding 7: accepting the legacy names is not accepting anything.
+    Mutation: drop the check - `--type nonsense` would list nothing and say
+    "inbox is empty", which is a lie about the inbox."""
+    with pytest.raises(VerbError) as excinfo:
+        _run(brain_repo, "note list --type nonsense")
+    message = str(excinfo.value)
+    assert "note, meeting" in message
+    assert "action" in message, "the accepted legacy names are named too"

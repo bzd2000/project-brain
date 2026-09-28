@@ -55,6 +55,11 @@ def _describe(entity) -> str:
     return "{} (line {} of this batch)".format(entity.slug, pending)
 
 
+def _known(entities) -> str:
+    """The candidate list an "it is not here" message ends with."""
+    return ", ".join(sorted(e.slug for e in entities)[:8]) or "nothing"
+
+
 def _one(matches, ref, pass_name):
     if len(matches) == 1:
         return matches[0]
@@ -120,15 +125,55 @@ def resolve_among(entities, ref: str):
     if found is not None:
         return found
 
-    known = ", ".join(sorted(e.slug for e in entities)[:8]) or "nothing"
-    raise UnknownReference("{!r} matches nothing. Known: {}".format(ref, known))
+    raise UnknownReference("{!r} matches nothing. Known: {}".format(ref, _known(entities)))
+
+
+def _kinds_phrase(kinds) -> str:
+    names = list(kinds)
+    if len(names) == 1:
+        return names[0]
+    return "{} or {}".format(", ".join(names[:-1]), names[-1])
+
+
+def refused_for_its_kind(searched, all_candidates, ref: str, kinds, original):
+    """The exception to raise when a kind-filtered resolution found nothing.
+
+    `original` says "matches nothing", which is a lie when the reference names
+    something that IS there and is simply of another kind: `link acme-migration
+    ann` told the user `ann` matched nothing while listing candidates that did
+    not include the stakeholder called exactly that. The filter itself is
+    load-bearing - a slug a batch's own `new` line will create is only a
+    candidate for a reference of a matching kind - so what changes is the
+    message, not the candidate list.
+
+    Returns `original` unchanged whenever the wider search does not settle on
+    exactly one entity: R6.2 would rather report the narrow failure than invent
+    a second one.
+    """
+    if not kinds:
+        return original
+    try:
+        found = resolve_among(all_candidates, ref)
+    except (UnknownReference, AmbiguousReference):
+        return original
+    if found.kind in kinds:
+        return original
+    where = " (line {} of this batch)".format(found.pending_line) \
+        if getattr(found, "pending_line", None) else ""
+    return UnknownReference("{!r} is a {}{}, not a {}. Known: {}".format(
+        ref, found.kind, where, _kinds_phrase(kinds), _known(searched)))
 
 
 def resolve(root, ref: str, kinds=None):
     """Resolve `ref` to one entity from the tree, or raise (R6.2). The
     empty-after-normalise guard lives in `resolve_among` now, so every caller
     gets it, not just this one."""
-    return resolve_among(_candidates(root, kinds), ref)
+    searched = _candidates(root, kinds)
+    try:
+        return resolve_among(searched, ref)
+    except UnknownReference as exc:
+        raise refused_for_its_kind(
+            searched, _candidates(root, None), ref, kinds, exc) from None
 
 
 def resolve_action(project, ref: str):

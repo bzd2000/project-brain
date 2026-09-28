@@ -359,7 +359,10 @@ or free text where they don't. A board's interest set is the union of its
 `projects` and `tags` (R4.1).
 
 **R4.5.2** `## Minutes` is newest-first, one `###` per sitting. A processed
-meeting note targeting a board appends a sitting here.
+meeting note targeting a board appends a sitting here. The sitting heading
+carries the day, so **a minute under it is not dated again** (review, 2026-09-28):
+`decide <board>` writes `- <text>`, not `- <day> - <text>`, and `minutes add`
+(milestone 7) writes through the same shape.
 
 **R4.5.3** Boards and stakeholders are structurally the same shape — concerns
 /purpose, pending, next agenda, history/minutes — and share one agenda-building
@@ -394,6 +397,11 @@ record *how* the note was captured, not what it is.
 |---|---|---|
 | `note` | `i`, `brain note add` | one thought, a line or a few |
 | `meeting` | `o`, `brain note add meeting` | raw capture from a meeting. **May contain many items** |
+
+`action` and `decision` are read from an old inbox and never written. `note
+list --type` accepts them for that reason (review, 2026-09-28): it is the only
+command that can find such a note, and refusing the name there would hide
+notes the loader deliberately keeps. `note add` still refuses them.
 
 **What a note is — a log line, an action, a decision, a question, a new
 project — is decided by whoever processes it, never at capture** (vocabulary
@@ -615,7 +623,14 @@ agent had to learn and a user had to remember, and they are gone.
   A value is not enumerated, an integer or a flag, so R6.0 gives it no other
   place; the earlier `status set q4-budget active` was the exception. Field
   names are bare `key`s of the front matter; the entity's own title key
-  (`project:`, `stakeholder:`, …) is settable like any other.
+  (`project:`, `stakeholder:`, …) is settable like any other. A **list-valued**
+  field (`tags`, `members`) takes its entries on that one line, split on commas
+  or spaces - `set arch-board members -- ann bram cara` writes
+  `members: [ann, bram, cara]` (review, 2026-09-28). A slug holds neither
+  character, so the split is lossless; written as one string the field reads
+  back as a `str` and every caller that iterates it walks characters.
+  `projects:` and `program:` are not settable here at all - they are `link`'s,
+  which validates the other side (R4.1).
 - **There is no `file` verb.** The proposal had one — the note's line copied
   onto the target verbatim and the note dropped, in one batch line. It is
   `<verb> <target> -- <the note's words>` plus `note drop <id>`, which a batch
@@ -650,6 +665,14 @@ on failure with the reason on stderr. Machine-readable `--json` on every read ve
 title; unique slug prefix; unique normalised substring. **Ambiguity is an error
 listing the candidates, never a guess.** An action reference is a 1-based index
 into open actions or a substring matching exactly one.
+
+Where a site restricts the KIND it will resolve (`link`'s second name, the one
+such site left), a reference naming a real entity of another kind is **refused
+for its kind, not reported as matching nothing** (review, 2026-09-28) - `'ann'
+is a stakeholder, not a program or project`. The restriction itself stays: a
+slug one of a batch's own `new` lines will create is a candidate only for a
+reference of a matching kind (R6.5.1). `apply` and the shell word it
+identically.
 
 **R6.3 `brain context`** is what an agent reads instead of files:
 
