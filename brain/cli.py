@@ -40,11 +40,84 @@ def read_stdin_text() -> str:
     return sys.stdin.read()
 
 
+# How the table is grouped. A name missing from here is NOT dropped - it falls
+# into "other" below, so adding a verb can never silently remove it from the
+# help, and `test_help_lists_every_verb` walks the registry to prove it.
+_HELP_GROUPS = (
+    ("writing", [("new",), ("todo",), ("log",), ("decide",), ("query",),
+                 ("set",), ("link",)]),
+    ("notes", [("note", "add"), ("note", "list"), ("note", "show"),
+               ("note", "flag"), ("note", "drop")]),
+    ("reading", [("context",), ("search",), ("check",), ("build",)]),
+    ("the agent's queue", [("request", "add"), ("request", "list"),
+                           ("request", "done")]),
+    ("history", [("undo",)]),
+)
+
+
+def _verb_table() -> str:
+    """Every verb, for `--help`, a bare `brain` and `brain help`.
+
+    The complaint this answers: `--help` printed a usage line and a positional
+    called `rest`, while every refusal ended "Try `brain --help`" - a circle
+    with no verb in it. Built from `commands.USAGE`, whose keys a test holds
+    equal to the registry's, so it cannot go stale.
+
+    Two lines per verb - the shape, then the description indented under it -
+    because a shape like `note add [meeting] [--tag <slug>] -- <body>` plus a
+    description does not fit the 80 columns a terminal is allowed to be.
+    """
+    grouped = [name for _, names in _HELP_GROUPS for name in names]
+    leftover = [name for name in commands.USAGE if name not in grouped]
+    groups = list(_HELP_GROUPS)
+    if leftover:
+        groups.append(("other", leftover))
+    out = []
+    for title, names in groups:
+        out.append("{}:".format(title))
+        for name in names:
+            usage, desc = commands.USAGE[name]
+            out.append("  " + usage)
+            out.extend("      " + line for line in desc.split("\n"))
+        out.append("")
+    out.append("getting in and out:")
+    for usage, desc in commands.FRONT_DOOR:
+        out.append("  " + usage)
+        out.extend("      " + line for line in desc.split("\n"))
+    out.append("")
+    out.append("Free text is always last and always after ` -- `:")
+    out.append("  brain todo acme-portal -- draft the kickoff deck")
+    out.append("The brain acted on is --root, then $BRAIN_ROOT, then the nearest")
+    out.append("ancestor holding inbox.md.")
+    return "\n".join(out)
+
+
+def _help(argv) -> int:
+    """`brain help` / `brain help <verb>`. Answered before root discovery, like
+    `init`: a user who has not run `brain init` yet is exactly the user who
+    needs it."""
+    if not argv:
+        sys.stdout.write(_verb_table() + "\n")
+        return 0
+    name = tuple(argv)
+    while name and name not in commands.USAGE:
+        name = name[:-1]
+    if not name:
+        raise VerbError(
+            "no verb {!r}. `brain help` lists them.".format(" ".join(argv))
+        )
+    usage, desc = commands.USAGE[name]
+    sys.stdout.write("{}\n  {}\n".format(usage, desc))
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="brain",
         description="A markdown knowledge base. `brain` is the only thing that "
                     "writes (R3.1).",
+        epilog=_verb_table(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--root", help="the brain to act on (R4.0)")
     parser.add_argument(
@@ -59,6 +132,9 @@ def main(argv=None) -> int:
         return 2
 
     try:
+        if args.rest[0] == "help":
+            return _help(args.rest[1:])
+
         if args.rest[0] == "init":
             explicit = args.rest[1] if len(args.rest) > 1 else None
             if explicit and args.root:

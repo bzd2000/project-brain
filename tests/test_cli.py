@@ -260,3 +260,61 @@ def test_apply_dash_f_non_utf8_file_is_refused_not_a_traceback(brain_repo, tmp_p
     assert "brain:" in err
     assert str(batch_file) in err
     assert "UTF-8" in err
+
+
+# -- discovery: `--help` lists the verbs, `help <verb>` explains one ---------
+
+def test_help_lists_every_verb(capsys):
+    """The complaint that produced this: `brain --help` printed a usage line, a
+    positional called `rest` and nothing else, while every refusal said "Try
+    `brain --help`" - a circle. Mutation: drop the epilog."""
+    from brain.commands import VERBS
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--help"])          # argparse's own `-h` exits, as it always has
+    assert excinfo.value.code == 0
+    out = capsys.readouterr().out
+    for name in VERBS:
+        assert " ".join(name) in out, name
+    assert " -- " in out, "the separator R6.4 requires is shown"
+
+
+def test_a_bare_brain_lists_the_verbs_too(capsys):
+    """Typing the program's name alone is the other thing a new user does.
+    Mutation: keep `print_help()` without the verb table."""
+    assert main([]) == 2
+    out = capsys.readouterr().out
+    assert "todo" in out and "note add" in out
+
+
+def test_help_explains_one_verb(capsys):
+    """`brain help todo`. Mutation: ignore the argument and print everything -
+    the one-verb form is what a user reaches for mid-line."""
+    assert main(["help", "todo"]) == 0
+    out = capsys.readouterr().out
+    assert "todo" in out and "done" in out
+    assert "note add" not in out, "one verb, not the table"
+
+
+def test_help_needs_no_brain_on_disk(tmp_path, monkeypatch, capsys):
+    """`help` answers before root discovery, like `init` - a user who has not
+    run `brain init` yet is exactly the user who needs it. Mutation: handle
+    `help` after `find_root`, and this raises instead."""
+    monkeypatch.chdir(tmp_path)
+    assert main(["help"]) == 0
+    assert "todo" in capsys.readouterr().out
+
+
+def test_help_refuses_a_verb_that_is_not_one(capsys):
+    """Mutation: fall through to the table - a typo would then look like it
+    worked. A tombstone keeps its own message (R6.0b)."""
+    assert main(["help", "nonsense"]) == 1
+    assert "nonsense" in capsys.readouterr().err
+
+
+def test_every_verb_has_a_usage_line(capsys):
+    """The table and the registry cannot drift: this fails the moment a verb is
+    added without a usage line, or a usage line outlives its verb."""
+    from brain.commands import USAGE, VERBS
+
+    assert set(USAGE) == set(VERBS)

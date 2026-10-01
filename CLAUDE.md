@@ -36,8 +36,11 @@ consumer - build it there against a measured need, or not at all.
 Milestone 5 added `brain/tui.py` — the only module that imports `textual`
 (R3.3). Three modes, the modeline as the whole application state, capture via
 `note add -f -` on stdin, `:` COMMAND mode through the same grammar as the
-shell, `x`/`e`/`u`/`Q`/`/`/`?`/`ZZ`, mtime polling; `t`, `d`, `s`, `H` were
-removed in 5b (R10.7b); `i` on a flagged note replies (R10.13a). **Every write
+shell, `x`/`e`/`u`/`Q`/`/`/`?`/`ZZ`, mtime polling; `H` was removed in 5b
+(R10.7b/R10.15); `i` on a flagged note replies (R10.13a). The week of use then
+put `t`/`d`/`s` back, acting on the selection (R10.7c), added `Ctrl-W` as the one
+chord (R10.2a) and made the verbs discoverable from `brain --help`, `brain help
+<verb>` and `?`. **Every write
 goes through one function, `BrainApp.run_brain`, which spawns `brain`; the
 TUI never touches a `Doc`.** Deliberately not built, each with a spec
 requirement saying why: raw-source *save* (R10.11b — needs `brain check`),
@@ -160,8 +163,9 @@ Violating any of these silently breaks the design's economics or its trust model
    — the file still loads, reports `unknown`, and is flagged by `brain check`.
    Loading never raises (R4.2.4).
 8. **Ambiguity is an error listing candidates, never a guess** (R6.2, A5).
-9. **No Ctrl chords in the TUI** except `Ctrl+R` for redo (R10.2, R10.7, A11e).
-   A feature that "needs" a chord needs a letter or a `:` command instead.
+9. **One Ctrl chord in the TUI**: `Ctrl-W`, Neovim's window prefix (R10.2a,
+   A11e). `Ctrl+R` is unbound (R10.7a). A feature that "needs" another chord
+   needs a letter or a `:` command instead.
 10. **The renderer hides nothing.** Content it has no opinion about is shown as
     dimmed source, never dropped or reformatted (R10.12, A11d).
 11. **Git is narrow.** Stage only entity paths and `inbox.md`, always by explicit

@@ -438,3 +438,56 @@ Findings not from a ruling, worth keeping in view: `brain check` is
 authorship-only until milestone 6, so it reported nothing about front matter it
 could no longer parse. The corruption was visible only by reloading the file.
 That is the gap `check --fix` closes.
+
+## The week of use answers back (2026-10-01)
+
+§12 said to stop after milestone 5 and use the TUI for a week with no agent.
+A day of that produced `projects/ia-platform.md` — created from the TUI, five
+empty sections — and then silence, followed by *"actually the cli is unusable,
+no good UX"*. Three findings, two of them reversals of rulings made two weeks
+earlier. The direction of R10.7b is not reversed: the LLM is still what turns
+captured notes into filed entries. What is reversed is the decision to ship the
+human layer without the keys, one milestone before the machine layer exists.
+
+**1. Discovery was circular, and that is a plain defect.** `brain --help`
+printed a usage line, a positional called `rest`, and no verb at all — while
+every refusal ended "Try `brain --help`". Inside the TUI, `?`'s COMMAND section
+listed five examples and `:new` was not among them, so the first thing anyone
+does was undiscoverable; the four long examples it did list rendered as
+`:set acme status -- blockedset a field`, because a key wider than the 16-cell
+column pads to nothing. Fixed: `commands.USAGE`, one line per verb beside the
+registry with a test holding their keys equal, printed by `--help`, a bare
+`brain` and a new `brain help [<verb>]` (answered before root discovery, like
+`init`, because the user who has not run `brain init` is exactly the user who
+needs it); `?` gained `:new`, the fact that Tab completes verbs then slugs, and
+the verb list itself; a key that overflows the column now takes its own line.
+No ruling touched.
+
+**2. `t`, `d` and `s` come back (R10.7c), reversing R10.7b.** R10.7b removed
+them because each "asked the human to classify or to pick a field, which is the
+LLM's job", citing that "in an hour of use none was pressed". An hour of use
+with no entities in the tree could not press them; a day of use with one
+project found there was no way to fill it but to type the whole verb at `:`.
+They take their target from the selection, which the modeline already shows, so
+nothing is classified and nothing is guessed — and each is still one
+`run_brain` call, so a key remains a shorter way to type a verb, never a second
+way to write a file (R3.1). Cost if wrong: three keys to unbind, and the
+classification objection returns the day `process inbox` is good enough to make
+them redundant. `H` stays out.
+
+**3. `Ctrl-W` is now the one chord (R10.2a), reversing R10.2.** The request was
+specific — *"ctrl+w should go to [the tree], is neovim"* — and R10.2's own
+escape clause ("it needs a letter or a `:` command instead") had no letter left
+to offer: `h`/`l` collapse and expand, and `Tab` went one way only. The chord
+allowed is the one a vim user already knows rather than one invented here, and
+it is a prefix on the `Z` pattern: `Ctrl-W` alone moves nothing, and any other
+action forgets it, so a stray press cannot turn a later `l` into a focus jump.
+`Tab` now toggles. Cost if wrong: "no chords to learn" was a clean promise, and
+it is now "one chord, the one you already know" — which is weaker, and the
+subtitle of `?` had to stop claiming otherwise.
+
+Writing A11e's walk as the amendment demanded turned up a smaller thing worth
+recording: the claim "no key binding **anywhere** in the application uses Ctrl"
+was never true. Textual's own `Screen` and `ScrollView` ship `ctrl+c`,
+`ctrl+pageup` and `ctrl+pagedown`, and `inherit_bindings=False` drops only
+`App`'s. The honest promise, now asserted, is about the key map written here.

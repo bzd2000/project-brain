@@ -344,8 +344,10 @@ def test_run_brain_is_the_only_subprocess_and_nothing_else_writes():
     assert re.search(r"from \.model import[^\n]*\bDoc\b", source) is None
     assert re.search(r"from \.(git|lock) import|from \. import[^\n]*\b(git|lock)\b"
                      r"|import brain\.(git|lock)", source) is None
-    assert re.findall(r"from \.commands import ([^\n]*)", source) == ["VERBS  # a read of the registry, not a call"], \
-        "tui.py reads the verb registry for Tab completion and nothing else from commands"
+    assert sorted(re.findall(r"from \.commands import ([^\n]*)", source)) == [
+        "USAGE      # a read of the registry, not a call",
+        "VERBS  # a read of the registry, not a call",
+    ], "tui.py reads the verb registry - Tab completion and the `?` key map - and nothing else from commands"
     for forbidden in (".save(", "Doc(", "git.commit", "execute(", "apply_batch(", "os.system", "os.popen"):
         assert forbidden not in source, forbidden
 
@@ -619,17 +621,30 @@ async def test_ctrl_q_and_ctrl_c_do_not_quit(brain_repo):
         assert pilot.app.is_running
 
 
-def test_no_binding_anywhere_uses_a_ctrl_modifier():
-    """A11e, walked exhaustively rather than sampled: every key `BrainApp`
-    and every `Screen` it defines registers, none may contain `ctrl+` -
-    R10.7a leaves `Ctrl+R` unbound rather than special-cased, so the rule
-    is now absolute, not "all but one"."""
+def test_ctrl_w_is_the_only_chord_declared_anywhere():
+    """A11e, walked exhaustively rather than sampled: every key `BrainApp` and
+    every `Screen` it defines registers.
+
+    R10.2a added the single exception this asserts - `Ctrl-W`, Neovim's window
+    prefix, because it is the one chord a vim user already has in their fingers
+    and R10.2's own escape clause ("it needs a letter or a `:` command instead")
+    had no letter to offer for "the other pane". `Ctrl+R` is still unbound
+    rather than special-cased (R10.7a), so the set is exactly one.
+
+    Textual's own widgets ship `ctrl+c`/`ctrl+pageup`/`ctrl+pagedown` through
+    `Screen` and `ScrollView`; `inherit_bindings=False` drops only `App`'s, so
+    the promise this test can make is about the key map written HERE - which is
+    what a user has to learn. `ctrl+c` not quitting is proven separately by
+    `test_ctrl_q_and_ctrl_c_do_not_quit`."""
     from brain.tui import BrainApp, CaptureScreen, HelpScreen
+    chords = set()
     for cls in (BrainApp, CaptureScreen, HelpScreen):
         for binding in cls.__dict__.get("BINDINGS", []):
             key = binding.key if hasattr(binding, "key") else binding[0]
             for part in key.split(","):
-                assert "ctrl+" not in part, "{}: {!r}".format(cls.__name__, key)
+                if "ctrl+" in part:
+                    chords.add(part)
+    assert chords == {"ctrl+w"}, chords
 
 
 async def test_the_detail_cursor_survives_a_write(brain_repo, monkeypatch):
@@ -862,10 +877,15 @@ async def test_a_note_captured_on_a_group_header_or_a_note_has_no_ref(brain_repo
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", ["t", "d", "s", "H"])
+@pytest.mark.parametrize("key", ["H"])
 async def test_removed_keys_do_nothing_and_start_no_process(brain_repo, monkeypatch, key):
-    """R10.7b/R10.15: unbound, not bound to a message. Mutation: leave the
-    `d` binding in BINDINGS - `sent` is non-empty or the mode changes."""
+    """R10.15: unbound, not bound to a message. Mutation: bind `H` to anything -
+    `sent` is non-empty or the mode changes.
+
+    `t`, `d` and `s` were in this list until R10.7c put them back on the
+    evidence of the week of use R10.7b itself prescribed: a project with five
+    empty sections and no key able to fill one. `H` stays out - it asked the
+    human to pick a history window, which is a question the digest answers."""
     sent = []
     monkeypatch.setattr(BrainApp, "run_brain",
                         lambda self, argv, stdin=None: (sent.append(argv), (0, "ok", ""))[1])
@@ -924,3 +944,295 @@ async def test_no_type_chip_anywhere(brain_repo):
         await pilot.press("i")
         assert " NOTE " in _pane_head(pilot), "the pane says what it is"
         assert " NOTE " not in _modeline(pilot)
+
+
+# -- discovery: the key map answers "what can I type?" (the week-of-use
+# complaint: `?` showed five `:` examples and `new` was not one of them)
+
+@pytest.mark.asyncio
+async def test_the_help_screen_shows_how_to_make_things_and_that_tab_completes(brain_repo):
+    """`?` is the only place a user looks, and `:new` - the first thing anyone
+    does - was missing from it, as was the fact that Tab completes a verb and
+    then a slug. Mutation: drop either row from HELP_SECTIONS."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("?")
+        body = str(pilot.app.screen.query_one("#help-body").render())
+        assert ":new" in body, "creating an entity is discoverable from the key map"
+        assert "Tab" in body and "complete" in body
+
+
+@pytest.mark.asyncio
+async def test_the_help_screen_names_every_verb(brain_repo):
+    """"Which commands are available" has to be answerable without leaving the
+    app. One wrapped line, built from the registry, so a new verb appears in it
+    for free. Mutation: hard-code the list and it drifts."""
+    from brain.commands import USAGE
+
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("?")
+        body = str(pilot.app.screen.query_one("#help-body").render())
+        for name in USAGE:
+            assert name[0] in body, name
+
+
+@pytest.mark.asyncio
+async def test_a_long_key_does_not_collide_with_its_description(brain_repo):
+    """11-help.png puts the description at cell 16, but the COMMAND examples are
+    longer than that, and `"{:<16}".format(key)` pads nothing when the key
+    already overflows - so the map read `:set acme status -- blockedset a
+    field`. A key that wide takes the line to itself.
+
+    Mutation: pad with `ljust(16)` alone and the words touch again."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("?")
+        body = str(pilot.app.screen.query_one("#help-body").render())
+        for key, desc in ((":set acme status -- blocked", "set a field"),
+                          (":new project -- Acme portal", "create an entity")):
+            assert key + desc not in body, key
+            assert key in body and desc in body
+
+
+# -- R10.7c: `t`, `d` and `s` act on the selection (reverses R10.7b) ---------
+#
+# The week of use R10.7b itself prescribed produced the evidence against it: a
+# project created in the TUI, five empty sections, and no key that could put
+# anything in any of them. Every one of these is still one `run_brain` call
+# whose argv a test asserts - the keys are a shorter way to type a verb, never
+# a second way to write a file (R3.1).
+
+async def _select(pilot, slug: str):
+    """Move the tree cursor onto the entity called `slug`, wherever it sits."""
+    tree = pilot.app.query_one("#tree")
+
+    def walk(node):
+        for child in node.children:
+            yield child
+            yield from walk(child)
+    for node in walk(tree.root):
+        if node.data is not None and getattr(node.data, "slug", None) == slug:
+            if node.parent is not None and not node.parent.is_expanded:
+                node.parent.expand()
+            tree.move_cursor(node)
+            await pilot.pause()
+            return
+    raise AssertionError("no tree node for {!r}".format(slug))
+
+
+@pytest.mark.asyncio
+async def test_t_adds_an_action_to_the_selected_project(brain_repo, monkeypatch):
+    """`t` prompts and sends `todo <selected> -- <text>`. The target is the
+    selection, which the modeline already shows, so it is never typed and never
+    guessed. Mutation: send `positional[0]` from nothing - there is no target."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "added", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await _select(pilot, "q4-budget")
+        await pilot.press("t")
+        assert pilot.app.mode == "INSERT"
+        assert "q4-budget" in _modeline(pilot), "the prompt names what it will write to"
+        await pilot.press(*"draft the kickoff deck", "enter")
+        assert pilot.app.mode == "NORMAL"
+    assert sent == [["todo", "q4-budget", "--", "draft the kickoff deck"]]
+
+
+@pytest.mark.asyncio
+async def test_t_on_a_person_is_refused_by_name(brain_repo, monkeypatch):
+    """R6.0a: `todo` is a project's verb, and the refusal names the verb to use
+    instead - the same words `brain` itself would use, before any process is
+    spawned. Mutation: send it anyway and let `brain` refuse - a wasted
+    subprocess and a worse message."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await _select(pilot, "ann")
+        await pilot.press("t")
+        assert pilot.app.mode == "NORMAL"
+        assert "log" in _modeline(pilot)
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_d_records_a_decision_on_any_kind(brain_repo, monkeypatch):
+    """`decide` applies to all four kinds (R6.0a), so `d` does too - on a person
+    it is their `## History`. Mutation: restrict `d` to projects."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "ok", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await _select(pilot, "ann")
+        await pilot.press("d", *"she will chase finance", "enter")
+    assert sent == [["decide", "ann", "--", "she will chase finance"]]
+
+
+@pytest.mark.asyncio
+async def test_s_sets_the_status_of_the_selection(brain_repo, monkeypatch):
+    """`s` sends `set <selected> status -- <value>`. The prompt names the values
+    (all six of `STATUSES`) rather than making the user remember them. Mutation: drop the
+    choices from the prompt - the key then asks an unanswerable question."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "ok", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await _select(pilot, "q4-budget")
+        await pilot.press("s")
+        line = _modeline(pilot)
+        assert "active" in line and "blocked" in line
+        await pilot.press(*"active", "enter")
+    assert sent == [["set", "q4-budget", "status", "--", "active"]]
+
+
+@pytest.mark.asyncio
+async def test_s_on_a_person_is_refused_by_name(brain_repo, monkeypatch):
+    """A stakeholder has no `status:` - R6.0a's table has the field on a project
+    or a program. Mutation: allow every kind and `brain` writes a field nothing
+    reads."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await _select(pilot, "ann")
+        await pilot.press("s")
+        assert pilot.app.mode == "NORMAL"
+        assert "status" in _modeline(pilot)
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_an_acting_key_on_a_note_or_a_header_says_what_it_needs(brain_repo, monkeypatch):
+    """A note is not an entity and a group header is not selected at all
+    (`capture_ref`'s rule). Mutation: `self.selected.slug` and it is an
+    AttributeError in a key handler (R10.19)."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "", ""))[1])
+    from brain import commands as c
+    from brain import grammar as gr
+    c.execute(brain_repo, gr.parse_line("note add -- a captured thought"))
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await _select_note(pilot, "n1")
+        for key in ("t", "d", "s"):
+            await pilot.press(key)
+            assert pilot.app.is_running
+            assert pilot.app.mode == "NORMAL"
+            assert "select" in _modeline(pilot).lower()
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_an_empty_prompt_cancels_an_acting_key(brain_repo, monkeypatch):
+    """R10.13's rule for every prompt: pressing the key, thinking better of it
+    and hitting ⏎ on nothing writes nothing. Mutation: send the empty text."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await _select(pilot, "q4-budget")
+        await pilot.press("t", "enter")
+        assert pilot.app.mode == "NORMAL"
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_the_key_map_shows_the_acting_keys(brain_repo):
+    """A key nothing documents is a key nobody presses - which is how `t`, `d`
+    and `s` came to be removed in the first place (R10.7b cited "in an hour of
+    use none was pressed"). Mutation: add a binding without its help row."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("?")
+        body = str(pilot.app.screen.query_one("#help-body").render())
+        for key, word in (("t", "action"), ("d", "decision"), ("s", "status")):
+            assert word in body, key
+
+
+# -- R10.2a: Ctrl+W, Neovim's window prefix (the one chord) ------------------
+
+def _focused_id(pilot) -> str:
+    node = pilot.app.focused
+    return "" if node is None else (node.id or "")
+
+
+@pytest.mark.asyncio
+async def test_ctrl_w_l_and_h_move_between_the_panes(brain_repo):
+    """R10.2a: `Ctrl-W` then a direction, exactly as Neovim moves between
+    windows - the one chord in the application, and the reason it is allowed is
+    that it is the one chord a vim user already has in their fingers.
+
+    Mutation: bind `ctrl+w` to the move itself - `Ctrl-W` alone would then jump
+    the focus and the direction key would act on the tree."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        assert _focused_id(pilot) == "tree"
+        await pilot.press("ctrl+w")
+        assert _focused_id(pilot) == "tree", "the prefix alone moves nothing"
+        await pilot.press("l")
+        assert _focused_id(pilot) == "detail"
+        await pilot.press("ctrl+w", "h")
+        assert _focused_id(pilot) == "tree"
+
+
+@pytest.mark.asyncio
+async def test_ctrl_w_w_cycles(brain_repo):
+    """`Ctrl-W w` cycles, as in Neovim. Mutation: make `w` a plain binding and
+    it fires in NORMAL with no prefix, stealing a letter R10.2 keeps free."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("ctrl+w", "w")
+        assert _focused_id(pilot) == "detail"
+        await pilot.press("ctrl+w", "w")
+        assert _focused_id(pilot) == "tree"
+
+
+@pytest.mark.asyncio
+async def test_w_alone_is_still_not_a_key(brain_repo, monkeypatch):
+    """The prefix must not leak: `w` without `Ctrl-W` does nothing at all, and
+    `h`/`l` keep collapsing and expanding. Mutation: drop the `check_action`
+    gate on `window_cycle`."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("w")
+        assert _focused_id(pilot) == "tree"
+        assert pilot.app.mode == "NORMAL"
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_stray_ctrl_w_is_forgotten(brain_repo):
+    """Like `Z`: a prefix followed by anything that is not a direction is not
+    remembered, so a later `l` expands a program instead of moving focus.
+
+    Mutation: leave `_pending_w` set and the next unrelated `l` jumps the
+    focus - the bug `_pending_z` already taught this codebase."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("ctrl+w", "g")      # g is top-of-tree, not a direction
+        assert _focused_id(pilot) == "tree"
+        assert pilot.app._pending_w is False
+        await pilot.press("l")                # expands, does not move focus
+        assert _focused_id(pilot) == "tree"
+
+
+@pytest.mark.asyncio
+async def test_tab_toggles_focus_both_ways(brain_repo):
+    """`Tab` was one-way - into the detail pane, with Esc the only way back.
+    Mutation: `focus()` the detail pane unconditionally."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("tab")
+        assert _focused_id(pilot) == "detail"
+        await pilot.press("tab")
+        assert _focused_id(pilot) == "tree"
+
+
+@pytest.mark.asyncio
+async def test_the_key_map_admits_the_one_chord(brain_repo):
+    """The subtitle said "No chords to learn", which R10.2a made untrue. A key
+    map that lies about the key map is worse than one that is incomplete.
+
+    Mutation: leave the old subtitle - this fails, as it should."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("?")
+        screen = pilot.app.screen
+        subtitle = str(screen.query_one("#help-subtitle").render())
+        assert "No chords" not in subtitle
+        assert "Ctrl-W" in subtitle
+        assert "Ctrl-W" in str(screen.query_one("#help-body").render())

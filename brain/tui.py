@@ -545,12 +545,28 @@ class CaptureScreen(Screen):
 
 HELP_KEY_COLUMN = 16   # 11-help.png: the key, then the description at cell 16
 
+def _command_verbs() -> str:
+    """Every verb name `:` accepts, as one wrapped line - the other half of the
+    week-of-use complaint ("which commands are available"). Read from the
+    registry, so a verb added later shows up here without anyone remembering
+    to. The leading words only: `note add` and `note drop` are both `note`,
+    and Tab completes the rest."""
+    from .commands import USAGE      # a read of the registry, not a call
+
+    seen = []
+    for name in USAGE:
+        if name[0] not in seen:
+            seen.append(name[0])
+    return "any of: " + " ".join(seen)
+
+
 HELP_SECTIONS = [
     ("NORMAL — MOVING", [
         ("j k", "move the selection"),
         ("h l", "collapse / expand a program"),
         ("g G", "top / bottom"),
-        ("Tab", "focus the detail pane, then j k within it"),
+        ("Tab", "the other pane, and back"),
+        ("Ctrl-W h l w", "the other pane, as in vim"),
         ("/ n N", "search · next · previous match"),
     ]),
     ("NORMAL — CAPTURE", [
@@ -558,6 +574,9 @@ HELP_SECTIONS = [
         ("o", "the same, full-screen, for a meeting's worth"),
     ]),
     ("NORMAL — ACTING", [
+        ("t", "add an action to the selected project"),
+        ("d", "record a decision on the selection"),
+        ("s", "set the selection's status"),
         ("e", "edit the focused action, in place"),
         ("E", "show the file as raw source"),
         ("x", "tick the focused action"),
@@ -572,11 +591,14 @@ HELP_SECTIONS = [
         ("⏎", "commit the line edit, or send the prompt"),
     ]),
     ("COMMAND :", [
+        (":new project -- Acme portal", "create an entity"),
         (":log ann -- …", "a log line, or a pending item on a person"),
         (":todo acme done 2", "tick the second open action"),
         (":set acme status -- blocked", "set a field"),
         (":link acme cloud-migration", "put a project in a program"),
         (":note drop n9", "the note is processed - git keeps it"),
+        ("Tab", "completes the verb, then the slug"),
+        ("", _command_verbs()),
     ]),
 ]
 
@@ -602,6 +624,14 @@ def _help_column(names, width: int = 10_000) -> Text:
         first = False
         t.append(title + "\n", style=DIM)
         for key, desc in rows:
+            if len(key) >= HELP_KEY_COLUMN:
+                # The COMMAND examples are longer than the key column, and a
+                # `{:<16}` pads nothing once the key already overflows it - the
+                # map read `:set acme status -- blockedset a field`. A key that
+                # wide takes the line to itself and the description sits under
+                # it, at the column every other description is in.
+                t.append(key + "\n", style=TEAL)
+                key = ""
             row = Text()
             row.append("{:<{w}}".format(key, w=HELP_KEY_COLUMN), style=TEAL)
             row.append(desc, style=MUTED)
@@ -635,7 +665,9 @@ def _help_subtitle() -> Text:
     t.append("i", style=TEAL)
     t.append(" types; ", style=MUTED)
     t.append("Esc", style=TEAL)
-    t.append(" always comes back. No chords to learn.", style=MUTED)
+    t.append(" always comes back. One chord: ", style=MUTED)
+    t.append("Ctrl-W", style=TEAL)
+    t.append(", as in vim.", style=MUTED)
     return t
 
 
@@ -1865,6 +1897,14 @@ class BrainApp(App, inherit_bindings=False):
         # R10.7b/R10.15: `t`, `d`, `s`, `H` are unbound - each asked the human
         # to classify or pick a field the LLM should decide instead (A22).
         # Task 4: acting keys, search, help, quit (R10.3's "acting" table).
+        # R10.7c: `t`, `d` and `s` are back, acting on the SELECTION - the
+        # week of use R10.7b prescribed found a project with five empty
+        # sections and no key able to fill any of them. Each is one `run_brain`
+        # call, so they are a shorter way to type a verb and never a second way
+        # to write a file (R3.1).
+        Binding("t", "add_todo", "todo", show=False),
+        Binding("d", "add_decision", "decide", show=False),
+        Binding("s", "set_status", "status", show=False),
         Binding("e", "edit_line", "edit", show=False),
         Binding("E", "toggle_raw", "raw", show=False),
         Binding("x", "tick", "done", show=False),
@@ -1888,6 +1928,14 @@ class BrainApp(App, inherit_bindings=False):
         Binding("colon", "command", "command", show=False),
         Binding("tab", "tab", "detail", show=False, priority=True),
         Binding("escape", "escape", "normal", show=False, priority=True),
+        # R10.2a: the one chord. `Ctrl-W` is Neovim's window prefix and the
+        # only chord a vim user already has in their fingers - `Ctrl-W h/l/w`
+        # moves between the two panes. It is a PREFIX, like `Z`: pressing it
+        # alone moves nothing, and `check_action` forgets it the moment any
+        # other action runs. `w` is a priority binding gated on the prefix, so
+        # a bare `w` is still not a key (R10.2's "every letter available").
+        Binding("ctrl+w", "window_prefix", "window", show=False, priority=True),
+        Binding("w", "window_cycle", "cycle", show=False, priority=True),
     ]
 
     def __init__(self, root, **kwargs):
@@ -1929,6 +1977,7 @@ class BrainApp(App, inherit_bindings=False):
         self.search_query: str = ""
         self.search_cursor: int = 0
         self._pending_z = False   # ZZ: true right after a lone Z (R10.3's table)
+        self._pending_w = False   # Ctrl-W: true right after the window prefix (R10.2a)
 
     # -- the one subprocess ------------------------------------------
     def run_brain(self, argv, stdin=None):
@@ -1982,6 +2031,16 @@ class BrainApp(App, inherit_bindings=False):
         """
         if action != "maybe_quit":
             self._pending_z = False
+        # R10.2a: the window prefix is forgotten by any action that is not a
+        # direction, the same rule `_pending_z` follows - otherwise a stray
+        # `Ctrl-W` would turn a later, unrelated `l` into a focus jump.
+        if action not in ("window_prefix", "window_cycle", "nav_collapse",
+                          "nav_expand", "nav_down", "nav_up"):
+            self._pending_w = False
+        if action == "window_cycle" and not self._pending_w:
+            # `w` is bound only so the prefix can reach it. On its own it is
+            # not a key, and saying so here keeps the letter free (R10.2).
+            return False
         if action in ("escape", "tab"):
             return True
         if self.mode != NORMAL or isinstance(self.screen, CaptureScreen):
@@ -2522,6 +2581,12 @@ class BrainApp(App, inherit_bindings=False):
         if self.mode == COMMAND:
             self._complete()
             return
+        # R10.2a: Tab toggles. It used to be one-way, with Esc the only way
+        # back to the tree, which reads as a dead end rather than a split.
+        if self._detail_has_focus():
+            self.query_one("#tree", Tree).focus()
+            self._render_detail()
+            return
         self.query_one("#detail", DetailPane).focus()
         if self._detail_cursor is None and self._detail_lines:
             self._detail_cursor = 0
@@ -2606,6 +2671,12 @@ class BrainApp(App, inherit_bindings=False):
                 self._render_modeline()
                 return
             argv = ["todo", slug, "edit", str(index), "--", value]
+        elif kind == "todo":
+            argv = ["todo", slug, "--", value]
+        elif kind == "decide":
+            argv = ["decide", slug, "--", value]
+        elif kind == "status":
+            argv = ["set", slug, "status", "--", value]
         else:
             assert kind == "request", kind
             argv = ["request", "add", "--", value]
@@ -2730,6 +2801,8 @@ class BrainApp(App, inherit_bindings=False):
     # -- navigation (R10.3 "moving") ------------------------------------
     @_guarded
     def action_nav_down(self) -> None:
+        if self._window(None):        # Ctrl-W j: no window below
+            return
         if self._detail_has_focus():
             self._move_detail_cursor(1)
         else:
@@ -2737,13 +2810,50 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_nav_up(self) -> None:
+        if self._window(None):        # Ctrl-W k: no window above
+            return
         if self._detail_has_focus():
             self._move_detail_cursor(-1)
         else:
             self.query_one("#tree", Tree).action_cursor_up()
 
     @_guarded
+    def action_window_prefix(self) -> None:
+        """`Ctrl-W` (R10.2a): arms the prefix. Neovim's window key, and the one
+        chord in the application - it moves nothing by itself."""
+        self._pending_w = True
+        self.notice = Notice("Ctrl-W: h tree · l detail · w cycle", False)
+        self._render_modeline()
+
+    def _window(self, where: Optional[str]) -> bool:
+        """Honour an armed `Ctrl-W`. Returns True when the key was consumed as a
+        window move, so the caller's normal behaviour is skipped. `where` is
+        None for a direction with no window that way (`j`/`k` in a left/right
+        split, as in Neovim): the prefix is spent and nothing moves."""
+        if not self._pending_w:
+            return False
+        self._pending_w = False
+        self.notice = None
+        if where == "tree":
+            self.query_one("#tree", Tree).focus()
+        elif where == "detail":
+            self.query_one("#detail", DetailPane).focus()
+            if self._detail_cursor is None and self._detail_lines:
+                self._detail_cursor = 0
+            self._render_detail()
+        self._render_modeline()
+        return True
+
+    @_guarded
+    def action_window_cycle(self) -> None:
+        """`Ctrl-W w`: the other pane, whichever it is."""
+        on_tree = (self.focused is None or self.focused.id != "detail")
+        self._window("detail" if on_tree else "tree")
+
+    @_guarded
     def action_nav_collapse(self) -> None:
+        if self._window("tree"):      # Ctrl-W h: the left pane
+            return
         tree_widget = self.query_one("#tree", Tree)
         node = tree_widget.cursor_node
         if node is not None:
@@ -2751,6 +2861,8 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_nav_expand(self) -> None:
+        if self._window("detail"):    # Ctrl-W l: the right pane
+            return
         tree_widget = self.query_one("#tree", Tree)
         node = tree_widget.cursor_node
         if node is not None:
@@ -2872,6 +2984,80 @@ class BrainApp(App, inherit_bindings=False):
             self._render_modeline()
             return
         self._finish_write(out)
+
+    # R10.7c: which kinds each acting key applies to, and what to say when it
+    # does not. The words are `brain`'s own refusals (R6.0a's "refused BY NAME,
+    # naming the verb to use instead"), made here so no process is spawned to
+    # learn what the registry already knows.
+    ACTING_KEYS = {
+        "t": ("todo", ("project",),
+              "`t` adds an action, and only a project has them - "
+              "`d` or `:log {slug} -- …` puts it on a person or board"),
+        "d": ("decide", ("project", "program", "stakeholder", "board"), None),
+        "s": ("status", ("project", "program"),
+              "`s` sets `status:`, which a project or program has - "
+              "not {kind} {slug}"),
+    }
+
+    def _acting_target(self, key: str):
+        """The entity an acting key will write to, or `None` after saying why
+        not. The selection is what the modeline already shows, so the target is
+        never typed and never guessed - and a note or a group header is not an
+        entity (`capture_ref` draws the same line)."""
+        verb, kinds, refusal = self.ACTING_KEYS[key]
+        sel = self.selected
+        kind = getattr(sel, "kind", None)
+        if sel is None or kind is None or kind == "note":
+            self.notice = Notice(
+                "`{}` acts on the selected entity - select one with j/k "
+                "first".format(key), True)
+            self._render_modeline()
+            return None
+        if kind not in kinds:
+            self.notice = Notice(
+                (refusal or "`{}` does not apply to a {}".format(key, kind)).format(
+                    slug=sel.slug, kind=kind), True)
+            self._render_modeline()
+            return None
+        return sel
+
+    @_guarded
+    def action_add_todo(self) -> None:
+        """`t`: prompts, `⏎` sends `todo <selected> -- <text>` (R10.7c)."""
+        target = self._acting_target("t")
+        if target is None:
+            return
+        self._pending = ("todo", target.slug, None)
+        self.buffer = ""          # R10.3a: a prompt always starts empty
+        self.prompt = "todo {}:".format(target.slug)
+        self._enter(INSERT)
+
+    @_guarded
+    def action_add_decision(self) -> None:
+        """`d`: prompts, `⏎` sends `decide <selected> -- <text>` (R10.7c).
+        Every kind: a project's `## Decisions`, a program's log, a person's
+        `## History`, today's sitting on a board (R6.0a)."""
+        target = self._acting_target("d")
+        if target is None:
+            return
+        self._pending = ("decide", target.slug, None)
+        self.buffer = ""
+        self.prompt = "decide {}:".format(target.slug)
+        self._enter(INSERT)
+
+    @_guarded
+    def action_set_status(self) -> None:
+        """`s`: prompts with the four values, `⏎` sends
+        `set <selected> status -- <value>` (R10.7c). The prompt names them
+        because a key that asks an unanswerable question is worse than no key -
+        `brain` validates the answer regardless (R6.0a)."""
+        target = self._acting_target("s")
+        if target is None:
+            return
+        self._pending = ("status", target.slug, None)
+        self.buffer = ""
+        self.prompt = "status {} ({}):".format(target.slug, "/".join(ent.STATUSES))
+        self._enter(INSERT)
 
     @_guarded
     def action_queue_request(self) -> None:

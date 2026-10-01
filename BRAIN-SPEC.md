@@ -963,6 +963,18 @@ appearance and this section wins on behaviour.
 available, and there are **no Ctrl chords anywhere in the application**. If a
 feature seems to need one, it needs a letter or a `:` command instead.
 
+**R10.2a The one chord is `Ctrl-W`** (user, 2026-10-01: *"ctrl+w should go to
+[the tree] is neovim"*). R10.2's escape clause had no letter to offer for "the
+other pane": `h`/`l` collapse and expand, `Tab` was the only way across and
+only one way. `Ctrl-W` is Neovim's window prefix, so it is the one chord a vim
+user already has in their fingers rather than one this application invents - and
+it is a **prefix**, like `Z`: it moves nothing alone, `Ctrl-W h` goes to the
+tree, `Ctrl-W l` to the detail pane, `Ctrl-W w` cycles, `Ctrl-W j`/`k` do
+nothing (there is no window above or below), and any other action forgets it.
+`w` is bound only so the prefix can reach it, so a bare `w` is still not a key.
+`Tab` now toggles both ways. `Ctrl+R` stays unbound (R10.7a). Nothing else in
+the key map may use Ctrl.
+
 **R10.3 `Esc` always returns to NORMAL** from anywhere, and never discards
 captured text — it leaves what was typed in the buffer. Only an explicit `⏎`
 commits and only an explicit cancel inside the full-screen pane discards.
@@ -1051,7 +1063,30 @@ were removed: each asked the human to classify or to pick a field at the
 keyboard, which is the LLM's job, and in an hour of use none was pressed.
 Until milestone 6 builds the LLM side, `i` fills an inbox that nothing
 processes and a human files by `:` — the human layer is finished by this
-milestone, the design is complete only when both layers run.
+milestone, the design is complete only when both layers run. **That `by :`
+proved unusable in a day of real use; R10.7c puts `t`, `d` and `s` back.**
+
+**R10.7c `t`, `d` and `s` act on the selection** (user, 2026-10-01, after the
+week of use R10.7b itself prescribed). R10.7b removed them on the grounds that
+each "asked the human to classify or to pick a field, which is the LLM's job",
+and noted that until milestone 6 "a human files by `:`". What that cost became
+visible the first day a project existed: `ia-platform`, created in the TUI, five
+empty sections, and no key able to put anything in any of them - the only way in
+was to type the whole verb at `:`. The keys come back, taking their target from
+the selection the modeline already shows:
+
+| key | sends | on |
+|---|---|---|
+| `t` | `todo <selected> -- <text>` | a project; refused by name elsewhere, naming `d` or `:log` |
+| `d` | `decide <selected> -- <text>` | all four kinds (R6.0a) |
+| `s` | `set <selected> status -- <value>` | a project or program; the prompt names the values |
+
+Each is one `run_brain` call, so a key is a shorter way to type a verb and never
+a second way to write a file (R3.1) - and `brain` still validates everything it
+is handed. `H` stays unbound (R10.15): it asked for a history window, which the
+digest decides. This does not undo R10.7b's *direction* - the LLM is still meant
+to file what `i` captures - it stops the human layer being unusable in the
+milestone before the machine layer exists.
 
 **R10.7a Redo is a second revert, never history rewriting.** R11.4 forbids
 `reset` and `amend`, so `brain redo` must revert the most recent `Brain-Undo`
@@ -1403,8 +1438,13 @@ and writes nothing (R10.11).
 block renders with all three visible as dimmed source. Assert that every
 non-empty source line appears somewhere in the rendered pane (R10.12).
 
-**A11e** No key binding anywhere in the application uses Ctrl, except `Ctrl+R`
-for redo. Assert by walking the registered bindings (R10.2, R10.7).
+**A11e** Walk every binding `brain` itself declares: the only Ctrl key is
+`Ctrl-W`, the window prefix (R10.2a). `Ctrl+R` is unbound, not bound to a
+message (R10.7a). The walk is over the classes in `brain/tui.py`, not the live
+DOM: Textual's own widgets ship `ctrl+c`, `ctrl+pageup` and `ctrl+pagedown`
+through `Screen` and `ScrollView`, which `inherit_bindings=False` does not
+reach, so what the invariant can promise is that no chord in *our* key map has
+to be learned from us. `ctrl+c` not quitting is asserted separately.
 
 **A12** With the TUI running, an external `brain apply` from another shell is
 picked up within two seconds and the detail pane refreshes (R10.7).

@@ -127,6 +127,69 @@ TOMBSTONES: Dict[Tuple[str, ...], str] = {
 }
 
 
+# One line per verb, for `brain --help` and `brain help <verb>`. It lives here,
+# next to the registry, and `test_every_verb_has_a_usage_line` asserts the two
+# have the same keys - so a verb cannot be added, renamed or removed without its
+# help line following it. `<target>` is any kind unless the shape says otherwise
+# (R6.0a); free text is always last and always after ` -- ` (R6.4).
+USAGE: Dict[Tuple[str, ...], Tuple[str, str]] = {
+    ("new",): ("new <program|project|stakeholder|board> -- <title>",
+               "create an entity; the slug comes from the title"),
+    ("todo",): ("todo <project> [done|edit|due] [<n>|<words>] -- <text>",
+                "add an action, or tick, re-word or re-date one"),
+    ("log",): ("log <target> [--ref <entity>] -- <text>",
+               "a dated line - `## Log` on a project or program,\n"
+               "`## Pending` on a person or board"),
+    ("decide",): ("decide <target> -- <text>",
+                  "a decision - `## Decisions`, a program log line, a\n"
+                  "person's history, or today's sitting on a board"),
+    ("query",): ("query <target> -- <text>",
+                 "an open question on a project, a pending one on a\n"
+                 "person or board"),
+    ("set",): ("set <target> <field> -- <value>",
+               "one front-matter field. `tags`/`members` take a list;\n"
+               "`projects`/`program` belong to `link`"),
+    ("link",): ("link <child> <parent>",
+                "a project into a program, or a project onto a\n"
+                "person's or board's interests"),
+    ("note", "add"): ("note add [meeting] [--tag <slug>] -- <body>   (or `-f -`)",
+                      "capture raw words into inbox.md. `-f -` keeps a\n"
+                      "multi-line body byte for byte"),
+    ("note", "list"): ("note list [--type <type>]",
+                       "every unprocessed note"),
+    ("note", "show"): ("note show <id>", "one note, in full"),
+    ("note", "flag"): ("note flag <id> -- <why>",
+                       "mark a note the agent could not place, with the reason"),
+    ("note", "drop"): ("note drop <id>",
+                       "the note is processed; git keeps the history"),
+    ("context",): ("context [--for <target>]",
+                   "the whole brain as a ~200-token digest - what an\n"
+                   "agent reads instead of files"),
+    ("search",): ("search -- <query>", "every match, grouped by kind"),
+    ("check",): ("check [--authored]",
+                 "report problems; `--authored` names files brain did not write"),
+    ("build",): ("build", "regenerate every `## Roll-up`"),
+    ("request", "add"): ("request add -- <text>",
+                         "queue a job for the agent in _request.md"),
+    ("request", "list"): ("request list", "the queue"),
+    ("request", "done"): ("request done <n>", "tick one queued job"),
+    ("undo",): ("undo", "revert the last commit brain made - forward only,\n"
+               "never a rewrite"),
+}
+
+# `init`, `tui` and `apply` are front doors handled in `cli.py`, not registry
+# verbs, and a user looking for "which commands are there" needs them most of
+# all - so the help prints them alongside.
+FRONT_DOOR: Tuple[Tuple[str, str], ...] = (
+    ("init [<path>]", "make a new brain here (or at <path>)"),
+    ("tui", "the terminal UI - `?` inside it shows its keys"),
+    ("apply [-f <file>|-] [--dry-run]",
+     "a batch of these lines, validated in full,\n"
+     "then one atomic commit"),
+    ("help [<verb>]", "this list, or one verb in detail"),
+)
+
+
 def verb(*name, needs_text: bool = False, writes: bool = True,
          arity: Tuple[int, int] = (0, 0), allowed_flags: Tuple[str, ...] = (),
          optional_text: bool = False,
