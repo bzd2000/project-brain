@@ -1186,6 +1186,32 @@ must be present and in order, action syntax must be intact. A save that would
 break the format is rejected with the reason, and nothing is written. This is
 the escape hatch for structural fixes, not the daily path.
 
+**R10.14a One editor, with `@` completion** (user, 2026-10-02: *"the editor for
+`i` and `e` should be the same and supporting `@` completion for reference to
+project, stakeholders, `@meeting`, to indicate it's a meeting, `@action`, if i
+have an action"*).
+
+`i`, `o` and `e` all open the same widget in the right pane. There is one set of
+editing keys, one place a refusal appears, and one way out (`Esc`, then `:w` or
+`:q`/`:q!`). The full-screen capture pane this replaces was a second editor with
+its own rules — append-only typing, its own command line that opened on `:` only
+at the start of an empty line, its own `y`/`n` discard prompt — and all three
+rules are gone rather than reconciled: while the editor has focus every key is
+text, so `:30 late, sara joins` is simply text and needs no guard.
+
+**`Tab` completes an `@word`**: entity slugs first, then the hint words. It is
+the interaction `:` has had since R10.8, which is the point — one completion key.
+Ambiguity fills the common prefix and lists what matched (R6.2: never a guess),
+and `Tab` anywhere but in an `@word` does nothing, because prose is not ours to
+finish (R4.6.1).
+
+**The hint words are `@log @todo @decision @question @meeting`** — the four verbs
+of R6.0a plus `meeting`, which says the note holds many items (R4.6.2). They are
+**hints, not a vocabulary this program owns**: nothing validates them, `@whatever`
+is kept exactly as typed, and what they *mean* is fixed in milestone 6, when
+`AGENTS.md` is written against real notes. Completion offers `@todo` rather than
+`@action` to match the verb name; `@action` still works, because nothing checks.
+
 **R10.11e `e` edits what is selected; `i` captures with `@tags`** (user,
 2026-10-02, stating the model in full: *"i -> add new note (by tagging
 `@meeting`, `@todo`, `@someproject`, `@whatever`, it will instruct later the llm

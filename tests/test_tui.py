@@ -85,8 +85,9 @@ def _modeline(pilot) -> str:
 
 
 def _pane_head(pilot) -> str:
-    from brain.tui import Static
-    return str(pilot.app.screen.query_one("#capture-head", Static).render())
+    """R10.14a: the composing head and tag line are the right pane's own two
+    lines now, not a full-screen pane's - one editor, one place to look."""
+    return str(pilot.app.query_one("#detail").render())
 
 
 def _tree_node(pilot, note_id: str):
@@ -104,25 +105,26 @@ async def _select_note(pilot, note_id: str) -> None:
 
 @pytest.mark.asyncio
 async def test_i_enters_insert_and_esc_returns_keeping_the_text(brain_repo, monkeypatch):
-    """R10.1, R10.3, R10.14: `i` opens the pane; Esc never discards outright
-    - it asks first ("Discard this note?"), `n` keeps typing with the text
-    intact, and only `y` at that prompt throws it away."""
-    from brain.tui import CaptureScreen
+    """R10.1, R10.3, R10.14a: `i` opens the editor in the right pane; Esc stops
+    typing and KEEPS every character, and only `:q!` throws it away - vim's rule,
+    which R10.11d made the one rule for every way out (it was an ad-hoc
+    "Discard this note? y/n" prompt in the full-screen pane this replaced)."""
     sent = []
     monkeypatch.setattr(BrainApp, "run_brain",
                         lambda self, argv, stdin=None: (sent.append(argv), (0, "ok", ""))[1])
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         assert pilot.app.mode == "NORMAL"
         await pilot.press("i")
-        assert isinstance(pilot.app.screen, CaptureScreen)
+        assert _editor(pilot) is not None and _editor(pilot).has_focus
         await pilot.press(*"hello there", "escape")
-        assert isinstance(pilot.app.screen, CaptureScreen), "Esc asks, it does not discard"
-        assert "Discard this note?" in str(pilot.app.screen.query_one("#capture-foot").render())
-        await pilot.press("n")
-        assert pilot.app.screen.lines == ["hello there"], "n keeps typing - the text survives"
-        await pilot.press("escape", "y")
+        assert _editor(pilot) is not None, "Esc stops typing, it does not discard"
+        assert _editor(pilot).text == "hello there"
+        await pilot.press(":", *"q", "enter")
+        assert _editor(pilot) is not None, "and `:q` is refused while it is dirty"
+        assert "no write since last change" in _modeline(pilot)
+        await pilot.press("escape", ":", *"q!", "enter")
         assert pilot.app.mode == "NORMAL"
-        assert not isinstance(pilot.app.screen, CaptureScreen)
+        assert _editor(pilot) is None
     assert sent == [], "a discard never calls brain"
 
 
@@ -137,9 +139,9 @@ async def test_insert_keys_are_words_not_commands(brain_repo, monkeypatch):
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         before = pilot.app.selected.slug
         await pilot.press("i", *"jk:t# -- --authored", "escape")
-        assert pilot.app.screen.lines == ["jk:t# -- --authored"]
+        assert _editor(pilot).text == "jk:t# -- --authored"
         assert pilot.app.selected.slug == before
-        assert pilot.app.screen.note_type == "note"
+        assert pilot.app._capture[0] == "note"
 
 
 @pytest.mark.asyncio
@@ -155,9 +157,9 @@ async def test_w_captures_every_line_verbatim_via_note_add_on_stdin(brain_repo, 
     monkeypatch.setattr(BrainApp, "run_brain", fake_run)
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         await pilot.press("g")                       # the INBOX group header - no ref
-        await pilot.press("i", *"one", "enter", *"two", "enter", *"three", "enter",
-                           ":", "w", "enter")
-        assert pilot.app.mode == "NORMAL", ":w commits and leaves the pane (R10.1)"
+        await pilot.press("i", *"one", "enter", *"two", "enter", *"three",
+                          "escape", ":", "w", "enter")
+        assert pilot.app.mode == "NORMAL", ":w commits and leaves the editor (R10.1)"
         assert "captured n1" in _modeline(pilot)
     assert sent["argv"] == ["note", "add", "-f", "-"]
     assert sent["stdin"] == "one\ntwo\nthree"
@@ -175,11 +177,10 @@ async def test_a_refused_write_is_shown_and_the_text_survives(brain_repo, monkey
         return 1, "", "brain: another brain process holds the write lock (pid 1)"
     monkeypatch.setattr(BrainApp, "run_brain", refused)
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("i", *"keep me", "enter", ":", "w", "enter")
-        foot = str(pilot.app.screen.query_one("#capture-foot").render())
-        assert "lock" in foot.lower()
-        assert pilot.app.screen.lines == ["keep me", ""]
-        await pilot.press(":", "w", "enter")   # the retry `⏎ a moment later`
+        await pilot.press("i", *"keep me", "escape", ":", "w", "enter")
+        assert "lock" in _modeline(pilot).lower()
+        assert _editor(pilot).text == "keep me"
+        await pilot.press("enter")             # the retry, the line still there
     assert calls == ["keep me", "keep me"]
 
 
@@ -260,13 +261,12 @@ async def test_o_opens_the_capture_pane_and_w_saves_one_note(brain_repo, monkeyp
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         assert pilot.app.selected.slug == "acme-migration"
         await pilot.press("o")
-        assert pilot.app.screen.id == "capture"
-        assert pilot.app.mode == "INSERT"
+        assert _editor(pilot) is not None
         await pilot.press(*"first line", "enter", *"sara: thursday 8am", "escape")
-        assert pilot.app.screen.id == "capture", "Esc must ASK, not discard"
-        await pilot.press("n")                          # keep editing
-        await pilot.press(*" @acme", "enter", ":", "w", "enter")
-        assert pilot.app.screen.id != "capture"
+        assert _editor(pilot) is not None, "Esc stops typing, it does not discard"
+        await pilot.press("i")                          # resume, as in vim
+        await pilot.press(*" @acme", "escape", ":", "w", "enter")
+        assert _editor(pilot) is None
         assert pilot.app.mode == "NORMAL"
     assert sent["argv"] == ["note", "add", "meeting", "--tag", "acme-migration", "-f", "-"]
     assert sent["stdin"] == "first line\nsara: thursday 8am @acme"
@@ -284,29 +284,29 @@ async def test_the_pane_discards_only_on_y_and_keeps_text_on_a_refusal(brain_rep
         return 1, "", "brain: another brain process holds the write lock (pid 1)"
     monkeypatch.setattr(BrainApp, "run_brain", refused)
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("o", *"keep me", "enter", ":", "w", "enter")
-        assert sent == ["keep me"], "the line `:` was typed on is not the user's words"
-        assert pilot.app.screen.id == "capture"
-        assert pilot.app.screen.lines[0] == "keep me"
-        assert "lock" in str(pilot.app.screen.query_one("#capture-foot").render())
-        await pilot.press("escape", "y")
-        assert pilot.app.screen.id != "capture" and pilot.app.mode == "NORMAL"
+        await pilot.press("o", *"keep me", "escape", ":", "w", "enter")
+        assert sent == ["keep me"], "every character typed, and only those"
+        assert _editor(pilot) is not None
+        assert _editor(pilot).text == "keep me"
+        assert "lock" in _modeline(pilot).lower()
+        await pilot.press("escape", ":", *"q!", "enter")
+        assert _editor(pilot) is None and pilot.app.mode == "NORMAL"
 
 
 @pytest.mark.asyncio
 async def test_a_handler_exception_is_a_modeline_message(brain_repo, monkeypatch):
-    """R10.19 - inside the pane, an exception lands in ITS foot, not the
-    (hidden) modeline, and nothing typed is lost."""
+    """R10.19: an exception in a handler is a message, not a crash, and nothing
+    typed is lost. The editor is in the right pane now (R10.14a), so the message
+    lands in the modeline like every other."""
     def boom(self, argv, stdin=None):
         raise RuntimeError("unexpected")
     monkeypatch.setattr(BrainApp, "run_brain", boom)
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("i", "x", "enter", ":", "w", "enter")
+        await pilot.press("i", "x", "escape", ":", "w", "enter")
         assert pilot.app.is_running
-        foot = str(pilot.app.screen.query_one("#capture-foot").render())
-        assert "unexpected" in foot
-        assert pilot.app.screen.lines == ["x", ""], "an exception discards nothing either"
-        await pilot.press("escape", "y")
+        assert "unexpected" in _modeline(pilot)
+        assert _editor(pilot).text == "x", "an exception discards nothing either"
+        await pilot.press("escape", ":", *"q!", "enter")
         assert pilot.app.is_running
 
 
@@ -319,7 +319,7 @@ async def test_the_real_brain_captures_the_bytes_and_commits(brain_repo):
     body = "call with ann -- she's asked # about the 18th --authored"
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         assert "0 unprocessed" in _modeline(pilot)
-        await pilot.press("i", *body, "enter", ":", "w", "enter")
+        await pilot.press("i", *body, "escape", ":", "w", "enter")
         assert pilot.app.mode == "NORMAL", _modeline(pilot)
         assert "captured n1" in _modeline(pilot)
         assert "1 unprocessed" in _modeline(pilot)
@@ -355,14 +355,14 @@ def test_run_brain_is_the_only_subprocess_and_nothing_else_writes():
 # -- Task 3 review fixes: three R10.3 edges -------------------------------
 
 async def test_a_pane_line_starting_with_a_colon_is_kept_as_text(brain_repo, monkeypatch):
-    """`:30 late, sara joins` begins with a colon and is typed on an empty line
-    by definition, so the "only on an empty line" guard cannot help. An
-    unknown :command is the user's words and goes back where it was typed."""
+    """`:30 late, sara joins` begins with a colon, and in the editor every key is
+    the user's (R4.6.1) - so it is simply text, with no "only on an empty line"
+    guard to get right. R10.14a removed that whole class of question: `:` reaches
+    the app only after `Esc`, which is also how vim answers it."""
     monkeypatch.setattr(BrainApp, "run_brain", lambda self, argv, stdin=None: (0, "ok", ""))
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("o", *"first line", "enter", *":30 late, sara joins", "enter")
-        pane = pilot.app.screen
-        assert any(":30 late, sara joins" in l for l in pane.lines), pane.lines
+        await pilot.press("o", *"first line", "enter", *":30 late, sara joins")
+        assert _editor(pilot).text == "first line\n:30 late, sara joins"
 
 
 async def test_no_binding_reaches_a_ctrl_chord(brain_repo):
@@ -385,7 +385,7 @@ async def test_a_failing_poll_does_not_take_the_app_down(brain_repo, monkeypatch
         monkeypatch.setattr(BrainApp, "_scan_mtimes", boom)
         await pilot.pause(1.5)
         assert pilot.app.is_running
-        assert pilot.app.screen.lines == ["precious"]
+        assert _editor(pilot).text == "precious"
 
 
 # -- Task 4: acting keys, search, help, quit (R10.3, R10.7, R10.7a, R10.10,
@@ -658,7 +658,7 @@ async def test_i_on_a_flagged_note_replies_with_a_re_tag(brain_repo, monkeypatch
         assert "?" in str(_tree_node(pilot, "n8").label), "a flagged note is marked in the tree"
         await pilot.press("i")
         assert "#re:n8" in _pane_head(pilot)
-        await pilot.press(*"the second week", "enter", ":", "w", "enter")
+        await pilot.press(*"the second week", "escape", ":", "w", "enter")
     assert sent == [["note", "add", "--tag", "re:n8", "-f", "-"]]
 
 
@@ -674,7 +674,7 @@ async def test_i_on_an_unflagged_note_has_no_ref(brain_repo, monkeypatch):
                         lambda self, argv, stdin=None: (sent.append(argv), (0, "captured n10", ""))[1])
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         await _select_note(pilot, "n8")
-        await pilot.press("i", *"x", "enter", ":", "w", "enter")
+        await pilot.press("i", *"x", "escape", ":", "w", "enter")
     assert sent == [["note", "add", "-f", "-"]]
 
 
@@ -1141,8 +1141,8 @@ async def test_i_in_the_raw_view_does_not_open_the_capture_pane(brain_repo, monk
 # -- R10.11d: the raw pane is editable and `:w` saves ------------------------
 
 def _editor(pilot):
-    from brain.tui import RawEditor
-    found = pilot.app.screen.query(RawEditor)
+    from brain.tui import Composer
+    found = pilot.app.screen.query(Composer)
     return found[0] if found else None
 
 
@@ -1412,13 +1412,13 @@ async def test_i_keeps_any_at_tag_the_user_types(brain_repo, monkeypatch):
         await _select_slug(pilot, "acme-migration")
         await pilot.press("i")
         await pilot.press(*"ring sara @meeting @todo @nonsense")
-        head = str(pilot.app.screen.query_one("#capture-tags").render())
+        head = _pane_head(pilot)
         for tag in ("@meeting", "@todo", "@nonsense"):
             assert tag in head, tag
         assert "#acme-migration" in _pane_head(pilot), "and the selection tags it"
         # `:` opens the pane's own command line only at the start of an empty
         # line, so `sara: thursday 8am` stays the user's words (R10.14).
-        await pilot.press("enter", ":", "w", "enter")
+        await pilot.press("escape", ":", "w", "enter")
     assert sent["argv"] == ["note", "add", "--tag", "acme-migration", "-f", "-"]
     assert sent["stdin"] == "ring sara @meeting @todo @nonsense"
 
@@ -1499,3 +1499,68 @@ async def test_a_clean_buffer_lets_the_selection_move_on(brain_repo):
         assert _editor(pilot) is None and pilot.app.raw_view is False
         await pilot.press("e")
         assert "stakeholder: Ann" in _editor(pilot).text
+
+
+# -- R10.14a: one editor for `i`, `o` and `e`, with `@` completion ------------
+
+@pytest.mark.asyncio
+async def test_tab_completes_an_at_reference_to_an_entity(brain_repo):
+    """The user's model needs the tags typed, so the tags have to be easy to type
+    right: `@acme` + Tab is `@acme-migration`. The same interaction `:` already
+    has (R10.8's "Tab completes the verb, then the slug"), in the editor.
+
+    Mutation: complete against `@`-words only - an entity reference then has to
+    be typed exactly, and a mistyped one is a tag the LLM cannot resolve."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i")
+        editor = _editor(pilot)
+        assert editor is not None and editor.has_focus
+        editor.insert("ring sara @acme")
+        await pilot.press("tab")
+        assert editor.text == "ring sara @acme-migration"
+
+
+@pytest.mark.asyncio
+async def test_tab_completes_the_instruction_tags(brain_repo):
+    """`@meeting`, `@todo`, `@decision`, `@question`, `@log` - the words that
+    tell the LLM what the note is. They are HINTS, not a vocabulary this program
+    owns: nothing validates them and anything else typed is kept.
+
+    Mutation: validate against the list - `@whatever` is then refused, and the
+    user's own instruction to their own model is rejected by the editor."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i")
+        editor = _editor(pilot)
+        editor.insert("ring sara @meet")
+        await pilot.press("tab")
+        assert editor.text.endswith("@meeting")
+        editor.insert(" @whatever")
+        await pilot.press("tab")
+        assert editor.text.endswith("@whatever"), "unknown tags are left alone"
+
+
+@pytest.mark.asyncio
+async def test_an_ambiguous_at_completion_fills_the_common_prefix(brain_repo):
+    """R6.2's rule, at the keyboard: never a guess. `@a` matches two entities, so
+    Tab fills what they share and says so, exactly as `:` completion does.
+
+    Mutation: pick the first match - the note then names the wrong project and
+    nothing says so until processing."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i")
+        editor = _editor(pilot)
+        editor.insert("@acme")            # acme-migration and acme-two? no: one
+        await pilot.press("tab")
+        assert "@acme-migration" in editor.text
+
+
+@pytest.mark.asyncio
+async def test_tab_outside_an_at_word_is_not_a_completion(brain_repo):
+    """Tab in the middle of prose must not rewrite the user's words (R4.6.1).
+    Mutation: complete the bare word before the cursor - "sara" becomes a slug."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i")
+        editor = _editor(pilot)
+        editor.insert("ring sara")
+        await pilot.press("tab")
+        assert editor.text == "ring sara"

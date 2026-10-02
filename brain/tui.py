@@ -168,10 +168,6 @@ def _guarded(fn):
             app.notice = Notice("{}: {}".format(type(exc).__name__, exc), True)
             app.log.error(exc)
             app._render_modeline()
-            screen = app.screen
-            if isinstance(screen, CaptureScreen):
-                screen.notice = app.notice
-                screen._redraw()
     return wrapper
 
 
@@ -189,8 +185,24 @@ class Row(NamedTuple):
     gap: bool = False   # a blank line above - a section header (02-annotated.png)
 
 
-class RawEditor(TextArea):
-    """R10.11: the right pane as an editor over the file's own text.
+# R10.14a: the words a note can carry to tell the LLM what it is. They are
+# HINTS, not a vocabulary this program owns: nothing validates them, anything
+# else the user types is kept, and milestone 6 fixes what they mean when
+# `AGENTS.md` is written against real notes. The five mirror the verbs of
+# R6.0a - `log`, `todo`, `decide`, `query` - plus `meeting`, which says the note
+# holds many items (R4.6.2).
+TAG_WORDS = ("log", "todo", "decision", "question", "meeting")
+
+
+class Composer(TextArea):
+    """The one editor (R10.14a): `i` and `o` compose a note in it, `e` edits a
+    file or a note's body in it. One widget, so there is one set of keys to
+    learn and one place where editing behaves.
+
+    `Tab` completes an `@word` - entity slugs first, then `TAG_WORDS` - which is
+    the same interaction `:` has had since R10.8, and the reason the user can
+    type `@acme` rather than remembering `@acme-migration`. Prose is never
+    touched: Tab anywhere but in an `@word` does nothing (R4.6.1).
 
     Mounted by `i` in the raw view and not before - until something is being
     edited there is nothing to edit *with*, and the styled read view (R10.12's
@@ -204,7 +216,7 @@ class RawEditor(TextArea):
     """
 
     DEFAULT_CSS = """
-    RawEditor {
+    Composer {
         background: #161512;
         color: #ded7cb;
         border: none;
@@ -308,279 +320,6 @@ class EntityTree(Tree):
         return Strip(segments).crop(x1, x2)
 
 
-class CaptureScreen(Screen):
-    """R10.14: the full-screen capture pane (05-meeting-capture.png).
-    Meeting notes are paragraphs, not lines. It shows the type chip, the id
-    and timestamp about to be assigned, and the `@refs` seen so far - a
-    READ of the text, never a change to it (R10.13).
-
-    Every key here is the user's words. The pane's own command line opens
-    on `:` only at the start of an empty line, or from the Esc prompt, so
-    `sara: thursday 8am` stays exactly that. `:w` saves the whole pane as
-    ONE note; `Esc` asks before discarding and `y` is the only key that
-    ever throws the text away (R10.3). No `$EDITOR`, no Ctrl chords
-    (R10.2): the editor is append-only typing, `⏎` and backspace.
-    """
-
-    # 05-meeting-capture.png: the head on the raised `--panel2` ground, a
-    # rule under it and under the tags line, the body on the ground with a
-    # margin, and the foot docked on `--panel2` behind a rule. No box
-    # (R10.17); only the same rules the main screen draws.
-    DEFAULT_CSS = """
-    CaptureScreen {
-        background: #100f0e;
-        color: #ded7cb;
-    }
-    #capture-head {
-        height: 2;
-        padding: 0 2;
-        background: #1c1a17;
-        border-bottom: solid #2b2823;
-    }
-    #capture-tags {
-        height: 2;
-        padding: 0 2;
-        border-bottom: solid #2b2823;
-    }
-    #capture-scroll {
-        height: 1fr;
-        scrollbar-size-vertical: 1;
-        scrollbar-background: #100f0e;
-        scrollbar-color: #2b2823;
-    }
-    #capture-body {
-        height: auto;
-        padding: 1 2;
-    }
-    #capture-foot {
-        height: 2;
-        dock: bottom;
-        padding: 0 2;
-        background: #1c1a17;
-        border-top: solid #2b2823;
-        color: #5a544c;
-    }
-    """
-
-    def __init__(self, preview_id: str, note_type: str, ref: Optional[str],
-                 party: bool = False) -> None:
-        super().__init__(id="capture")
-        self.lines: List[str] = [""]
-        self.cmd: Optional[str] = None          # the `:` line, when open
-        self._cmd_took_empty_line = False
-        self.confirming = False                 # the Esc prompt
-        self.notice: Optional[Notice] = None
-        self.preview_id = preview_id
-        # `note_type` is `"note"` (`i`) or `"meeting"` (`o`); `ref` is the
-        # tag - the selection at the MOMENT the key was pressed, or
-        # `re:<id>` replying to a flagged note (R10.13a) - read once by
-        # `BrainApp._open_capture` rather than here, because the tree's
-        # selection can change under a poll while the pane stays open, and
-        # the note is about what was looked at when the key was pressed.
-        # `party` colours that tag violet for a stakeholder/board (R10.16).
-        self.note_type = note_type
-        self.ref = ref
-        self.party = party
-        self.stamp = datetime.now().strftime("%d %b %H:%M")
-
-    def compose(self) -> ComposeResult:
-        yield Static(id="capture-head", markup=False)
-        yield Static(id="capture-tags", markup=False)
-        with VerticalScroll(id="capture-scroll"):
-            yield Static(id="capture-body", markup=False)
-        yield Static(id="capture-foot", markup=False)
-
-    def on_mount(self) -> None:
-        self._redraw()
-
-    # -- keys -----------------------------------------------------------
-    @_guarded
-    def on_key(self, event) -> None:
-        event.stop()
-        event.prevent_default()
-        self._key(event)
-
-    @_guarded
-    def on_paste(self, event) -> None:
-        event.stop()
-        if self.confirming or self.cmd is not None:
-            return
-        parts = event.text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-        self.lines[-1] += parts[0]
-        self.lines.extend(parts[1:])
-        self._redraw()
-
-    def _key(self, event) -> None:
-        key = event.key
-        if self.confirming:
-            if key == "y":
-                self._discard()
-            elif key in ("n", "escape"):
-                self.confirming = False
-            elif key == "colon":
-                self.confirming = False
-                self._open_cmd()
-            self._redraw()
-            return
-        self.notice = None
-        if self.cmd is not None:
-            if key == "enter":
-                self._run_cmd()
-            elif key == "backspace":
-                if self.cmd:
-                    self.cmd = self.cmd[:-1]
-                else:
-                    self.cmd = None
-            elif event.is_printable:
-                self.cmd += event.character
-            self._redraw()
-            return
-        if key == "enter":
-            self.lines.append("")
-        elif key == "backspace":
-            if self.lines[-1]:
-                self.lines[-1] = self.lines[-1][:-1]
-            elif len(self.lines) > 1:
-                self.lines.pop()
-        elif key == "colon" and not self.lines[-1]:
-            self._open_cmd()
-        elif event.is_printable:
-            self.lines[-1] += event.character
-        self._redraw()
-
-    def escape(self) -> None:
-        """Wired from the app's priority `escape` binding (R10.3: Esc from
-        anywhere). Inside the pane it closes the command line, else asks."""
-        if self.cmd is not None:
-            self.cmd = None
-        elif self.confirming:
-            self.confirming = False
-        else:
-            self.confirming = True
-        self._redraw()
-
-    def _open_cmd(self) -> None:
-        self.cmd = ""
-        # The empty line `:` was typed on holds none of the user's words;
-        # `:w` leaves it out of the body. Cancelling keeps it.
-        self._cmd_took_empty_line = not self.lines[-1] and len(self.lines) > 1
-
-    def _run_cmd(self) -> None:
-        self.cmd_raw = self.cmd or ""
-        name = self.cmd_raw.strip()
-        took_empty = self._cmd_took_empty_line
-        self.cmd = None
-        if name in ("w", "wq"):
-            self._save(took_empty)
-        elif name == "q":
-            self.confirming = True
-        else:
-            # Not a command, so it was the user's words (R10.3: nothing typed
-            # is discarded without an explicit cancel). `:30 late, sara joins`
-            # begins with a colon and is typed on an empty line by definition -
-            # the guard that keeps `sara: thursday` as text cannot help here.
-            # Put the whole thing back where it was typed.
-            self.lines[-1] = ":" + (self.cmd_raw or name)
-            self.notice = Notice("kept as text - :w saves, esc cancels", True)
-
-    def body(self, drop_trailing_empty: bool = False) -> str:
-        lines = list(self.lines)
-        if drop_trailing_empty and len(lines) > 1 and not lines[-1]:
-            lines.pop()
-        return "\n".join(lines)
-
-    def _save(self, took_empty: bool) -> None:
-        body = self.body(drop_trailing_empty=took_empty)
-        if not body.strip():
-            self.notice = Notice("nothing to save", True)
-            return
-        app = self.app
-        # R6.0a/R4.6.2: the type is `meeting` or nothing (plain `note add` is
-        # the default); the ref travels as a TAG in the machine-written
-        # header (R4.6.1), never in the body.
-        argv = ["note", "add"]
-        if self.note_type == "meeting":
-            argv.append("meeting")
-        if self.ref:
-            argv += ["--tag", self.ref]
-        argv += ["-f", "-"]
-        rc, out, err = app.run_brain(argv, stdin=body)
-        if rc != 0:
-            # R10.18a: a refusal is normal. Every line stays.
-            self.notice = Notice(_first_line(err) or "brain exited {}".format(rc), True)
-            return
-        app.pop_screen()
-        app._finish_write(out)
-
-    def _discard(self) -> None:
-        app = self.app
-        app.pop_screen()
-        app.notice = Notice("discarded", False)
-        app._leave_to_normal()
-
-    # -- rendering ------------------------------------------------------
-    def _redraw(self) -> None:
-        width = max(0, self.size.width - 4)
-        head = Text()
-        head.append_text(_chip(self.note_type))
-        head.append("  new meeting note" if self.note_type == "meeting" else "  new note",
-                     style=MUTED)
-        if self.ref:
-            # R10.14: the tag this note will carry - `#acme-migration`, or
-            # `#re:n13` replying to a flagged note (R10.13a) - so the target
-            # is visible before a word is typed.
-            head.append("  #" + self.ref, style=VIOLET if self.party else TEAL)
-        stamp = Text("{} · {}".format(self.preview_id, self.stamp), style=DIM)
-        head.append(" " * max(2, width - head.cell_len - stamp.cell_len))
-        head.append_text(stamp)
-        self.query_one("#capture-head", Static).update(head)
-
-        tags = Text()
-        tags.append("tags ", style=DIM)
-        seen = []
-        for ref in REF_RE.findall(self.body()):
-            if ref not in seen:
-                seen.append(ref)
-        if seen:
-            tags.append(" ".join(seen), style=TEAL)
-            tags.append(" · add more with @, dates with !", style=DIM)
-        else:
-            tags.append("none yet · add some with @, dates with !", style=DIM)
-        self.query_one("#capture-tags", Static).update(tags)
-
-        body = Text(self.body(), style=FG)
-        body.append_text(_cursor(TEAL))
-        self.query_one("#capture-body", Static).update(body)
-
-        foot = Text()
-
-        def key(cap: str, label: str) -> None:
-            if len(foot):
-                foot.append("   ")
-            foot.append(" {} ".format(cap), style="{} on {}".format(MUTED, LINE2))
-            foot.append(" " + label, style=DIM)
-
-        if self.confirming:
-            foot.append("Discard this note?  ", style=AMBER)
-            key("y", "discard")
-            key("n", "keep typing")
-            key(":", "command")
-        elif self.cmd is not None:
-            foot.append(":", style=MUTED)
-            foot.append(self.cmd, style=FG)
-            foot.append_text(_cursor(TEAL))
-        else:
-            key(":w", "save")
-            key("Esc", "cancel")
-        if self.notice is not None:
-            foot.append("    ")
-            foot.append(self.notice.text, style=(RED if self.notice.error else MUTED))
-        self.query_one("#capture-foot", Static).update(foot)
-
-    def on_resize(self, event) -> None:  # noqa: D401 - Textual event hook
-        self._redraw()
-
-
 HELP_KEY_COLUMN = 16   # 11-help.png: the key, then the description at cell 16
 
 def _command_verbs() -> str:
@@ -609,8 +348,8 @@ HELP_SECTIONS = [
     ]),
     ("NORMAL — CAPTURE", [
         ("i", "capture a note, tagged with the selection"),
-        ("", "type @meeting @todo @anything - the LLM reads them"),
-        ("o", "the same, full-screen, for a meeting's worth"),
+        ("", "@ tags it · Tab completes · the LLM reads the tags"),
+        ("o", "the same, stamped as a meeting"),
     ]),
     ("NORMAL — ACTING", [
         ("t", "add an action to the selected project"),
@@ -2033,6 +1772,7 @@ class BrainApp(App, inherit_bindings=False):
         # clean buffer), and a write must land where it was opened - sending to
         # `self.selected` put a project's markdown into a note's body.
         self._raw_target = None   # (kind, slug) of the file in the editor
+        self._capture = None      # (type, ref) while the editor holds a NEW note
         self._raw_path = None     # and its path, for the "changed under you" check
 
     # -- the one subprocess ------------------------------------------
@@ -2100,8 +1840,8 @@ class BrainApp(App, inherit_bindings=False):
             # not a key, and saying so here keeps the letter free (R10.2).
             return False
         if action in ("escape", "tab"):
-            return True
-        if self.mode != NORMAL or isinstance(self.screen, CaptureScreen):
+            return True     # both decide for themselves, editor focus included
+        if self.mode != NORMAL:
             return False
         if action in ("search_up", "search_down", "open_hit"):
             # §10.3: these three are priority bindings on keys `Tree` already
@@ -2392,8 +2132,56 @@ class BrainApp(App, inherit_bindings=False):
         lineno, task = self._detail_lines[self._detail_cursor]
         return (self.selected, lineno, task)
 
+    def _render_compose_head(self, widget) -> None:
+        """What a note about to be captured is: its type, the tag it will carry
+        from the selection (R10.13), the id and stamp `brain` will assign, and
+        every `@word` typed so far - a READ of the text, never a change to it
+        (R4.6.1). The pane's own two lines, above the editor.
+        """
+        note_type, ref = self._capture
+        width = self._detail_width()
+        head = Text()
+        head.append_text(_chip(note_type))
+        head.append("  new meeting note" if note_type == "meeting" else "  new note",
+                    style=MUTED)
+        if ref:
+            head.append("  #" + ref, style=TEAL)
+        stamp = Text("{} · {}".format(self._preview_note_id(),
+                                      datetime.now().strftime("%d %b %H:%M")), style=DIM)
+        head.append(" " * max(2, width - head.cell_len - stamp.cell_len))
+        head.append_text(stamp)
+
+        editor = self._raw_editor()
+        seen = []
+        for found in REF_RE.findall(editor.text if editor is not None else ""):
+            if found not in seen:
+                seen.append(found)
+        tags = Text("tags ", style=DIM)
+        if seen:
+            tags.append(" ".join(seen), style=TEAL)
+            tags.append(" · Tab completes · add dates with !", style=DIM)
+        else:
+            tags.append("none yet · @ tags it, Tab completes", style=DIM)
+
+        out = Text()
+        out.append_text(_band(head, False, width))
+        out.append("\n")
+        out.append_text(_band(tags, False, width))
+        widget.update(out)
+        self._detail_lines = []
+
+    def on_text_area_changed(self, event) -> None:  # noqa: D401 - event hook
+        """The tag line is a read of the body, so it follows every keystroke."""
+        if self._capture is not None:
+            self._render_compose_head(self.query_one("#detail", DetailPane))
+
     def _render_detail(self) -> None:
         widget = self.query_one("#detail", DetailPane)
+        if self._capture is not None:
+            # R10.14a: composing a NEW note - the pane shows what it will become
+            # and the editor below holds the words.
+            self._render_compose_head(widget)
+            return
         if self.search_hits is not None:
             self._render_search_results(widget)
             return
@@ -2570,27 +2358,15 @@ class BrainApp(App, inherit_bindings=False):
             self._leave_to_normal()
         self.reload()
 
-    def _open_capture(self, note_type: str) -> None:
-        """R10.13/R10.14: `i` and `o` open the same pane; the type is the
-        only difference. The tag is read NOW - the selection may change under
-        a poll while the pane is open, and the note is about what was looked
-        at when the key was pressed."""
-        self.notice = None
-        self.prompt = None
-        self._pending = None
-        self.mode = INSERT
-        self._focus_before = self.focused
-        self.push_screen(CaptureScreen(
-            self._preview_note_id(), note_type, self.capture_ref, self.selected_is_party))
-        self._render_modeline()
-
     @_guarded
     def action_insert(self) -> None:
-        """`i`: capture a note, tagged with the selection (R10.13)."""
-        if self.raw_view:
-            self._open_raw_editor()        # R10.11d: `i` edits the source
+        """`i`: capture a note in the editor, tagged with the selection (R10.13,
+        R10.14a) - or, with the source already open, start typing into it, which
+        is what `i` means in vim (R10.11d)."""
+        if self._raw_editor() is not None or self.raw_view:
+            self._open_raw_editor()
             return
-        self._open_capture("note")
+        self._open_composer("note")
 
     @_guarded
     def action_command(self) -> None:
@@ -2599,16 +2375,16 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_capture(self) -> None:
-        """`o`: the same pane, stamped `meeting` (R10.14) - or, in the raw view,
+        """`o`: the same editor, stamped `meeting` (R10.14) - or, with one open,
         vim's "open a line below and insert" (R10.11d)."""
-        if self.raw_view:
+        if self._raw_editor() is not None or self.raw_view:
             self._open_raw_editor(vim_key="o")
             return
-        self._open_capture("meeting")
+        self._open_composer("meeting")
 
     @_guarded
     def action_insert_after(self) -> None:
-        """`a` in the raw view: insert after the cursor, as in vim."""
+        """`a` while editing: insert after the cursor, as in vim (R10.11d)."""
         self._open_raw_editor(vim_key="a")
 
     def _preview_note_id(self) -> str:
@@ -2641,9 +2417,6 @@ class BrainApp(App, inherit_bindings=False):
         returning DOM focus from the detail pane to the tree."""
         if isinstance(self.screen, HelpScreen):
             self.pop_screen()
-            return
-        if isinstance(self.screen, CaptureScreen):
-            self.screen.escape()
             return
         if self.mode != NORMAL:
             self.notice = None
@@ -2691,7 +2464,9 @@ class BrainApp(App, inherit_bindings=False):
         if isinstance(self.screen, HelpScreen):
             self.pop_screen()
             return
-        if isinstance(self.screen, CaptureScreen) or self.mode == INSERT:
+        if self._raw_editing() and self._complete_at():
+            return
+        if self.mode == INSERT:
             return
         if self.mode == COMMAND:
             self._complete()
@@ -3163,9 +2938,39 @@ class BrainApp(App, inherit_bindings=False):
         return True
 
     # -- the raw editor (R10.11, R10.11d) ---------------------------------
-    def _raw_editor(self) -> Optional[RawEditor]:
-        found = self.screen.query(RawEditor)
+    def _raw_editor(self) -> Optional[Composer]:
+        found = self.screen.query(Composer)
         return found[0] if found else None
+
+    def _complete_at(self) -> bool:
+        """`Tab` in the editor: finish the `@word` at the cursor (R10.14a).
+
+        Entity slugs come from the one tree scan the app already holds, so a
+        project created in the other pane is completable as soon as the poll
+        sees it. `TAG_WORDS` are offered after them. Ambiguity fills the common
+        prefix and says what matched - R6.2's rule, never a guess.
+        """
+        editor = self._raw_editor()
+        if editor is None:
+            return False
+        row, col = editor.cursor_location
+        line = editor.document.get_line(row)
+        before = line[:col]
+        at = before.rfind("@")
+        if at < 0 or " " in before[at:] or "\t" in before[at:]:
+            return False          # not in an `@word`: prose is not ours to finish
+        wanted = before[at + 1:]
+        candidates = list(self._slugs) + list(TAG_WORDS)
+        matches = sorted({c for c in candidates if c.startswith(wanted)})
+        if not matches:
+            return True           # a tag of the user's own: left exactly as typed
+        common = os.path.commonprefix(matches)
+        if len(common) > len(wanted):
+            editor.insert(common[len(wanted):])
+        if len(matches) > 1:
+            self.notice = Notice(" ".join("@" + m for m in matches[:8]), False)
+            self._render_modeline()
+        return True
 
     def _raw_editing(self) -> bool:
         editor = self._raw_editor()
@@ -3175,6 +2980,29 @@ class BrainApp(App, inherit_bindings=False):
         editor = self._raw_editor()
         return editor is not None and self._raw_seed is not None \
             and editor.text != self._raw_seed
+
+    def _open_composer(self, note_type: str) -> None:
+        """`i` / `o` (R10.14a): a new note, in the editor, in the right pane.
+
+        R4.6.1 is why the body never travels by argv: `:w` sends it on stdin,
+        byte for byte. The selection becomes the note's `#<slug>` tag (R10.13),
+        and every `@word` typed in the body is the user's instruction to the
+        processing agent - shown, never resolved, never checked.
+        """
+        self._capture = (note_type, self.capture_ref)
+        self._raw_seed = ""
+        self._raw_target = ("note-new", note_type)
+        self._raw_path = None
+        self.raw_view = True
+        self._detail_cursor = None
+        editor = Composer("", id="raw-editor", soft_wrap=True)
+        self.query_one("#detail", DetailPane).display = True
+        self.query_one("#detail-scroll", VerticalScroll).mount(editor)
+        self._render_detail()
+        editor.focus()
+        self.notice = Notice(
+            "new {} - @ tags it, :w writes, :q discards".format(note_type), False)
+        self._render_modeline()
 
     def _open_raw_editor(self, vim_key: str = "i") -> None:
         """`i` in the raw view: the file's own text, in the pane, editable.
@@ -3206,7 +3034,7 @@ class BrainApp(App, inherit_bindings=False):
             self._raw_seed = text
             self._raw_target = (self.selected.kind, self.selected.slug)
             self._raw_path = getattr(self.selected, "path", None)
-            editor = RawEditor(text, id="raw-editor", soft_wrap=False)
+            editor = Composer(text, id="raw-editor", soft_wrap=False)
             self.query_one("#detail", DetailPane).display = False
             self.query_one("#detail-scroll", VerticalScroll).mount(editor)
         editor.focus()
@@ -3227,6 +3055,7 @@ class BrainApp(App, inherit_bindings=False):
         self._raw_seed = None
         self._raw_target = None
         self._raw_path = None
+        self._capture = None
         self.query_one("#detail", DetailPane).display = True
 
     def _raw_command(self, word: str) -> None:
@@ -3257,6 +3086,33 @@ class BrainApp(App, inherit_bindings=False):
         self.command = ""
         self._leave_to_normal()
 
+    def _save_note(self, editor, leave: bool) -> bool:
+        """`:w` on a new note (R10.14a): `note add [meeting] [--tag <sel>] -f -`.
+
+        The body goes on stdin because R4.6.1 wants bytes and argv is
+        pre-tokenised (R6.4c). Nothing here strips or reflows it; `brain` writes
+        the header and nothing else.
+        """
+        note_type, ref = self._capture
+        if not editor.text.strip():
+            self.notice = Notice("nothing to save", True)
+            self._render_modeline()
+            return False
+        argv = ["note", "add"]
+        if note_type == "meeting":
+            argv.append("meeting")
+        if ref:
+            argv += ["--tag", ref]
+        argv += ["-f", "-"]
+        rc, out, err = self.run_brain(argv, stdin=editor.text)
+        if rc != 0:
+            self.notice = Notice(_first_line(err) or "brain exited {}".format(rc), True)
+            self._render_modeline()
+            return False
+        self._leave_raw()       # a captured note is done with; the tree reloads
+        self._finish_write(out)
+        return True
+
     def _leave_raw(self) -> None:
         """Close the raw view, buffer and all, and give the tree back."""
         self._close_raw_editor()
@@ -3278,6 +3134,8 @@ class BrainApp(App, inherit_bindings=False):
             self.notice = Notice("nothing is being edited - `i` edits the source", True)
             self._render_modeline()
             return False
+        if self._capture is not None:
+            return self._save_note(editor, leave=leave)
         kind, slug = self._raw_target or (
             getattr(self.selected, "kind", None), getattr(self.selected, "slug", None))
         if kind == "note":
