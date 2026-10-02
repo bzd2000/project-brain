@@ -475,12 +475,12 @@ way to write a file (R3.1). Cost if wrong: three keys to unbind, and the
 classification objection returns the day `process inbox` is good enough to make
 them redundant. `H` stays out.
 
-**3. `Ctrl-W` is now the one chord (R10.2a), reversing R10.2.** The request was
+**3. `ctrl+w` is now the one chord (R10.2a), reversing R10.2.** The request was
 specific — *"ctrl+w should go to [the tree], is neovim"* — and R10.2's own
 escape clause ("it needs a letter or a `:` command instead") had no letter left
 to offer: `h`/`l` collapse and expand, and `Tab` went one way only. The chord
 allowed is the one a vim user already knows rather than one invented here, and
-it is a prefix on the `Z` pattern: `Ctrl-W` alone moves nothing, and any other
+it is a prefix on the `Z` pattern: `ctrl+w` alone moves nothing, and any other
 action forgets it, so a stray press cannot turn a later `l` into a focus jump.
 `Tab` now toggles. Cost if wrong: "no chords to learn" was a clean promise, and
 it is now "one chord, the one you already know" — which is weaker, and the
@@ -497,17 +497,18 @@ was never true. Textual's own `Screen` and `ScrollView` ship `ctrl+c`,
 *"still not possible to get focus to tree"*, the day after R10.2a shipped. Two
 causes, and the first one is mine to own.
 
-**The chord cannot work on the platform this project is built for.** `Ctrl-W`
-arrives in a pty — a traced run of the real app shows `window_prefix` firing,
-then `nav_collapse` with the prefix armed, then focus on the tree. It does not
-arrive in **code-server**, which is what is actually running here (4.139.1, VS
-Code in a browser): the browser takes `Ctrl+W` to close its tab before any
-application sees it. C5 names the VS Code integrated terminal as the primary
-platform, and R10.2 banned chords for exactly this reason. I built the chord
-without checking it against the surface it had to work on. It stays — it works
-over ssh, and the request was specific — but R10.2a now says in writing that a
-chord may be offered to fingers that have it and may never be the only way to
-reach anything. `Tab` toggles and `Esc` returns to the tree, everywhere.
+**Whether the chord arrives is the terminal's decision.** `ctrl+w` works in a
+pty — a traced run of the real app shows `window_prefix` firing, then
+`nav_collapse` with the prefix armed, then focus on the tree — and it works over
+ssh, which is how the report was made. It does *not* survive VS Code (close
+editor), code-server in a browser (the browser closes its tab) or Windows
+Terminal's default close-pane binding, and C5 names two of those three as
+platforms. I first read the code-server process running in this workspace as the
+cause, which was wrong: the user had ssh'd in. The portability point stands on
+its own, and R10.2 banned chords for exactly it. The chord stays; R10.2a now
+says in writing that it may never be the only way to reach anything, `Tab` and
+`Esc` are pinned by a test, and pressing `ctrl+w` alone shows a hint in the
+modeline so a swallowed chord is distinguishable from a missing feature.
 
 **The band did not say which pane was listening (R10.16a).** This is the half
 that made it look broken even where the chord does arrive. Rendering the same

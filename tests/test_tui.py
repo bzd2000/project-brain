@@ -625,7 +625,7 @@ def test_ctrl_w_is_the_only_chord_declared_anywhere():
     """A11e, walked exhaustively rather than sampled: every key `BrainApp` and
     every `Screen` it defines registers.
 
-    R10.2a added the single exception this asserts - `Ctrl-W`, Neovim's window
+    R10.2a added the single exception this asserts - `ctrl+w`, Neovim's window
     prefix, because it is the one chord a vim user already has in their fingers
     and R10.2's own escape clause ("it needs a letter or a `:` command instead")
     had no letter to offer for "the other pane". `Ctrl+R` is still unbound
@@ -1155,11 +1155,11 @@ def _focused_id(pilot) -> str:
 
 @pytest.mark.asyncio
 async def test_ctrl_w_l_and_h_move_between_the_panes(brain_repo):
-    """R10.2a: `Ctrl-W` then a direction, exactly as Neovim moves between
+    """R10.2a: `ctrl+w` then a direction, exactly as Neovim moves between
     windows - the one chord in the application, and the reason it is allowed is
     that it is the one chord a vim user already has in their fingers.
 
-    Mutation: bind `ctrl+w` to the move itself - `Ctrl-W` alone would then jump
+    Mutation: bind `ctrl+w` to the move itself - `ctrl+w` alone would then jump
     the focus and the direction key would act on the tree."""
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         assert _focused_id(pilot) == "tree"
@@ -1173,7 +1173,7 @@ async def test_ctrl_w_l_and_h_move_between_the_panes(brain_repo):
 
 @pytest.mark.asyncio
 async def test_ctrl_w_w_cycles(brain_repo):
-    """`Ctrl-W w` cycles, as in Neovim. Mutation: make `w` a plain binding and
+    """`ctrl+w w` cycles, as in Neovim. Mutation: make `w` a plain binding and
     it fires in NORMAL with no prefix, stealing a letter R10.2 keeps free."""
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
         await pilot.press("ctrl+w", "w")
@@ -1184,7 +1184,7 @@ async def test_ctrl_w_w_cycles(brain_repo):
 
 @pytest.mark.asyncio
 async def test_w_alone_is_still_not_a_key(brain_repo, monkeypatch):
-    """The prefix must not leak: `w` without `Ctrl-W` does nothing at all, and
+    """The prefix must not leak: `w` without `ctrl+w` does nothing at all, and
     `h`/`l` keep collapsing and expanding. Mutation: drop the `check_action`
     gate on `window_cycle`."""
     sent = []
@@ -1234,8 +1234,8 @@ async def test_the_key_map_admits_the_one_chord(brain_repo):
         screen = pilot.app.screen
         subtitle = str(screen.query_one("#help-subtitle").render())
         assert "No chords" not in subtitle
-        assert "Ctrl-W" in subtitle
-        assert "Ctrl-W" in str(screen.query_one("#help-body").render())
+        assert "ctrl+w" in subtitle
+        assert "ctrl+w" in str(screen.query_one("#help-body").render())
 
 
 # -- R10.16a: the band says which pane the keys will hit ---------------------
@@ -1313,7 +1313,7 @@ async def test_the_idle_pane_still_shows_where_it_is(brain_repo):
 
 @pytest.mark.asyncio
 async def test_focus_returns_to_the_tree_without_any_chord(brain_repo):
-    """R10.2a's own caveat: `Ctrl-W` cannot be delivered by a browser-hosted
+    """R10.2a's own caveat: `ctrl+w` cannot be delivered by a browser-hosted
     terminal (code-server, the primary surface under C5 - the browser takes
     Ctrl+W to close its tab before any application sees it). So every move the
     chord makes must also be reachable by a letter: `Tab` toggles and `Esc`

@@ -575,7 +575,7 @@ HELP_SECTIONS = [
         ("h l", "collapse / expand a program"),
         ("g G", "top / bottom"),
         ("Tab", "the other pane, and back"),
-        ("Ctrl-W h l w", "the other pane, as in vim"),
+        ("ctrl+w h l w", "the other pane, as in vim"),
         ("/ n N", "search · next · previous match"),
     ]),
     ("NORMAL — CAPTURE", [
@@ -675,7 +675,7 @@ def _help_subtitle() -> Text:
     t.append(" types; ", style=MUTED)
     t.append("Esc", style=TEAL)
     t.append(" always comes back. One chord: ", style=MUTED)
-    t.append("Ctrl-W", style=TEAL)
+    t.append("ctrl+w", style=TEAL)
     t.append(", as in vim.", style=MUTED)
     return t
 
@@ -1942,8 +1942,8 @@ class BrainApp(App, inherit_bindings=False):
         Binding("colon", "command", "command", show=False),
         Binding("tab", "tab", "detail", show=False, priority=True),
         Binding("escape", "escape", "normal", show=False, priority=True),
-        # R10.2a: the one chord. `Ctrl-W` is Neovim's window prefix and the
-        # only chord a vim user already has in their fingers - `Ctrl-W h/l/w`
+        # R10.2a: the one chord. `ctrl+w` is Neovim's window prefix and the
+        # only chord a vim user already has in their fingers - `ctrl+w h/l/w`
         # moves between the two panes. It is a PREFIX, like `Z`: pressing it
         # alone moves nothing, and `check_action` forgets it the moment any
         # other action runs. `w` is a priority binding gated on the prefix, so
@@ -1991,7 +1991,7 @@ class BrainApp(App, inherit_bindings=False):
         self.search_query: str = ""
         self.search_cursor: int = 0
         self._pending_z = False   # ZZ: true right after a lone Z (R10.3's table)
-        self._pending_w = False   # Ctrl-W: true right after the window prefix (R10.2a)
+        self._pending_w = False   # ctrl+w: true right after the window prefix (R10.2a)
 
     # -- the one subprocess ------------------------------------------
     def run_brain(self, argv, stdin=None):
@@ -2047,7 +2047,7 @@ class BrainApp(App, inherit_bindings=False):
             self._pending_z = False
         # R10.2a: the window prefix is forgotten by any action that is not a
         # direction, the same rule `_pending_z` follows - otherwise a stray
-        # `Ctrl-W` would turn a later, unrelated `l` into a focus jump.
+        # `ctrl+w` would turn a later, unrelated `l` into a focus jump.
         if action not in ("window_prefix", "window_cycle", "nav_collapse",
                           "nav_expand", "nav_down", "nav_up"):
             self._pending_w = False
@@ -2083,7 +2083,7 @@ class BrainApp(App, inherit_bindings=False):
     # R10.16a: the band is drawn from `_detail_has_focus()`, and focus lands
     # AFTER the handler that moved it returns - so re-rendering inside
     # `action_tab` saw the old answer and the band never brightened. Textual
-    # bubbles these two to the app whatever moved the focus: Tab, `Ctrl-W`, Esc
+    # bubbles these two to the app whatever moved the focus: Tab, `ctrl+w`, Esc
     # or a mouse click. The tree refreshes itself (its pseudo-classes change),
     # so only the detail pane needs saying.
     def on_descendant_focus(self, event) -> None:  # noqa: D401 - event hook
@@ -2828,7 +2828,7 @@ class BrainApp(App, inherit_bindings=False):
     # -- navigation (R10.3 "moving") ------------------------------------
     @_guarded
     def action_nav_down(self) -> None:
-        if self._window(None):        # Ctrl-W j: no window below
+        if self._window(None):        # ctrl+w j: no window below
             return
         if self._detail_has_focus():
             self._move_detail_cursor(1)
@@ -2837,7 +2837,7 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_nav_up(self) -> None:
-        if self._window(None):        # Ctrl-W k: no window above
+        if self._window(None):        # ctrl+w k: no window above
             return
         if self._detail_has_focus():
             self._move_detail_cursor(-1)
@@ -2846,14 +2846,14 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_window_prefix(self) -> None:
-        """`Ctrl-W` (R10.2a): arms the prefix. Neovim's window key, and the one
+        """`ctrl+w` (R10.2a): arms the prefix. Neovim's window key, and the one
         chord in the application - it moves nothing by itself."""
         self._pending_w = True
-        self.notice = Notice("Ctrl-W: h tree · l detail · w cycle", False)
+        self.notice = Notice("ctrl+w: h tree · l detail · w cycle", False)
         self._render_modeline()
 
     def _window(self, where: Optional[str]) -> bool:
-        """Honour an armed `Ctrl-W`. Returns True when the key was consumed as a
+        """Honour an armed `ctrl+w`. Returns True when the key was consumed as a
         window move, so the caller's normal behaviour is skipped. `where` is
         None for a direction with no window that way (`j`/`k` in a left/right
         split, as in Neovim): the prefix is spent and nothing moves."""
@@ -2873,13 +2873,13 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_window_cycle(self) -> None:
-        """`Ctrl-W w`: the other pane, whichever it is."""
+        """`ctrl+w w`: the other pane, whichever it is."""
         on_tree = (self.focused is None or self.focused.id != "detail")
         self._window("detail" if on_tree else "tree")
 
     @_guarded
     def action_nav_collapse(self) -> None:
-        if self._window("tree"):      # Ctrl-W h: the left pane
+        if self._window("tree"):      # ctrl+w h: the left pane
             return
         tree_widget = self.query_one("#tree", Tree)
         node = tree_widget.cursor_node
@@ -2888,7 +2888,7 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_nav_expand(self) -> None:
-        if self._window("detail"):    # Ctrl-W l: the right pane
+        if self._window("detail"):    # ctrl+w l: the right pane
             return
         tree_widget = self.query_one("#tree", Tree)
         node = tree_widget.cursor_node

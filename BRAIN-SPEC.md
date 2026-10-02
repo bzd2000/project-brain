@@ -963,26 +963,29 @@ appearance and this section wins on behaviour.
 available, and there are **no Ctrl chords anywhere in the application**. If a
 feature seems to need one, it needs a letter or a `:` command instead.
 
-**R10.2a The one chord is `Ctrl-W`** (user, 2026-10-01: *"ctrl+w should go to
+**R10.2a The one chord is `ctrl+w`** (user, 2026-10-01: *"ctrl+w should go to
 [the tree] is neovim"*). R10.2's escape clause had no letter to offer for "the
 other pane": `h`/`l` collapse and expand, `Tab` was the only way across and
-only one way. `Ctrl-W` is Neovim's window prefix, so it is the one chord a vim
+only one way. `ctrl+w` is Neovim's window prefix, so it is the one chord a vim
 user already has in their fingers rather than one this application invents - and
-it is a **prefix**, like `Z`: it moves nothing alone, `Ctrl-W h` goes to the
-tree, `Ctrl-W l` to the detail pane, `Ctrl-W w` cycles, `Ctrl-W j`/`k` do
+it is a **prefix**, like `Z`: it moves nothing alone, `ctrl+w h` goes to the
+tree, `ctrl+w l` to the detail pane, `ctrl+w w` cycles, `ctrl+w j`/`k` do
 nothing (there is no window above or below), and any other action forgets it.
 `w` is bound only so the prefix can reach it, so a bare `w` is still not a key.
 `Tab` now toggles both ways. `Ctrl+R` stays unbound (R10.7a). Nothing else in
 the key map may use Ctrl.
 
-**The chord is an extra, never the only way.** A browser-hosted terminal cannot
-deliver it: in code-server — C5's own primary surface, VS Code in a browser —
-`Ctrl+W` is taken by the browser to close its tab before any application sees
-it, and by VS Code to close an editor. It arrives over ssh and in a native
-terminal, and nowhere else. So every move `Ctrl-W` makes is also reachable by a
+**The chord is an extra, never the only way.** Whether `Ctrl+W` arrives is the
+terminal's decision, not ours, and several of the ones C5 names take it first:
+VS Code (close editor) and code-server in a browser (the browser closes its tab)
+never pass it on, and Windows Terminal binds it to close-pane by default. It does
+arrive over ssh into a terminal that leaves it alone — verified by driving the
+real app through a pty. So every move `ctrl+w` makes is also reachable by a
 letter: `Tab` toggles the panes and `Esc` returns to the tree. This is R10.2's
 original argument, standing: a chord may be offered to the fingers that have it,
-and may never be the only way to reach anything.
+and may never be the only way to reach anything. Pressing `ctrl+w` alone shows
+its hint in the modeline, which is how a user can tell a swallowed chord from a
+missing feature.
 
 **R10.16a The band says which pane the keys will hit.** R10.16 put focus in the
 selection band rather than a border, but the tree drew its band identically
@@ -1460,7 +1463,7 @@ block renders with all three visible as dimmed source. Assert that every
 non-empty source line appears somewhere in the rendered pane (R10.12).
 
 **A11e** Walk every binding `brain` itself declares: the only Ctrl key is
-`Ctrl-W`, the window prefix (R10.2a). `Ctrl+R` is unbound, not bound to a
+`ctrl+w`, the window prefix (R10.2a). `Ctrl+R` is unbound, not bound to a
 message (R10.7a). The walk is over the classes in `brain/tui.py`, not the live
 DOM: Textual's own widgets ship `ctrl+c`, `ctrl+pageup` and `ctrl+pagedown`
 through `Screen` and `ScrollView`, which `inherit_bindings=False` does not
