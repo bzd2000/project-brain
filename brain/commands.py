@@ -17,8 +17,8 @@ from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 from . import digest
 from . import search, git, grammar, lock, rollup, tree
 from . import validate as _validate   # `validate` is a function here
-from .entities import (HEALTHS, KINDS, LEGACY_NOTE_TYPES, NOTE_TYPES, STATUSES,
-                       load_notes)
+from .entities import (HEALTHS, KINDS, LEGACY_NOTE_TYPES, NOTE_HEADER,
+                       NOTE_TYPES, STATUSES, load_notes)
 from .errors import (
     AmbiguousReference,
     BrainError,
@@ -159,6 +159,9 @@ USAGE: Dict[Tuple[str, ...], Tuple[str, str]] = {
     ("note", "list"): ("note list [--type <type>]",
                        "every unprocessed note"),
     ("note", "show"): ("note show <id>", "one note, in full"),
+    ("note", "edit"): ("note edit <id> -f -",
+                       "replace one note's body with your own new words;\n"
+                       "the header stays as captured"),
     ("note", "flag"): ("note flag <id> -- <why>",
                        "mark a note the agent could not place, with the reason"),
     ("note", "drop"): ("note drop <id>",
@@ -655,6 +658,44 @@ def _note_flag(root, positional, flags, text):
         marked.append(note)
     rewrite_inbox(root, marked)
     return Result("flagged {}".format(note_id), ("inbox.md",))
+
+
+@verb("note", "edit", needs_text=True, arity=(1, 1), ref_kinds=None)
+def _note_edit(root, positional, flags, text):
+    """R4.6.1a: replace one note's body with the user's own new words.
+
+    R4.6.1 says a note body is the user's words and nothing rewrites one -
+    "nothing" meaning no machine, which is what A13 asserts. The user is the one
+    writer those words may have, and this is the only path they have: `e` in the
+    TUI edits the note in the pane and saves through here (R10.11e). The body
+    arrives on stdin (`-f -`), never by argv, because R4.6.1 wants bytes and
+    argv is pre-tokenised (R6.4c).
+
+    The machine-written header is NOT the user's to change: the id, stamp and
+    type stay exactly as captured (R4.6.6 - ids are never reused), and every
+    other note in the file goes back byte for byte.
+    """
+    note_id = positional[0]
+    notes = load_notes(Path(root) / "inbox.md")
+    if not any(n.id == note_id for n in notes):
+        raise UnknownReference(
+            "no note {!r} in the inbox. `brain note list` shows what is "
+            "there.".format(note_id)
+        )
+    body = text.replace("\r\n", "\n").split("\n")
+    for line in body:
+        if NOTE_HEADER.match(line):
+            # CLAUDE.md's known gap, reachable the moment a body is editable: a
+            # line of this shape is read back as a real note on the next load
+            # and advances the id counter. Refused rather than written.
+            raise VerbError(
+                "that body contains a line shaped like a note header "
+                "({!r}) - it would be read back as a separate note. Change "
+                "the `##` or the id.".format(line.strip())
+            )
+    rewritten = [n._replace(body=body) if n.id == note_id else n for n in notes]
+    rewrite_inbox(root, rewritten)
+    return Result("edited {}".format(note_id), ("inbox.md",))
 
 
 @verb("note", "drop", arity=(1, 1))

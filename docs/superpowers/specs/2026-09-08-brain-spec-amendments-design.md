@@ -585,3 +585,40 @@ addresses entities. Editing a note is `note`'s business.
 Found while wiring it: `:w` originally left COMMAND mode before the save ran, so
 a refusal dropped the `:` line that R10.18a says is kept for correction. It now
 leaves only on a save that happened.
+
+### The model, stated plainly (2026-10-02)
+
+After a day of reports arriving one line at a time, the user wrote the whole
+model down: *"it's simple. i -> add new note (by tagging @meeting, @todo,
+@someproject, @whatever, it will instruct later the llm how to process it); when
+i on a selected project, stakeholder, it will tag automatically it so the llm
+knows that it's principally on this project... e -> edit the note, or project
+file, stakeholder file that is selected (the right pane becomes an editor). that
+is it."*
+
+Two keys. It is a smaller TUI than the one being built, and most of it existed:
+`i` already kept the body byte for byte, already showed every `@word` without
+resolving it, and already tagged with the selection. What was wrong was `e`.
+
+**`e` is the editor, and that retires R10.10a's line-level edit.** `e` used to
+edit one open action's text through `todo … edit`, which is less than editing the
+file and needed the C3 guard (re-find the task by text, because the other pane
+ticking an earlier action shifts every index). Editing the file needs no index at
+all, and the validation that makes it safe is `brain`'s (R10.11d). The verb stays
+for `:` and the shell.
+
+**The hazard moved rather than vanished.** `:w` sends the whole source, so a write
+from the other pane between `e` and `:w` would be silently overwritten — C3's
+lost update, one level up. The file is re-read before sending and a difference is
+refused by name. Found by thinking about what C3 was for while deleting its test,
+which is the argument for making a deletion explain itself.
+
+**Found by driving, not by the suite — again.** `_open_raw_editor` returned the
+editor already mounted, so `e` on a project, then moving the selection, then `e`
+again showed the *project's* markdown while the modeline said note: `:w` would
+have written a project file into a note's body. 818 tests passed in that state.
+The editor now remembers `(kind, slug)` and writes there regardless of the
+cursor. Three of the four real defects in this branch were found by driving the
+app (the identical-band bug, the stale label, this one). The suite is good at
+"does this function do what it says" and blind to "is the thing in front of me
+the thing I think it is".

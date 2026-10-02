@@ -1186,6 +1186,44 @@ must be present and in order, action syntax must be intact. A save that would
 break the format is rejected with the reason, and nothing is written. This is
 the escape hatch for structural fixes, not the daily path.
 
+**R10.11e `e` edits what is selected; `i` captures with `@tags`** (user,
+2026-10-02, stating the model in full: *"i -> add new note (by tagging
+`@meeting`, `@todo`, `@someproject`, `@whatever`, it will instruct later the llm
+how to process it); when i on a selected project, stakeholder, it will tag
+automatically it so the llm knows that it's principally on this project...
+e -> edit the note, or project file, stakeholder file that is selected (the right
+pane becomes an editor). that is it."*)
+
+Two keys carry the human layer.
+
+**`i`** was already this: the body is kept byte for byte (R4.6.1), every `@word`
+in it is shown in the pane's tag line without being resolved or checked against
+what exists, and the selection becomes the note's `#<slug>` tag so the processing
+agent knows what it is principally about (R10.13). `@meeting`, `@todo` and
+`@whatever` are **instructions to the LLM, not a vocabulary this program owns** -
+nothing here validates them, and R4.6.2's two capture types stay what they are:
+how it was captured, not what it is.
+
+**`e`** opens the selected file in the right pane as an editor - a project, a
+program, a person, a board, or a note. It replaces R10.10a's line-level edit (an
+open action's text through `todo … edit`): editing the file is strictly more than
+editing one of its lines, and the verb it saves through validates the result
+(R10.11d), which the line-level edit never needed because it could not break the
+shape. `todo <project> edit <n> -- <text>` remains a verb at `:` and in a shell.
+
+A **note** is edited as its **body only**: the header is machine-written, its id
+is never reused (R4.6.6), and `note edit <id> -f -` (R4.6.1a) refuses a body line
+shaped like a header - the gap CLAUDE.md recorded, reachable the moment a body
+became editable.
+
+**The editor belongs to what opened it.** It remembers `(kind, slug)` and writes
+there whatever the selection does afterwards; a clean buffer closes when the
+selection moves on, and a dirty one holds the pane and says so. Before writing,
+the file is re-read and a difference refused: the agent writes these same files
+from the other pane (C4, R10.18), and `:w` sends the whole source, so a write
+that landed since `e` read it would otherwise be silently overwritten - C3's
+lost-update hazard, where editing now lives.
+
 **R10.11d The raw pane edits, and `:w` saves** (user, 2026-10-02: *"shift+e
 should be able to edit the raw text (in the right pane)"*). This builds R10.11 as
 it was always written and closes R10.11b below, by doing what R10.11b actually

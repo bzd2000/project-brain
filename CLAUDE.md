@@ -166,6 +166,11 @@ Violating any of these silently breaks the design's economics or its trust model
    — the file still loads, reports `unknown`, and is flagged by `brain check`.
    Loading never raises (R4.2.4).
 8. **Ambiguity is an error listing candidates, never a guess** (R6.2, A5).
+9a. **Two keys carry the human layer** (R10.11e): `i` captures a note, tagged
+   with the selection, and any `@word` in the body is an instruction to the LLM
+   that nothing here validates. `e` edits the selected file in the right pane —
+   a project, person, board, or a note's body — and saves through `brain`
+   (`rewrite`, or `note edit`), never by writing the file itself.
 9. **One Ctrl chord in the TUI**: `ctrl+w`, Neovim's window prefix (R10.2a,
    A11e). `Ctrl+R` is unbound (R10.7a). A feature that "needs" another chord
    needs a letter or a `:` command instead.

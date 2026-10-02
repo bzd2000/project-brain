@@ -609,15 +609,16 @@ HELP_SECTIONS = [
     ]),
     ("NORMAL — CAPTURE", [
         ("i", "capture a note, tagged with the selection"),
+        ("", "type @meeting @todo @anything - the LLM reads them"),
         ("o", "the same, full-screen, for a meeting's worth"),
     ]),
     ("NORMAL — ACTING", [
         ("t", "add an action to the selected project"),
         ("d", "record a decision on the selection"),
         ("s", "set the selection's status"),
-        ("e", "edit the focused action, in place"),
+        ("e", "edit the selected file - project, person, board or note"),
         ("E", "read the file as raw source - j k g G scroll it, E leaves"),
-        ("i a o", "in the raw view: insert · :w writes · :q closes"),
+        ("i a o", "while editing: insert · :w writes · :q closes"),
         ("x", "tick the focused action"),
         ("u", "undo — a git commit, reverted"),
         ("Q", "queue a job for the agent in _request.md"),
@@ -2026,7 +2027,13 @@ class BrainApp(App, inherit_bindings=False):
         self.search_cursor: int = 0
         self._pending_z = False   # ZZ: true right after a lone Z (R10.3's table)
         self._pending_w = False   # ctrl+w: true right after the window prefix (R10.2a)
-        self._raw_seed = None     # R10.11d: the source `i` started from, for the dirty check
+        self._raw_seed = None     # R10.11d: the source `e` started from, for the dirty check
+        # R10.11e: WHAT is being edited, captured when the editor opens. The
+        # selection can move afterwards (a mouse click, or Tab then j with a
+        # clean buffer), and a write must land where it was opened - sending to
+        # `self.selected` put a project's markdown into a note's body.
+        self._raw_target = None   # (kind, slug) of the file in the editor
+        self._raw_path = None     # and its path, for the "changed under you" check
 
     # -- the one subprocess ------------------------------------------
     def run_brain(self, argv, stdin=None):
@@ -2327,6 +2334,20 @@ class BrainApp(App, inherit_bindings=False):
             return
         if self.selected is node.data:
             return
+        if self._raw_editor() is not None and self._raw_target != (
+                node.data.kind, node.data.slug):
+            # R10.11e: an open editor belongs to one file. A dirty buffer holds
+            # the pane (R10.3 - nothing the user typed goes silently); a clean
+            # one gets out of the way so the new selection renders its own file.
+            if self._raw_dirty():
+                self.notice = Notice(
+                    "editing {} - `:w` writes it, `:q!` drops it".format(
+                        (self._raw_target or ("", "?"))[1]), True)
+                self.selected = node.data
+                self._render_modeline()
+                return
+            self._close_raw_editor()
+            self.raw_view = False
         self.selected = node.data
         self._detail_cursor = None
         self._render_detail()
@@ -3051,32 +3072,29 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_edit_line(self) -> None:
-        """`e` (R10.10, R10.10a): an open action's INSERT buffer starts at
-        its own text - "the line becomes an INSERT buffer where it sits" -
-        and `⏎` sends `todo <project> edit <index> -- <new text>`. Any
-        other focused line sends nothing and names what is editable, per
-        the ruling: no verb edits an arbitrary line by position."""
-        if self._refuse_typing_into_raw("e"):
-            return
-        found = self._focused_open_action()
-        if found is None:
+        """`e` (R10.11e): edit the selected file, in the right pane.
+
+        The user's own model: *"e -> edit the note, or project file, stakeholder
+        file that is selected (the right pane becomes an editor)"*. One key,
+        straight into editing, whatever is selected - an entity's whole file, or
+        a note's body.
+
+        It replaces the line-level edit `e` used to be (R10.10a: an open
+        action's text, through `todo … edit`). Editing the file is strictly more
+        than editing one of its lines, and it needs no section to be in: the
+        validation that makes it safe is `brain`'s (R10.11d), and a note's body
+        goes back through `note edit` with its header untouched (R4.6.1a).
+        """
+        if self.selected is None or getattr(self.selected, "kind", None) is None:
             self.notice = Notice(
-                "e edits an open action in place - only actions are editable "
-                "this way (R10.10a)", True)
+                "`e` edits the selected file - select a project, person, board "
+                "or note with j/k first", True)
             self._render_modeline()
             return
-        project, task, index = found
-        # Identity, not position: the other pane can tick an earlier action
-        # while the user types, shifting every open-action index by one. An
-        # index captured now and sent on ⏎ would then edit a DIFFERENT action
-        # and report success (C3). `_current_index` re-finds the task by its
-        # text at commit time and refuses if it is gone or ambiguous.
-        self._pending = ("edit", project.slug, task.text)
-        # R10.3a: an edit always starts fresh at the line's own text - Esc
-        # cancels a half-typed edit rather than remembering it for next time.
-        self.buffer = task.text
-        self.prompt = "edit:"
-        self._enter(INSERT)
+        self.raw_view = True
+        self._detail_cursor = None
+        self._render_detail()
+        self._open_raw_editor()
 
     @_guarded
     def action_toggle_raw(self) -> None:
@@ -3166,21 +3184,28 @@ class BrainApp(App, inherit_bindings=False):
         and `rewrite` addresses entities. Editing one is `note`'s business, not
         this pane's.
         """
-        if getattr(self.selected, "kind", None) == "note":
-            self.notice = Notice(
-                "a note's words are yours and are not edited here (R4.6.1) - "
-                "`note drop` processes it, `i` on it replies", True)
-            self._render_modeline()
-            return
         editor = self._raw_editor()
         if editor is None:
-            try:
-                text = Path(self.selected.path).read_text(encoding="utf-8")
-            except OSError as exc:
-                self.notice = Notice("cannot read {}: {}".format(self.selected.slug, exc), True)
-                self._render_modeline()
-                return
+            if getattr(self.selected, "kind", None) == "note":
+                # R4.6.1a: the BODY only. The header is machine-written and its
+                # id is never reused (R4.6.6), so it is not the user's to
+                # retype - `note edit` would refuse it anyway, which would be
+                # the right refusal to the wrong question.
+                body = list(self.selected.note.body)
+                while body and not body[-1].strip():
+                    body.pop()
+                text = "\n".join(body)
+            else:
+                try:
+                    text = Path(self.selected.path).read_text(encoding="utf-8")
+                except OSError as exc:
+                    self.notice = Notice(
+                        "cannot read {}: {}".format(self.selected.slug, exc), True)
+                    self._render_modeline()
+                    return
             self._raw_seed = text
+            self._raw_target = (self.selected.kind, self.selected.slug)
+            self._raw_path = getattr(self.selected, "path", None)
             editor = RawEditor(text, id="raw-editor", soft_wrap=False)
             self.query_one("#detail", DetailPane).display = False
             self.query_one("#detail-scroll", VerticalScroll).mount(editor)
@@ -3200,6 +3225,8 @@ class BrainApp(App, inherit_bindings=False):
         if editor is not None:
             editor.remove()
         self._raw_seed = None
+        self._raw_target = None
+        self._raw_path = None
         self.query_one("#detail", DetailPane).display = True
 
     def _raw_command(self, word: str) -> None:
@@ -3251,8 +3278,28 @@ class BrainApp(App, inherit_bindings=False):
             self.notice = Notice("nothing is being edited - `i` edits the source", True)
             self._render_modeline()
             return False
-        rc, out, err = self.run_brain(
-            ["rewrite", self.selected.slug, "-f", "-"], stdin=editor.text)
+        kind, slug = self._raw_target or (
+            getattr(self.selected, "kind", None), getattr(self.selected, "slug", None))
+        if kind == "note":
+            argv = ["note", "edit", slug, "-f", "-"]                 # R4.6.1a
+        else:
+            # C4/R10.18: the agent writes these files from the other pane, and
+            # `:w` sends the WHOLE source - so a write that landed since `e` read
+            # it would be silently overwritten. This is C3's lost-update hazard
+            # where editing now lives, and it is refused rather than guessed at.
+            try:
+                on_disk = Path(self._raw_path or self.selected.path).read_text(
+                    encoding="utf-8")
+            except OSError:
+                on_disk = self._raw_seed
+            if self._raw_seed is not None and on_disk != self._raw_seed:
+                self.notice = Notice(
+                    "{} changed under you - the other pane wrote it. `:q!` drops "
+                    "your edit, or copy it out and re-open".format(slug), True)
+                self._render_modeline()
+                return False
+            argv = ["rewrite", slug, "-f", "-"]                      # R10.11d
+        rc, out, err = self.run_brain(argv, stdin=editor.text)
         if rc != 0:
             self.notice = Notice(_first_line(err) or "brain exited {}".format(rc), True)
             self._render_modeline()
@@ -3265,11 +3312,14 @@ class BrainApp(App, inherit_bindings=False):
             # Re-seed from what is now on disk: `brain` set `updated:` and
             # tidied blank runs (R5.2), so the buffer would otherwise differ
             # from the file the moment it was saved and read dirty.
-            try:
-                self._raw_seed = Path(self.selected.path).read_text(encoding="utf-8")
-                editor.load_text(self._raw_seed)
-            except OSError:
-                self._raw_seed = editor.text
+            if getattr(self.selected, "kind", None) == "note":
+                self._raw_seed = editor.text     # the note is what was just sent
+            else:
+                try:
+                    self._raw_seed = Path(self.selected.path).read_text(encoding="utf-8")
+                    editor.load_text(self._raw_seed)
+                except OSError:
+                    self._raw_seed = editor.text
         self._finish_write(out)
         return True
 

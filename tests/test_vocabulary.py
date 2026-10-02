@@ -21,6 +21,13 @@ def _run(root, line):
     return c.execute(root, gr.parse_line(line))
 
 
+def _bodies_of(note):
+    body = list(note.body)
+    while body and not body[-1].strip():
+        body.pop()
+    return body
+
+
 def _run_text(root, line, text):
     """A verb whose free text arrived on stdin rather than in the line - what
     `-f -` does in `cli.py` (R6.4c: a document cannot travel by argv)."""
@@ -933,3 +940,58 @@ def test_rewrite_is_not_batchable(brain_repo):
     with pytest.raises(c.BatchError) as excinfo:
         c.validate_batch(brain_repo, "rewrite q4-budget -- hello\n")
     assert "rewrite" in str(excinfo.value)
+
+
+# ---- R4.6.1a: `note edit <id> -f -` - the user's own words, by the user -----
+
+def test_note_edit_replaces_one_body_and_touches_nothing_else(brain_repo):
+    """R4.6.1 says a note body is the user's words and nothing rewrites one -
+    "nothing" being no machine. The user editing their own note is the one
+    writer those words may have, and it is the only way `e` on a note can save
+    (R10.11e).
+
+    Mutation: `rewrite_inbox` over a rebuilt list that drops the OTHER notes'
+    bodies - A13's whole point."""
+    inbox = brain_repo / "inbox.md"
+    _run(brain_repo, "note add -- first  thought   @acme")
+    _run(brain_repo, "note add -- second thought")
+    before = inbox.read_text(encoding="utf-8")
+    _run_text(brain_repo, "note edit n1", "first thought, reconsidered  @acme @todo")
+    after = inbox.read_text(encoding="utf-8")
+    notes = load_notes(inbox)
+    assert [n.id for n in notes] == ["n1", "n2"]
+    # A note that has a successor keeps the blank line separating the two, which
+    # `rewrite_inbox` strips on the way out and `load_notes` reads back in - so
+    # compare what was typed, not the separator.
+    assert _bodies_of(notes[0]) == ["first thought, reconsidered  @acme @todo"]
+    assert _bodies_of(notes[1]) == ["second thought"], "the other note is untouched"
+    assert notes[0].header == [l for l in before.splitlines() if l.startswith("## n1")][0], \
+        "the machine-written header is not the user's to change (R4.6.1)"
+    assert "second thought" in after
+
+
+def test_note_edit_keeps_a_multi_line_body_as_typed(brain_repo):
+    """A13: no path reflows a body. Mutation: `.strip()` the text."""
+    _run(brain_repo, "note add -- placeholder")
+    _run_text(brain_repo, "note edit n1", "line one\n\n    indented two\nthree  @meeting")
+    note = load_notes(brain_repo / "inbox.md")[0]
+    assert note.body == ["line one", "", "    indented two", "three  @meeting"]
+
+
+def test_note_edit_refuses_a_body_that_would_become_a_header(brain_repo):
+    """The gap CLAUDE.md records: a body line matching `## <id> · <date> · <type>`
+    is read back as a real note and advances the id counter. Reachable the moment
+    a body is editable, so it is refused here rather than left to milestone 6.
+
+    Mutation: write it - `load_notes` then finds a note that nobody captured."""
+    _run(brain_repo, "note add -- placeholder")
+    with pytest.raises(VerbError) as excinfo:
+        _run_text(brain_repo, "note edit n1",
+                  "fine\n## n9 · 2026-10-02 09:00 · note\nsneaky")
+    assert "header" in str(excinfo.value).lower()
+    assert load_notes(brain_repo / "inbox.md")[0].body == ["placeholder"]
+
+
+def test_note_edit_names_a_note_that_is_not_there(brain_repo):
+    with pytest.raises(UnknownReference):
+        _run_text(brain_repo, "note edit n99", "anything")

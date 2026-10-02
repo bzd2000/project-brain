@@ -47,7 +47,7 @@ _HELP_GROUPS = (
     ("writing", [("new",), ("todo",), ("log",), ("decide",), ("query",),
                  ("set",), ("link",)]),
     ("notes", [("note", "add"), ("note", "list"), ("note", "show"),
-               ("note", "flag"), ("note", "drop")]),
+               ("note", "edit"), ("note", "flag"), ("note", "drop")]),
     ("reading", [("context",), ("search",), ("check",), ("build",)]),
     ("the agent's queue", [("request", "add"), ("request", "list"),
                            ("request", "done")]),

@@ -439,40 +439,50 @@ async def test_x_on_a_non_action_line_sends_nothing(brain_repo, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_e_edits_the_focused_action_in_place(brain_repo, monkeypatch):
-    """`e` on an open action (R10.10): the INSERT buffer starts AT the
-    line's own text (06-editing.png) - "the line becomes an INSERT buffer
-    where it sits" - and `⏎` sends `todo <project> edit <index> --
-    <new text>` (R10.10a)."""
-    sent = []
-    monkeypatch.setattr(BrainApp, "run_brain",
-                        lambda self, argv, stdin=None: (sent.append(argv), (0, "edited", ""))[1])
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        _focus_open_action(pilot)
-        await pilot.press("e")
-        assert pilot.app.mode == "INSERT"
-        assert pilot.app.buffer == "Confirm the DNS cutover window with Sara"
-        assert "edit:" in _modeline(pilot)
-        await pilot.press(*(["backspace"] * len(pilot.app.buffer)))
-        await pilot.press(*"Confirm the DNS cutover window with Sara", "enter")
-    assert sent == [["todo", "acme-migration", "edit", "1",
-                     "--", "Confirm the DNS cutover window with Sara"]]
+async def test_the_tui_no_longer_edits_one_action_by_index(brain_repo, monkeypatch):
+    """R10.11e replaced the line-level `e` (R10.10a) with "edit the file", and
+    with it goes the C3 guard that made it safe: `e` used to capture an open
+    action's INDEX at keypress, and the other pane ticking an earlier action
+    shifted every index by one, so ⏎ edited a different action and reported
+    success. The task was re-found by its text at commit time.
 
+    Nothing in the TUI sends `todo … edit` now, so that whole hazard is gone
+    rather than guarded - and `todo <project> edit <n> -- <text>` is still a
+    verb, reachable at `:` and from the shell, with its own tests in
+    test_vocabulary.py.
 
-@pytest.mark.asyncio
-async def test_e_on_a_non_action_line_sends_nothing(brain_repo, monkeypatch):
-    """R10.10a's ruling: `e` on any other line sends nothing and the
-    modeline names what is editable - no verb edits an arbitrary line by
-    position. The detail pane's default cursor (row 0) is the title, not
-    an action."""
+    What replaces the hazard is a different one, handled where it now lives:
+    the editor's buffer can go stale while the other pane writes the same file
+    (see `test_a_stale_buffer_is_refused_rather_than_clobbering`)."""
     sent = []
     monkeypatch.setattr(BrainApp, "run_brain",
                         lambda self, argv, stdin=None: (sent.append(argv), (0, "ok", ""))[1])
     async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("tab", "e")
-        assert pilot.app.mode == "NORMAL"
-        assert "only actions are editable" in _modeline(pilot)
-    assert sent == []
+        _focus_open_action(pilot)
+        await pilot.press("e")
+        assert _editor(pilot) is not None, "`e` opens the file, not the line"
+    assert not any(argv[:2] == ["todo", "acme-migration"] and "edit" in argv
+                   for argv in sent), sent
+
+
+@pytest.mark.asyncio
+async def test_e_does_not_care_which_line_is_focused(brain_repo, monkeypatch):
+    """R10.10a used to rule that `e` edits an open ACTION and refuses any other
+    line, because no verb edits an arbitrary line by position. R10.11e replaced
+    that: `e` edits the selected FILE, so the detail cursor is irrelevant and
+    there is no line to refuse. The position problem went away with the
+    line-level verb - `rewrite` writes the whole source, validated (R10.11d).
+
+    Mutation: keep the `_focused_open_action` guard - `e` on a title then
+    refuses, which is what the user reported as not being able to edit."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "ok", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("tab", "e")       # cursor on the title row, not an action
+        assert _editor(pilot) is not None, "it edits the file anyway"
+        assert "only actions are editable" not in _modeline(pilot)
+    assert sent == [], "nothing is written until `:w`"
 
 
 @pytest.mark.asyncio
@@ -606,278 +616,6 @@ async def test_ctrl_r_is_unbound(brain_repo, monkeypatch):
         assert pilot.app.is_running
         assert pilot.app.mode == mode_before
     assert sent == []
-
-
-@pytest.mark.asyncio
-async def test_ctrl_q_and_ctrl_c_do_not_quit(brain_repo):
-    """Textual's own `App.BINDINGS` ships `ctrl+q` (quit, priority) and
-    `ctrl+c` (help_quit) - a base class's `BINDINGS` merges into a
-    subclass's by default (`DOMNode._merge_bindings` walks the MRO), so
-    declaring `BrainApp`'s own list is not enough on its own to keep R10.2's
-    "no Ctrl chords anywhere" true; without `inherit_bindings=False` on the
-    class, `ctrl+q` really does quit the app - proven by pressing it before
-    that flag existed. `?`'s help screen, not `ctrl+*`, is where R10.7a's
-    reasoning for leaving keys unbound rather than half-built applies."""
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("ctrl+q")
-        assert pilot.app.is_running
-        await pilot.press("ctrl+c")
-        assert pilot.app.is_running
-
-
-def test_ctrl_w_is_the_only_chord_declared_anywhere():
-    """A11e, walked exhaustively rather than sampled: every key `BrainApp` and
-    every `Screen` it defines registers.
-
-    R10.2a added the single exception this asserts - `ctrl+w`, Neovim's window
-    prefix, because it is the one chord a vim user already has in their fingers
-    and R10.2's own escape clause ("it needs a letter or a `:` command instead")
-    had no letter to offer for "the other pane". `Ctrl+R` is still unbound
-    rather than special-cased (R10.7a), so the set is exactly one.
-
-    Textual's own widgets ship `ctrl+c`/`ctrl+pageup`/`ctrl+pagedown` through
-    `Screen` and `ScrollView`; `inherit_bindings=False` drops only `App`'s, so
-    the promise this test can make is about the key map written HERE - which is
-    what a user has to learn. `ctrl+c` not quitting is proven separately by
-    `test_ctrl_q_and_ctrl_c_do_not_quit`."""
-    from brain.tui import BrainApp, CaptureScreen, HelpScreen
-    chords = set()
-    for cls in (BrainApp, CaptureScreen, HelpScreen):
-        for binding in cls.__dict__.get("BINDINGS", []):
-            key = binding.key if hasattr(binding, "key") else binding[0]
-            for part in key.split(","):
-                if "ctrl+" in part:
-                    chords.add(part)
-    assert chords == {"ctrl+w"}, chords
-
-
-async def test_the_detail_cursor_survives_a_write(brain_repo, monkeypatch):
-    """R10.5: the user never loses their place. Every write reloads, and
-    resetting the cursor on reload made the very next `x`/`e`/`d` a silent
-    no-op - tick, undo, edit failed on the third key, with no message.
-    Found by driving the real app, not by a test."""
-    sent = []
-    def fake_run(self, argv, stdin=None):
-        sent.append(argv); return 0, "ok", ""
-    monkeypatch.setattr(BrainApp, "run_brain", fake_run)
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("j", "j", "tab")
-        for _ in range(12):
-            fl = pilot.app.focused_line
-            if fl and fl[2]:
-                break
-            await pilot.press("j")
-        assert pilot.app.focused_line[2] is not None, "no action under the cursor"
-        await pilot.press("x")
-        await pilot.press("x")   # the second one must ALSO know which action
-    assert len(sent) == 2 and sent[0][0] == "todo" == sent[1][0] \
-        and sent[0][2] == "done" == sent[1][2], sent
-
-
-# -- the whole-branch review's four week-wasters ---------------------------
-#
-# Two of the original four are gone with this task's redesign (R10.7b,
-# R10.13's amendment) rather than rewritten:
-#
-# `test_zz_refuses_while_unsent_text_exists_then_discards_on_a_second_zz`
-# drove `i` typing straight into the modeline buffer, Esc returning
-# immediately to NORMAL with the text kept, then ZZ warning about it. `i`
-# now opens `CaptureScreen`; its own Esc ASKS before discarding (confirmed
-# by `test_i_enters_insert_and_esc_returns_keeping_the_text` above) rather
-# than dropping back to NORMAL with the text riding in `app.buffer`, and
-# `check_action` refuses every NORMAL-only action (including `maybe_quit`)
-# while that screen is open - so `ZZ` cannot even reach `action_maybe_quit`
-# until the pane is left, and leaving it always empties it (`:w` sends it,
-# `y` discards it). There is no longer a reachable "quit with an unsent
-# note" state for `ZZ`'s guard to catch; R10.3 protection now lives in the
-# pane's own Esc-confirms mechanism instead.
-#
-# `test_a_prompt_does_not_clobber_a_kept_note` tested C2's stash (`i`, Esc,
-# then a `d`/`s`/`H` prompt did not stomp the parked note). `_stash_note`/
-# `_unstash_note` are deleted with those prompts (R10.7b) - the modeline no
-# longer holds a note for a prompt to clobber in the first place.
-
-async def test_esc_from_command_mode_cancels_the_line(brain_repo):
-    """R10.3a: a command line saves nothing, so Esc cancels it. The earlier
-    reading kept it, which needed forty backspaces to clear."""
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press(":", *"set q4", "escape")
-        assert pilot.app.mode == "NORMAL"
-        await pilot.press(":")
-        assert pilot.app.command == "", pilot.app.command
-
-
-async def test_an_edit_lands_on_the_action_it_started_on(brain_repo, monkeypatch):
-    """C3: `e` captured an open-action INDEX at keypress. The other pane
-    ticking an earlier action shifts every index by one, and ⏎ then edited a
-    different action and reported success. The task is re-found by its text
-    at commit time; if it moved, the write is refused with the text kept."""
-    # The fixture project has ONE open action, so give it a second one
-    # through brain itself - a real write, so the file and the tree agree.
-    from brain import commands as c
-    from brain import grammar as gr
-    c.execute(brain_repo, gr.parse_line("todo acme-migration -- Second open action"))
-
-    sent = []
-    monkeypatch.setattr(BrainApp, "run_brain",
-                        lambda self, a, stdin=None: (sent.append(a), (0, "ok", ""))[1])
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        _focus_open_action(pilot)
-        app = pilot.app
-        # move to the SECOND open action
-        idx = [i for i, (_l, t) in enumerate(app._detail_lines) if t and not t.done][1]
-        app._detail_cursor = idx
-        app._render_detail()
-        await pilot.pause()          # focus lands on the next loop turn
-        project, task, index = app._focused_open_action()
-        assert index == 2 and task.text == "Second open action"
-        await pilot.press("e")
-        # the other pane ticks action 1 while the user is typing
-        path = brain_repo / "projects" / "acme-migration.md"
-        text = path.read_text(encoding="utf-8")
-        first = project.open_actions()[0].text
-        assert "- [ ] " + first in text
-        path.write_text(text.replace("- [ ] " + first, "- [x] " + first, 1), encoding="utf-8")
-        await pilot.pause(1.5)                                 # let the poll reload
-        await pilot.press(*" edited", "enter")
-    assert sent, "nothing was sent"
-    # the edit must land on the action it STARTED on - which is now index 1
-    assert sent[-1][:3] == ["todo", "acme-migration", "edit"], sent[-1]
-    assert sent[-1][3] == "1", "stale index sent: {}".format(sent[-1])
-    assert sent[-1][-1].startswith("Second open action")
-
-
-async def test_reload_survives_a_file_vanishing_between_scans(brain_repo, monkeypatch):
-    """B1: `_poll` guarded its own scan; `reload()` scanned AGAIN, unguarded,
-    and a file the agent unlinked in between took the app down."""
-    # The raise must land in a reload that scans for ITSELF - the one after
-    # a write - not in the poller's scan, which was already guarded. The
-    # first version of this test raised inside the poller's call and stayed
-    # green with reload's guard removed: it proved the wrong path.
-    # The crash was ONLY reachable from the timer: a key handler's reload is
-    # already wrapped by `_guarded`. So: the poller's scan sees a change, and
-    # the scan reload then did for itself raises. Two fences now stop it -
-    # `_poll` passes its scan in so reload does not re-scan, and reload's own
-    # scan is guarded - so this test reddens only when BOTH are removed. That
-    # is acceptable: each alone is sufficient, and the test asserts the
-    # behaviour, not one mechanism.
-    countdown = {"n": -1}
-    real = BrainApp._scan_mtimes
-    def flaky(self):
-        if countdown["n"] > 0:
-            countdown["n"] -= 1
-        elif countdown["n"] == 0:
-            countdown["n"] = -1
-            raise FileNotFoundError("unlinked between glob and stat")
-        return real(self)
-    monkeypatch.setattr(BrainApp, "_scan_mtimes", flaky)
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("i", *"precious")
-        (brain_repo / "inbox.md").write_text("changed\n", encoding="utf-8")
-        countdown["n"] = 1          # next scan (the poll's) succeeds and sees the change;
-        await pilot.pause(1.6)      # the one after (reload's, if it scans) raises
-        assert pilot.app.is_running
-        assert pilot.app.screen.lines == ["precious"]
-
-
-async def test_a_hung_brain_does_not_hang_the_app(brain_repo, monkeypatch):
-    """B2: no timeout meant a stalled child froze every key, ZZ included."""
-    import subprocess as sp
-    def hang(*a, **k):
-        raise sp.TimeoutExpired(cmd=a[0], timeout=30)
-    monkeypatch.setattr(sp, "run", hang)
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("i", *"hello", "enter", ":", "w", "enter")
-        assert pilot.app.is_running
-        foot = str(pilot.app.screen.query_one("#capture-foot").render())
-        assert "abandoned" in foot
-        assert pilot.app.screen.lines == ["hello", ""], "the text is kept for a retry"
-
-
-# -- the inbox in the tree (first finding of the week of use) -------------
-
-async def test_the_inbox_is_in_the_tree_and_a_note_reads_verbatim(brain_repo, monkeypatch):
-    """The modeline counted unprocessed notes and nothing showed them - the
-    one thing the product is built around ("the meeting note is the
-    product", A7) had nowhere in the TUI to be READ. An INBOX group now
-    leads the tree; selecting a note shows its body byte for byte (R4.6.1)."""
-    from brain import commands as c
-    from brain import grammar as gr
-    body = "sara can do thursday -- needs the rollback plan # first"
-    c.execute(brain_repo, gr.parse_line("note add meeting -- " + body))
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        app = pilot.app
-        groups = [str(n.label) for n in app.query_one("#tree").root.children]
-        assert groups[0] == "INBOX", groups
-        await pilot.press("g", "j")
-        assert app.selected.kind == "note" and app.selected.slug == "n1"
-        detail = str(app.query_one("#detail").render())
-        assert body in detail, "the body must appear verbatim"
-        await pilot.press("E")
-        assert app.is_running and "## n1" in str(app.query_one("#detail").render())
-
-
-async def test_enter_on_a_note_search_hit_selects_it(brain_repo):
-    """§10.3 + R6.7: a note hit jumps to its row under INBOX like any other."""
-    from brain import commands as c
-    from brain import grammar as gr
-    c.execute(brain_repo, gr.parse_line("note add note -- zzdistinctive word here"))
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("/", *"zzdistinctive", "enter")
-        await pilot.pause(0.3)
-        assert pilot.app.search_hits and pilot.app.search_hits[0]["kind"] == "note"
-        await pilot.press("enter")
-        await pilot.pause(0.3)
-        assert pilot.app.selected.kind == "note", pilot.app.selected
-
-
-async def test_dropping_a_note_removes_it_from_the_tree(brain_repo):
-    """The daily loop closes inside the TUI: capture, read, file, watch it go."""
-    from brain import commands as c
-    from brain import grammar as gr
-    c.execute(brain_repo, gr.parse_line("note add note -- one"))
-    c.execute(brain_repo, gr.parse_line("note add note -- two"))
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        inbox = pilot.app.query_one("#tree").root.children[0]
-        assert len(inbox.children) == 2
-        await pilot.press(":", *"note drop n1", "enter")
-        await pilot.pause(0.6)
-        inbox = pilot.app.query_one("#tree").root.children[0]
-        assert [str(n.label) for n in inbox.children] == ["▶ n2  note"]
-        assert pilot.app.is_running
-
-
-# -- capture carries the selection (second finding of the week) ------------
-
-async def test_a_note_captured_on_an_entity_is_tagged_with_it(brain_repo, monkeypatch):
-    """"When I'm on a project and add a note, will it take that as a
-    reference?" It did not. Now `i` tags the note with the selected slug -
-    in the machine-written header via `note add --tag`, never in the body
-    (R4.6.1) - so the filer knows where it belongs without an @ref typed."""
-    sent = {}
-    def fake(self, argv, stdin=None):
-        sent["argv"], sent["stdin"] = argv, stdin; return 0, "captured n1", ""
-    monkeypatch.setattr(BrainApp, "run_brain", fake)
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        assert pilot.app.selected.slug == "acme-migration"
-        await pilot.press("i")
-        assert "#acme-migration" in _pane_head(pilot), "the ref must be visible before typing"
-        await pilot.press(*"bram wants sign-off", "enter", ":", "w", "enter")
-    assert sent["argv"] == ["note", "add", "--tag", "acme-migration", "-f", "-"], sent["argv"]
-    assert sent["stdin"] == "bram wants sign-off"
-
-
-async def test_a_note_captured_on_a_group_header_or_a_note_has_no_ref(brain_repo, monkeypatch):
-    """A group header selects nothing, and a note is not a reference - both
-    are how you capture with no tag, and the first works on an empty inbox."""
-    sent = []
-    monkeypatch.setattr(BrainApp, "run_brain",
-                        lambda self, argv, stdin=None: (sent.append(argv), (0, "captured n1", ""))[1])
-    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
-        await pilot.press("g")                       # the INBOX group header
-        assert pilot.app.selected is None
-        await pilot.press("i", *"loose thought", "enter", ":", "w", "enter")
-    assert sent[-1] == ["note", "add", "-f", "-"], sent[-1]
 
 
 @pytest.mark.asyncio
@@ -1494,25 +1232,28 @@ async def test_leaving_an_untouched_view_asks_nothing(brain_repo):
 
 
 @pytest.mark.asyncio
-async def test_a_note_cannot_be_saved_from_the_raw_view(brain_repo, monkeypatch):
-    """R4.6.1/A13: a note body is the user's words and no path rewrites one -
-    and a note's "raw source" is a slice of inbox.md, not a file. Refused by
-    name, before any process is spawned.
+async def test_a_notes_header_is_not_part_of_what_is_edited(brain_repo, monkeypatch):
+    """This test used to assert a note could NOT be saved from the pane (R4.6.1:
+    "nothing ever edits" a body). R10.11e reads that requirement properly:
+    "nothing" is no machine, and the user is the one writer their own words may
+    have. What stays protected is the machine-written part - the id, stamp and
+    type - which `note edit` refuses to take and the editor never shows.
 
-    Mutation: let it through - `rewrite` cannot resolve a note id, so the user
-    gets "matches nothing" about their own note."""
+    Mutation: seed the editor with `note.header + body` - `note edit` then
+    refuses the header line, which is the right refusal to the wrong question."""
     from brain import commands as c
     from brain import grammar as gr
     sent = []
-    c.execute(brain_repo, gr.parse_line("note add -- a thought"))
+    c.execute(brain_repo, gr.parse_line("note add meeting -- steering call"))
     monkeypatch.setattr(BrainApp, "run_brain",
-                        lambda self, argv, stdin=None: (sent.append(argv), (0, "", ""))[1])
+                        lambda self, argv, stdin=None: (sent.append((argv, stdin)),
+                                                        (0, "edited n1", ""))[1])
     async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
         await _select_note(pilot, "n1")
-        await pilot.press("E", "i")
-        assert _editor(pilot) is None, "no editor opens on a note"
-        assert "note" in _modeline(pilot).lower()
-    assert sent == []
+        await pilot.press("e")
+        assert _editor(pilot).text == "steering call"
+        await pilot.press("escape", ":", "w", "enter")
+    assert sent == [(["note", "edit", "n1", "-f", "-"], "steering call")]
 
 
 @pytest.mark.asyncio
@@ -1567,3 +1308,194 @@ async def test_the_raw_header_says_how_to_write(brain_repo):
         shown = _detail(pilot)
         assert "view only" not in shown
         assert "i inserts" in shown and ":w" in shown
+
+
+# -- R10.11e: `e` edits what is selected, in the right pane -------------------
+#
+# The user's own model, 2026-10-02: "i -> add new note (by tagging @meeting,
+# @todo, @someproject...) ... e -> edit the note, or project file, stakeholder
+# file that is selected (the right pane becomes an editor). that is it."
+
+@pytest.mark.asyncio
+async def test_e_opens_the_selected_file_as_an_editor(brain_repo, monkeypatch):
+    """One key, straight into editing - not `E` then `i`. Mutation: keep `e` on
+    `_focused_open_action` and it edits one line of one section instead."""
+    sent = {}
+
+    def fake(self, argv, stdin=None):
+        sent["argv"], sent["stdin"] = argv, stdin
+        return 0, "rewrote acme-migration", ""
+    monkeypatch.setattr(BrainApp, "run_brain", fake)
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        await pilot.press("e")
+        editor = _editor(pilot)
+        assert editor is not None and editor.has_focus, "the pane IS the editor"
+        assert "## Next actions" in editor.text, "the whole file, not one line"
+        editor.text = editor.text + "\n- hand written\n"
+        await pilot.press("escape", ":", "w", "enter")
+    assert sent["argv"] == ["rewrite", "acme-migration", "-f", "-"]
+    assert sent["stdin"].endswith("- hand written\n")
+
+
+@pytest.mark.asyncio
+async def test_e_on_a_stakeholder_edits_that_file(brain_repo, monkeypatch):
+    """"the note, or project file, stakeholder file" - every kind, one key."""
+    sent = {}
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.update(argv=argv), (0, "ok", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "ann")
+        await pilot.press("e")
+        assert "stakeholder: Ann" in _editor(pilot).text
+        await pilot.press("escape", ":", "w", "enter")
+    assert sent["argv"] == ["rewrite", "ann", "-f", "-"]
+
+
+@pytest.mark.asyncio
+async def test_e_on_a_note_edits_its_body_and_saves_through_note_edit(brain_repo, monkeypatch):
+    """A note is editable too, and the editor holds the BODY only: the header is
+    machine-written (R4.6.1) and its id is never reused (R4.6.6), so it is not
+    the user's to retype.
+
+    Mutation: seed the editor with header+body - `note edit` then refuses the
+    header line it was handed, which is the right refusal to the wrong question."""
+    from brain import commands as c
+    from brain import grammar as gr
+    sent = {}
+    c.execute(brain_repo, gr.parse_line("note add -- chase finance  @q4"))
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.update(argv=argv, stdin=stdin),
+                                                        (0, "edited n1", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_note(pilot, "n1")
+        await pilot.press("e")
+        editor = _editor(pilot)
+        assert editor is not None
+        assert editor.text.startswith("chase finance")
+        assert "## n1" not in editor.text, "the header is not editable"
+        editor.text = "chase finance properly  @q4 @todo"
+        await pilot.press("escape", ":", "w", "enter")
+    assert sent["argv"] == ["note", "edit", "n1", "-f", "-"]
+    assert sent["stdin"] == "chase finance properly  @q4 @todo"
+
+
+@pytest.mark.asyncio
+async def test_e_on_nothing_says_what_it_needs(brain_repo, monkeypatch):
+    """A group header is not a selection (`capture_ref`'s rule)."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("g")
+        assert pilot.app.selected is None
+        await pilot.press("e")
+        assert _editor(pilot) is None
+        assert "select" in _modeline(pilot).lower()
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_i_keeps_any_at_tag_the_user_types(brain_repo, monkeypatch):
+    """The other half of the model: `@meeting`, `@todo`, `@anything` are the
+    user's instructions to the LLM, so the pane shows every one of them and the
+    body keeps them byte for byte (R4.6.1) - they are not resolved here and not
+    checked against the entities on disk.
+
+    Mutation: filter the tag line by what resolves - `@todo` disappears and the
+    user cannot see that their instruction landed."""
+    sent = {}
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.update(argv=argv, stdin=stdin),
+                                                        (0, "captured n1", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        await pilot.press("i")
+        await pilot.press(*"ring sara @meeting @todo @nonsense")
+        head = str(pilot.app.screen.query_one("#capture-tags").render())
+        for tag in ("@meeting", "@todo", "@nonsense"):
+            assert tag in head, tag
+        assert "#acme-migration" in _pane_head(pilot), "and the selection tags it"
+        # `:` opens the pane's own command line only at the start of an empty
+        # line, so `sara: thursday 8am` stays the user's words (R10.14).
+        await pilot.press("enter", ":", "w", "enter")
+    assert sent["argv"] == ["note", "add", "--tag", "acme-migration", "-f", "-"]
+    assert sent["stdin"] == "ring sara @meeting @todo @nonsense"
+
+
+@pytest.mark.asyncio
+async def test_a_stale_buffer_is_refused_rather_than_clobbering(brain_repo, monkeypatch):
+    """C4/R10.18: the agent writes the same files from the other pane. `e` reads
+    the file once; `:w` would send the whole source back, so anything written in
+    between would be silently overwritten - the same lost-update hazard C3 found
+    in the line-level `e`, moved to where editing now lives.
+
+    The file is re-read before sending and a difference is refused, naming the
+    override. Mutation: send `editor.text` without comparing - the other pane's
+    write disappears with no message, which is the one failure the split-terminal
+    design cannot afford."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "ok", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        await pilot.press("e")
+        _editor(pilot).text = "---\nproject: Acme\n---\n\n## Summary\n"
+        # the other pane, between the read and the write
+        path = brain_repo / "projects" / "acme-migration.md"
+        path.write_text(path.read_text(encoding="utf-8") + "\n- from the agent\n",
+                        encoding="utf-8")
+        await pilot.press("escape", ":", "w", "enter")
+        assert sent == [], "nothing was sent"
+        assert "changed" in _modeline(pilot)
+        assert _editor(pilot).text.startswith("---"), "the buffer is kept"
+
+
+@pytest.mark.asyncio
+async def test_the_editor_belongs_to_what_opened_it(brain_repo, monkeypatch):
+    """Found by driving, not by the suite: `_open_raw_editor` returned the
+    editor already mounted, so after `e` on a project, moving the selection and
+    pressing `e` again showed the PROJECT's markdown while the modeline said
+    note. `:w` would have written a project file into a note's body.
+
+    The editor is bound to what opened it and saves there whatever the selection
+    does; a clean buffer closes when the selection moves, and a dirty one holds
+    the pane.
+
+    Mutation: send to `self.selected.slug` - the write lands on whatever the
+    cursor happens to be on."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append((argv, stdin)),
+                                                        (0, "ok", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        await pilot.press("e")
+        seeded = _editor(pilot).text
+        assert "project: Acme" in seeded
+        _editor(pilot).text = seeded + "\n- mine\n"
+        # the selection moves under a DIRTY buffer: the pane holds
+        await _select_slug(pilot, "ann")
+        assert _editor(pilot) is not None, "the buffer is not thrown away"
+        assert _editor(pilot).text.endswith("- mine\n")
+        await pilot.press("escape", ":", "w", "enter")
+        assert sent[-1][0] == ["rewrite", "acme-migration", "-f", "-"], \
+            "it saves where it was opened, not where the cursor is"
+        assert sent[-1][1].endswith("- mine\n")
+
+
+@pytest.mark.asyncio
+async def test_a_clean_buffer_lets_the_selection_move_on(brain_repo):
+    """Nothing typed, nothing to hold: the editor closes and the new selection
+    renders normally, so `e` on it seeds from ITS file.
+
+    Mutation: keep the editor mounted - `e` on the next entity then shows the
+    previous one's text, which is the bug this pair is about."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        await pilot.press("e")
+        await pilot.press("escape")
+        await _select_slug(pilot, "ann")
+        assert _editor(pilot) is None and pilot.app.raw_view is False
+        await pilot.press("e")
+        assert "stakeholder: Ann" in _editor(pilot).text
