@@ -1236,3 +1236,93 @@ async def test_the_key_map_admits_the_one_chord(brain_repo):
         assert "No chords" not in subtitle
         assert "Ctrl-W" in subtitle
         assert "Ctrl-W" in str(screen.query_one("#help-body").render())
+
+
+# -- R10.16a: the band says which pane the keys will hit ---------------------
+
+def _ansi_shot(app, width=100):
+    from rich.console import Console
+    console = Console(width=width, force_terminal=True, color_system="truecolor")
+    with console.capture() as cap:
+        console.print(app.screen._compositor)
+    return cap.get().splitlines()
+
+
+def _rgb(hex_colour: str) -> str:
+    h = hex_colour.lstrip("#")
+    return "48;2;{};{};{}".format(*(int(h[i:i + 2], 16) for i in (0, 2, 4)))
+
+
+def _lines_with(shot, code) -> int:
+    return sum(1 for line in shot if code in line)
+
+
+async def _select_slug(pilot, slug):
+    def walk(node):
+        for child in node.children:
+            yield child
+            yield from walk(child)
+    tree = pilot.app.query_one("#tree")
+    node = next(n for n in walk(tree.root)
+                if n.data is not None and getattr(n.data, "slug", None) == slug)
+    tree.move_cursor(node)
+    await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_only_the_focused_pane_shows_a_live_band(brain_repo):
+    """R10.16 says "focus is shown by the selection band, not a border" - but the
+    tree drew its band identically whether focused or not (`EntityTree:focus`
+    suppresses Textual's own tint) and the detail pane drew its band from
+    `_detail_cursor` alone. So after Tab and Tab back, BOTH panes showed the same
+    live band and nothing said which one the next key would hit. Moving focus was
+    indistinguishable from moving nothing - reported from real use as "still not
+    possible to get focus to tree", when focus was in fact moving.
+
+    Exactly one live band on screen, whichever pane has focus.
+
+    Mutation: drop the `active` argument from `_band`, or the `has_focus` check
+    in `EntityTree._render_line` - two bright bands come back."""
+    from brain.tui import SEL
+
+    async with BrainApp(brain_repo).run_test(size=(100, 30)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        live = _rgb(SEL)
+        assert _lines_with(_ansi_shot(pilot.app), live) == 1, "tree focused"
+        await pilot.press("tab")
+        assert _lines_with(_ansi_shot(pilot.app), live) == 1, "detail focused"
+        await pilot.press("tab")
+        assert _lines_with(_ansi_shot(pilot.app), live) == 1, "tree again"
+
+
+@pytest.mark.asyncio
+async def test_the_idle_pane_still_shows_where_it_is(brain_repo):
+    """Dimmed, not erased: the user has to see where they will land on coming
+    back, and R10.12's "the renderer hides nothing" applies to its own cursor.
+
+    Mutation: render the idle band with no ground at all - the row it marks
+    becomes invisible and `Tab` back looks like it reset the cursor."""
+    from brain.tui import SEL_IDLE
+
+    async with BrainApp(brain_repo).run_test(size=(100, 30)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        await pilot.press("tab")
+        shot = _ansi_shot(pilot.app)
+        assert _lines_with(shot, _rgb(SEL_IDLE)) == 1, "the tree still shows its row"
+
+
+@pytest.mark.asyncio
+async def test_focus_returns_to_the_tree_without_any_chord(brain_repo):
+    """R10.2a's own caveat: `Ctrl-W` cannot be delivered by a browser-hosted
+    terminal (code-server, the primary surface under C5 - the browser takes
+    Ctrl+W to close its tab before any application sees it). So every move the
+    chord makes must also be reachable by a letter: `Tab` toggles and `Esc`
+    returns to the tree, both of which arrive everywhere.
+
+    Mutation: make Esc's fall-through stop at the raw view - focus never comes
+    back and on a browser terminal there is then no way back at all."""
+    async with BrainApp(brain_repo).run_test(size=(120, 40)) as pilot:
+        await pilot.press("tab")
+        assert _focused_id(pilot) == "detail"
+        await pilot.press("escape")
+        assert _focused_id(pilot) == "tree"

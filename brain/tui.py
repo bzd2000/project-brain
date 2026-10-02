@@ -71,7 +71,13 @@ LINE2 = "#3a352e"     # a stronger divider; the chip border stand-in
 DIM = "#5a544c"       # dimmed source (R10.12), section headers, glyph rests
 MUTED = "#8d8479"     # muted labels, dates, secondary text
 FG = "#ded7cb"        # body text
-SEL = "#20302f"       # the selected row
+SEL = "#20302f"       # the selected row, in the pane that has focus
+# R10.16a: the same row in the pane that does NOT have focus. R10.16 already
+# said focus is shown by the selection band rather than a border - this is what
+# makes that true of both panes at once. Dimmed, never erased: the user has to
+# see where they will land on coming back (R10.12).
+SEL_IDLE = "#1a2422"
+TEAL_IDLE = "#3c6b6a"
 TEAL = "#5ebdbc"
 VIOLET = "#ad98d5"
 RED = "#df8074"
@@ -251,10 +257,13 @@ class EntityTree(Tree):
         line = lines[y]
         node = line.node
         is_cursor = y == self.cursor_line
-        row_style = base_style + Style(bgcolor=SEL) if is_cursor else base_style
+        live = self.has_focus          # R10.16a: whose keys these are
+        ground = SEL if live else SEL_IDLE
+        row_style = base_style + Style(bgcolor=ground) if is_cursor else base_style
         row_style += Style(meta={"line": y})
         row = Text(style=row_style, no_wrap=True)
-        row.append("▎" if is_cursor else " ", style=Style(color=TEAL))
+        row.append("▎" if is_cursor else " ",
+                   style=Style(color=TEAL if live else TEAL_IDLE))
         depth = max(0, len(line.path) - 1)        # 0 a group, 1 an entity, 2 a nested project
         row.append(" " + "  " * max(0, depth - 1))
         row.append_text(node._label.copy())
@@ -1766,21 +1775,26 @@ def _search_row(hit: dict, entity, query: str, width: int) -> Text:
 SEARCH_SLUG_COLUMN = 20   # 07-search.png: the line starts 23 cells in
 
 
-def _band(text: Text, selected: bool, width: int) -> Text:
+def _band(text: Text, selected: bool, width: int, active: bool = True) -> Text:
     """One detail row as the tree draws its rows: a teal bar at the left
     edge and a `--sel` ground across the whole width when selected, a
     two-cell margin otherwise. Continuation lines of a wrapped row keep the
-    margin; the band covers them too."""
+    margin; the band covers them too.
+
+    `active` is whether this pane has focus (R10.16a). The band was drawn from
+    `_detail_cursor` alone, so after Tab and Tab back BOTH panes showed a live
+    band and nothing said which one the next key would hit."""
     out = Text()
     lines = text.split("\n") if "\n" in text.plain else [text]
     for i, line in enumerate(lines):
         row = Text()
-        row.append("▎" if (selected and i == 0) else " ", style=TEAL)
+        row.append("▎" if (selected and i == 0) else " ",
+                   style=TEAL if active else TEAL_IDLE)
         row.append(" ")
         row.append_text(line)
         if selected:
             row.append(" " * max(0, width + 2 - row.cell_len))
-            row.stylize(Style(bgcolor=SEL))
+            row.stylize(Style(bgcolor=SEL if active else SEL_IDLE))
         if i:
             out.append("\n")
         out.append_text(row)
@@ -2066,6 +2080,18 @@ class BrainApp(App, inherit_bindings=False):
         self._render_detail()
         self._render_modeline()
 
+    # R10.16a: the band is drawn from `_detail_has_focus()`, and focus lands
+    # AFTER the handler that moved it returns - so re-rendering inside
+    # `action_tab` saw the old answer and the band never brightened. Textual
+    # bubbles these two to the app whatever moved the focus: Tab, `Ctrl-W`, Esc
+    # or a mouse click. The tree refreshes itself (its pseudo-classes change),
+    # so only the detail pane needs saying.
+    def on_descendant_focus(self, event) -> None:  # noqa: D401 - event hook
+        self._render_detail()
+
+    def on_descendant_blur(self, event) -> None:  # noqa: D401 - event hook
+        self._render_detail()
+
     def _apply_layout(self) -> None:
         """R10.6: below 100 columns the tree fills the width and the
         detail pane collapses; the modeline is never hidden. Search results
@@ -2338,7 +2364,8 @@ class BrainApp(App, inherit_bindings=False):
             if editing is not None and idx == editing:
                 row = _task_row(row.task, row.lineno, width, editing=self.buffer)
                 is_cursor = False   # the boxed line is the focus (06-editing.png)
-            combined.append_text(_band(row.text, is_cursor, width))
+            combined.append_text(
+                _band(row.text, is_cursor, width, active=self._detail_has_focus()))
             combined.append("\n")
         widget.update(combined)
 

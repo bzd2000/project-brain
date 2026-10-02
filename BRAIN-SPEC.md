@@ -975,6 +975,27 @@ nothing (there is no window above or below), and any other action forgets it.
 `Tab` now toggles both ways. `Ctrl+R` stays unbound (R10.7a). Nothing else in
 the key map may use Ctrl.
 
+**The chord is an extra, never the only way.** A browser-hosted terminal cannot
+deliver it: in code-server — C5's own primary surface, VS Code in a browser —
+`Ctrl+W` is taken by the browser to close its tab before any application sees
+it, and by VS Code to close an editor. It arrives over ssh and in a native
+terminal, and nowhere else. So every move `Ctrl-W` makes is also reachable by a
+letter: `Tab` toggles the panes and `Esc` returns to the tree. This is R10.2's
+original argument, standing: a chord may be offered to the fingers that have it,
+and may never be the only way to reach anything.
+
+**R10.16a The band says which pane the keys will hit.** R10.16 put focus in the
+selection band rather than a border, but the tree drew its band identically
+whether focused or not (`EntityTree:focus` suppresses Textual's own tint) and
+the detail pane drew its band from its cursor alone — so after `Tab` and `Tab`
+back, *both* panes showed a live band and nothing said which one was listening.
+Moving focus was indistinguishable from moving nothing, which is how it was
+reported from real use. The pane with focus draws `--sel` and a teal bar; the
+pane without draws a dimmed ground and a dimmed bar — dimmed, never erased, so
+the user can see where they will land on coming back (R10.12). Focus lands after
+the handler that moved it returns, so the pane is re-rendered from Textual's
+focus events rather than from the handler.
+
 **R10.3 `Esc` always returns to NORMAL** from anywhere, and never discards
 captured text — it leaves what was typed in the buffer. Only an explicit `⏎`
 commits and only an explicit cancel inside the full-screen pane discards.

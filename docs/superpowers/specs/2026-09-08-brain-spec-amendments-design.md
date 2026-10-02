@@ -491,3 +491,37 @@ recording: the claim "no key binding **anywhere** in the application uses Ctrl"
 was never true. Textual's own `Screen` and `ScrollView` ship `ctrl+c`,
 `ctrl+pageup` and `ctrl+pagedown`, and `inherit_bindings=False` drops only
 `App`'s. The honest promise, now asserted, is about the key map written here.
+
+### The chord does not arrive (2026-10-02)
+
+*"still not possible to get focus to tree"*, the day after R10.2a shipped. Two
+causes, and the first one is mine to own.
+
+**The chord cannot work on the platform this project is built for.** `Ctrl-W`
+arrives in a pty — a traced run of the real app shows `window_prefix` firing,
+then `nav_collapse` with the prefix armed, then focus on the tree. It does not
+arrive in **code-server**, which is what is actually running here (4.139.1, VS
+Code in a browser): the browser takes `Ctrl+W` to close its tab before any
+application sees it. C5 names the VS Code integrated terminal as the primary
+platform, and R10.2 banned chords for exactly this reason. I built the chord
+without checking it against the surface it had to work on. It stays — it works
+over ssh, and the request was specific — but R10.2a now says in writing that a
+chord may be offered to fingers that have it and may never be the only way to
+reach anything. `Tab` toggles and `Esc` returns to the tree, everywhere.
+
+**The band did not say which pane was listening (R10.16a).** This is the half
+that made it look broken even where the chord does arrive. Rendering the same
+screen with each pane focused produced *byte-identical* output: the tree's band
+ignores focus (`EntityTree:focus` only suppresses Textual's tint) and the detail
+pane's band is drawn from its cursor alone, so after `Tab` and `Tab` back both
+panes carried a live band. Focus moved; nothing on screen moved. Now the focused
+pane keeps `--sel` and the teal bar and the other is dimmed — and because focus
+lands only after the handler that moved it returns, the re-render hangs off
+Textual's focus events rather than off the key handler, which was why the first
+attempt still drew the old answer.
+
+Worth keeping in view: both of these were found by driving the real app (a pty,
+then a screen diff), not by the suite. 787 tests pass and every one of them
+passed while the two panes were indistinguishable. A test that renders and
+asserts *what differs* is the only kind that could have caught it, and there is
+now one.
