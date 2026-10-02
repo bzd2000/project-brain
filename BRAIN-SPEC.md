@@ -1090,6 +1090,20 @@ processes and a human files by `:` — the human layer is finished by this
 milestone, the design is complete only when both layers run. **That `by :`
 proved unusable in a day of real use; R10.7c puts `t`, `d` and `s` back.**
 
+**R10.11c The raw view takes the keys it needs** (user, 2026-10-02: *"when
+shift+e, it's not focused on the edit pane, and i cannot edit it"*). `E` showed
+the source and left focus on the tree, where `j`/`k` move the selection - so a
+file taller than the pane could not be scrolled at all, and pressing `j` replaced
+what was being read. `E` now focuses the pane it opens; `j`/`k` scroll the source,
+`g`/`G` reach its ends, and `E` or `Esc` hands the tree back. The two keys that
+mean "type into this" - `i` and `e` - are refused by name while it is up, naming
+`E`: `i` used to open the capture pane over the source, which looked like editing
+the file and was in fact writing a note (R4.6.1). There is still **no save
+path** (R10.11b): hand-edited source needs `brain check` to validate it before
+anything writes it back, and a second writer that skips that validation is
+exactly what R3.1 exists to prevent - the front matter it could produce is the
+class of corruption found in `link` on 2026-09-28.
+
 **R10.7c `t`, `d` and `s` act on the selection** (user, 2026-10-01, after the
 week of use R10.7b itself prescribed). R10.7b removed them on the grounds that
 each "asked the human to classify or to pick a field, which is the LLM's job",

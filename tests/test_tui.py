@@ -1326,3 +1326,69 @@ async def test_focus_returns_to_the_tree_without_any_chord(brain_repo):
         assert _focused_id(pilot) == "detail"
         await pilot.press("escape")
         assert _focused_id(pilot) == "tree"
+
+
+# -- R10.11c: the raw view is a view you can actually read -------------------
+
+@pytest.mark.asyncio
+async def test_e_focuses_the_pane_it_opens_and_j_k_scroll_it(brain_repo):
+    """`E` showed the file and left focus on the tree, where `j`/`k` move the
+    SELECTION - so a file taller than the pane could not be scrolled at all, and
+    changing the selection replaced what you were reading. Reported from use as
+    "shift+e, it's not focused on the edit pane".
+
+    Mutation: drop the `focus()` in `action_toggle_raw`, or the `raw_view` branch
+    in `action_nav_down` - `scroll_offset.y` stays 0 and the tree cursor moves
+    instead."""
+    async with BrainApp(brain_repo).run_test(size=(120, 12)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        before = pilot.app.selected.slug
+        await pilot.press("E")
+        assert pilot.app.raw_view
+        assert _focused_id(pilot) == "detail", "the pane you are reading has the keys"
+        scroller = pilot.app.query_one("#detail-scroll")
+        await pilot.press("j", "j", "j")
+        assert scroller.scroll_offset.y > 0, "j scrolls the source"
+        assert pilot.app.selected.slug == before, "and does not move the selection"
+        await pilot.press("k", "k", "k", "k")
+        assert scroller.scroll_offset.y == 0
+        await pilot.press("G")
+        assert scroller.scroll_offset.y > 0, "G goes to the end of the file"
+
+
+@pytest.mark.asyncio
+async def test_leaving_the_raw_view_gives_the_tree_back(brain_repo):
+    """`E` again, or Esc, and the keys belong to the tree once more. Mutation:
+    leave focus on the detail pane - `j` then scrolls a pane showing the normal
+    view while the user expects to move the selection."""
+    async with BrainApp(brain_repo).run_test(size=(120, 12)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        await pilot.press("E")
+        await pilot.press("E")
+        assert pilot.app.raw_view is False
+        assert _focused_id(pilot) == "tree"
+        await pilot.press("E", "escape")
+        assert pilot.app.raw_view is False
+        assert _focused_id(pilot) == "tree"
+
+
+@pytest.mark.asyncio
+async def test_a_typing_key_in_the_raw_view_says_there_is_no_save_path(brain_repo, monkeypatch):
+    """`i` in the raw view opened the CAPTURE pane: it looked like editing the
+    file you were staring at and was in fact writing a note (R4.6.1 - a note is
+    never an edit). R10.11b says the raw view has no save path, so the two keys
+    that mean "type into this" say so and name `E` to leave.
+
+    Mutation: let `i` through - the capture pane opens over the source again."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 20)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        await pilot.press("E")
+        for key in ("i", "e"):
+            await pilot.press(key)
+            assert pilot.app.mode == "NORMAL", key
+            assert type(pilot.app.screen).__name__ != "CaptureScreen", key
+            assert "view" in _modeline(pilot).lower(), key
+    assert sent == []

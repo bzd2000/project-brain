@@ -587,7 +587,7 @@ HELP_SECTIONS = [
         ("d", "record a decision on the selection"),
         ("s", "set the selection's status"),
         ("e", "edit the focused action, in place"),
-        ("E", "show the file as raw source"),
+        ("E", "read the file as raw source - j k g G scroll it, E leaves"),
         ("x", "tick the focused action"),
         ("u", "undo — a git commit, reverted"),
         ("Q", "queue a job for the agent in _request.md"),
@@ -2525,6 +2525,8 @@ class BrainApp(App, inherit_bindings=False):
     @_guarded
     def action_insert(self) -> None:
         """`i`: capture a note, tagged with the selection (R10.13)."""
+        if self._refuse_typing_into_raw("i"):
+            return
         self._open_capture("note")
 
     @_guarded
@@ -2593,6 +2595,7 @@ class BrainApp(App, inherit_bindings=False):
             return
         if self.raw_view:
             self.raw_view = False
+            self.query_one("#tree", Tree).focus()   # R10.11c
             self._render_detail()
             self._render_modeline()
             return
@@ -2830,6 +2833,8 @@ class BrainApp(App, inherit_bindings=False):
     def action_nav_down(self) -> None:
         if self._window(None):        # ctrl+w j: no window below
             return
+        if self._scroll_raw(1):
+            return
         if self._detail_has_focus():
             self._move_detail_cursor(1)
         else:
@@ -2838,6 +2843,8 @@ class BrainApp(App, inherit_bindings=False):
     @_guarded
     def action_nav_up(self) -> None:
         if self._window(None):        # ctrl+w k: no window above
+            return
+        if self._scroll_raw(-1):
             return
         if self._detail_has_focus():
             self._move_detail_cursor(-1)
@@ -2897,11 +2904,16 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_nav_top(self) -> None:
+        if self.raw_view and self._detail_has_focus():
+            self.query_one("#detail-scroll", VerticalScroll).scroll_home(animate=False)
+            return
         tree_widget = self.query_one("#tree", Tree)
         tree_widget.move_cursor_to_line(0)
 
     @_guarded
     def action_nav_bottom(self) -> None:
+        if self._scroll_raw(to_end=True):     # R10.11c: G ends the file
+            return
         tree_widget = self.query_one("#tree", Tree)
         tree_widget.move_cursor_to_line(tree_widget.last_line)
 
@@ -2969,6 +2981,8 @@ class BrainApp(App, inherit_bindings=False):
         and `⏎` sends `todo <project> edit <index> -- <new text>`. Any
         other focused line sends nothing and names what is editable, per
         the ruling: no verb edits an arbitrary line by position."""
+        if self._refuse_typing_into_raw("e"):
+            return
         found = self._focused_open_action()
         if found is None:
             self.notice = Notice(
@@ -2993,13 +3007,48 @@ class BrainApp(App, inherit_bindings=False):
     def action_toggle_raw(self) -> None:
         """`E` (R10.11, R10.11b): toggle the raw-source view. A view only -
         milestone 5 ships no save path, and `_run_command` refuses `:w`
-        here by name rather than silently doing nothing."""
+        here by name rather than silently doing nothing.
+
+        R10.11c: the pane being read takes the keys, so `j`/`k` scroll the
+        source instead of moving the selection out from under it - a file
+        taller than the pane could not be scrolled at all before."""
         if self.selected is None:
             return
         self.raw_view = not self.raw_view
         self._detail_cursor = None
+        if self.raw_view:
+            self.query_one("#detail", DetailPane).focus()
+        else:
+            self.query_one("#tree", Tree).focus()
         self._render_detail()
         self._render_modeline()
+
+    def _scroll_raw(self, lines: Optional[int] = None, to_end: bool = False) -> bool:
+        """Scroll the raw view, if that is what has the keys (R10.11c).
+        Returns True when the key was spent scrolling."""
+        if not (self.raw_view and self._detail_has_focus()):
+            return False
+        scroller = self.query_one("#detail-scroll", VerticalScroll)
+        if to_end:
+            scroller.scroll_end(animate=False)
+        elif lines is not None and lines > 0:
+            scroller.scroll_down(animate=False)
+        else:
+            scroller.scroll_up(animate=False)
+        return True
+
+    # R10.11c: the two keys that mean "type into this". The raw view has no
+    # save path (R10.11b), and `i` used to open the CAPTURE pane over the
+    # source - which looked like editing the file and was in fact writing a
+    # note (R4.6.1: a note is never an edit).
+    def _refuse_typing_into_raw(self, key: str) -> bool:
+        if not self.raw_view:
+            return False
+        self.notice = Notice(
+            "raw source is a view, not an editor (R10.11b) - `E` leaves it, "
+            "and `{}` works again there".format(key), True)
+        self._render_modeline()
+        return True
 
     @_guarded
     def action_undo(self) -> None:
