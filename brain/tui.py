@@ -45,6 +45,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.strip import Strip
 from textual.widgets import Static, TextArea, Tree
+from textual.widgets.text_area import TextAreaTheme
 from textual._segment_tools import line_pad
 from rich.console import Console
 from rich.style import Style
@@ -121,7 +122,16 @@ RAW_COMMANDS = ("w", "wq", "x", "q", "q!")
 # refused too: a second app inside the first is never what `:tui` meant.
 TRANSPORT_TOKENS = ("--json", "-f", "--dry-run")
 
-REF_RE = re.compile(r"@[\w-]+")
+# R10.14b: two namespaces in a note body, and the difference is what the LLM
+# reads. `@slug` is what the note is ABOUT - a project, a person, a board - and
+# becomes a tag on the note (R4.6.3). `@@word` says what to DO with it, and is
+# never a tag: it is an instruction, read from the body at processing.
+#   @@action check with bram for more info on @ia-platform
+# The negative lookbehind is what keeps `@@action` out of `REF_RE` - without it
+# the second `@` matches and the note claims to be about a project called
+# "action".
+REF_RE = re.compile(r"(?<!@)@([\w-]+)")
+MARKER_RE = re.compile(r"@@([\w-]+)")
 
 
 class Notice(NamedTuple):
@@ -191,7 +201,31 @@ class Row(NamedTuple):
 # `AGENTS.md` is written against real notes. The five mirror the verbs of
 # R6.0a - `log`, `todo`, `decide`, `query` - plus `meeting`, which says the note
 # holds many items (R4.6.2).
-TAG_WORDS = ("log", "todo", "decision", "question", "meeting")
+KIND_WORDS = ("action", "decision", "question", "log", "meeting")
+
+
+class Completions(Static):
+    """R10.14c: the candidates for the `@word` being typed, shown while it is
+    being typed.
+
+    Tab-only completion asks the user to know what exists before typing it, which
+    is exactly what they do not know - nobody remembers four slugs, let alone
+    forty. It claims the arrows and Tab while it is up and nothing else: every
+    other key is the user's text (R4.6.1), including the one that narrows this to
+    nothing and dismisses it.
+    """
+
+    DEFAULT_CSS = """
+    Completions {
+        display: none;
+        height: 1;
+        padding: 0 1;
+        background: #1c1a17;
+        color: #ded7cb;
+        dock: bottom;
+    }
+    Completions.showing { display: block; }
+    """
 
 
 class Composer(TextArea):
@@ -221,8 +255,50 @@ class Composer(TextArea):
         color: #ded7cb;
         border: none;
         padding: 0 1;
+        /* Fill what is left of the pane beside the head. Without an explicit
+           height a TextArea inside a scroller takes its content's height, so an
+           empty note collapsed to one row and the pane looked empty - which is
+           what a user typing into it would have seen. */
+        height: 1fr;
+        min-height: 3;
     }
     """
+
+    # R10.14b: the two namespaces are coloured apart. Textual's own line
+    # renderer reads `_highlights` (line -> [(start, end, name)]) and takes the
+    # style from the theme's `syntax_styles`, so this is highlighting THROUGH
+    # the widget rather than painting over it - no `render_line` surgery, and
+    # the cursor, selection and scrolling keep working untouched.
+    THEME = TextAreaTheme(
+        name="brain",
+        syntax_styles={
+            "brain.ref": Style(color=TEAL, bold=True),
+            "brain.marker": Style(color=VIOLET, bold=True),
+        },
+    )
+
+    def on_mount(self) -> None:
+        self.register_theme(self.THEME)
+        self.theme = "brain"
+        self.highlight_brain_syntax()
+
+    def highlight_brain_syntax(self) -> None:
+        """Re-read the body and colour every `@ref` and `@@marker`.
+
+        Markers first, then refs: `REF_RE`'s lookbehind already keeps `@@action`
+        out of the ref list, and doing markers first makes that visible here too.
+        Cheap enough to run on every keystroke - a note is a handful of lines,
+        and a file is tens.
+        """
+        self._highlights.clear()
+        for row, line in enumerate(self.document.lines):
+            for found in MARKER_RE.finditer(line):
+                self._highlights[row].append(
+                    (found.start(), found.end(), "brain.marker"))
+            for found in REF_RE.finditer(line):
+                self._highlights[row].append(
+                    (found.start(), found.end(), "brain.ref"))
+        self.refresh()
 
 
 class DetailPane(Static):
@@ -348,7 +424,8 @@ HELP_SECTIONS = [
     ]),
     ("NORMAL — CAPTURE", [
         ("i", "capture a note, tagged with the selection"),
-        ("", "@ tags it · Tab completes · the LLM reads the tags"),
+        ("", "@project refs it · @@action says what to do"),
+        ("", "both complete as you type · Tab takes one"),
         ("o", "the same, stamped as a meeting"),
     ]),
     ("NORMAL — ACTING", [
@@ -747,6 +824,15 @@ def _portfolio_summary(n_projects: int, n_open: int, n_blocked: int,
     t.append("{} unprocessed".format(n_unprocessed),
               style=(TEAL if n_unprocessed else MUTED))
     return t
+
+
+def _unique(found):
+    """Order-preserving dedupe - a tag typed twice is one tag."""
+    out = []
+    for item in found:
+        if item not in out:
+            out.append(item)
+    return out
 
 
 def _chip(note_type: str) -> Text:
@@ -1773,6 +1859,11 @@ class BrainApp(App, inherit_bindings=False):
         # `self.selected` put a project's markdown into a note's body.
         self._raw_target = None   # (kind, slug) of the file in the editor
         self._capture = None      # (type, ref) while the editor holds a NEW note
+        self._menu: List[str] = []    # R10.14c: candidates for the @word in flight
+        self._menu_lead = "@"         # which namespace they came from
+        self._menu_at = 0             # index of the lead `@` on the cursor's line
+        self._menu_cursor = 0         # which candidate is selected
+        self._menu_done = None        # a word just completed: no menu until it changes
         self._raw_path = None     # and its path, for the "changed under you" check
 
     # -- the one subprocess ------------------------------------------
@@ -1814,6 +1905,10 @@ class BrainApp(App, inherit_bindings=False):
             yield EntityTree(id="tree")
             with VerticalScroll(id="detail-scroll"):
                 yield DetailPane(id="detail", markup=False)
+        # R10.14c: one line above the modeline, not inside the pane - a narrow
+        # terminal collapses the detail pane (R10.6a) and the completions have to
+        # be visible exactly then, while the editor has the whole width.
+        yield Completions(id="completions", markup=False)
         yield Modeline(id="modeline", markup=False)
 
     def check_action(self, action: str, parameters) -> Optional[bool]:
@@ -1848,7 +1943,9 @@ class BrainApp(App, inherit_bindings=False):
             # owns (up/down/enter) - active only while there are search
             # results to move through or open, so a bare `Tree` otherwise
             # keeps its own cursor-up/down/select behaviour unchanged.
-            return self.search_hits is not None
+            # R10.14c: and while the completion menu is up they move THROUGH IT,
+            # which is the one thing it may take from the editor besides Tab.
+            return self.search_hits is not None or bool(self._menu)
         return True
 
     def on_mount(self) -> None:
@@ -1881,10 +1978,24 @@ class BrainApp(App, inherit_bindings=False):
         detail pane collapses; the modeline is never hidden. Search results
         (07-search.png) take the whole width instead of the tree."""
         searching = self.search_hits is not None
+        # `_raw_seed`, not `_raw_editor()`: `remove()` is awaitable and the
+        # widget is still in the DOM when this runs on the way out, so asking the
+        # DOM would keep the tree hidden after `:q!`.
+        editing = self._raw_seed is not None
         narrow = bool(self.size.width and self.size.width < NARROW_COLUMNS) and not searching
         tree_widget = self.query_one("#tree", Tree)
         detail_scroll = self.query_one("#detail-scroll")
         detail = self.query_one("#detail", DetailPane)
+        if narrow and editing:
+            # R10.14d: a narrow terminal collapses the detail pane (R10.6) - but
+            # that is the pane the editor is IN, and collapsing it while the user
+            # types means they cannot see their own words. The tree gives way
+            # instead, exactly as it does for search results.
+            detail_scroll.display = True
+            detail.display = self._capture is not None
+            tree_widget.display = False
+            self.query_one("#searchbar", Static).display = False
+            return
         detail_scroll.display = not narrow
         detail.display = not narrow
         tree_widget.display = not searching
@@ -2151,17 +2262,20 @@ class BrainApp(App, inherit_bindings=False):
         head.append(" " * max(2, width - head.cell_len - stamp.cell_len))
         head.append_text(stamp)
 
-        editor = self._raw_editor()
-        seen = []
-        for found in REF_RE.findall(editor.text if editor is not None else ""):
-            if found not in seen:
-                seen.append(found)
+        body = self._raw_editor().text if self._raw_editor() is not None else ""
+        refs = _unique(REF_RE.findall(body))
+        markers = _unique(MARKER_RE.findall(body))
         tags = Text("tags ", style=DIM)
-        if seen:
-            tags.append(" ".join(seen), style=TEAL)
-            tags.append(" · Tab completes · add dates with !", style=DIM)
+        if refs:
+            tags.append(" ".join("@" + r for r in refs), style=TEAL)
         else:
-            tags.append("none yet · @ tags it, Tab completes", style=DIM)
+            tags.append("none yet", style=DIM)
+        if markers:
+            # R10.14b: shown apart, because they are NOT tags - the note is not
+            # "about" `@@action`; the processing agent reads it as what to do.
+            tags.append("   do ", style=DIM)
+            tags.append(" ".join("@@" + m for m in markers), style=VIOLET)
+        tags.append("   @ refs · @@ acts · Tab completes", style=DIM)
 
         out = Text()
         out.append_text(_band(head, False, width))
@@ -2171,7 +2285,12 @@ class BrainApp(App, inherit_bindings=False):
         self._detail_lines = []
 
     def on_text_area_changed(self, event) -> None:  # noqa: D401 - event hook
-        """The tag line is a read of the body, so it follows every keystroke."""
+        """The tag line and the colours are both reads of the body, so both
+        follow every keystroke (R10.14b)."""
+        editor = self._raw_editor()
+        if editor is not None:
+            editor.highlight_brain_syntax()
+            self._refresh_menu()
         if self._capture is not None:
             self._render_compose_head(self.query_one("#detail", DetailPane))
 
@@ -2464,7 +2583,7 @@ class BrainApp(App, inherit_bindings=False):
         if isinstance(self.screen, HelpScreen):
             self.pop_screen()
             return
-        if self._raw_editing() and self._complete_at():
+        if self._raw_editing() and (self._take_completion() or self._complete_at()):
             return
         if self.mode == INSERT:
             return
@@ -2942,6 +3061,99 @@ class BrainApp(App, inherit_bindings=False):
         found = self.screen.query(Composer)
         return found[0] if found else None
 
+    def _at_word(self):
+        """`(lead, wanted, at)` for the `@word` the cursor sits in, or None.
+
+        `lead` is `@` or `@@`, `wanted` is what has been typed after it, `at` is
+        where the lead starts on the line. A space anywhere in between ends the
+        word - which is what makes the menu disappear by itself.
+        """
+        editor = self._raw_editor()
+        if editor is None:
+            return None
+        row, col = editor.cursor_location
+        before = editor.document.get_line(row)[:col]
+        at = before.rfind("@")
+        if at < 0:
+            return None
+        if any(ch.isspace() for ch in before[at:]):
+            return None
+        if at > 0 and before[at - 1] == "@":
+            return "@@", before[at + 1:], at - 1
+        return "@", before[at + 1:], at
+
+    def _refresh_menu(self) -> None:
+        """R10.14c: the candidates, as the word narrows. Nothing matching means
+        nothing shown - a tag of the user's own invention is normal (R10.14b),
+        not an error, so the menu simply gets out of the way."""
+        widget = self.query_one("#completions", Completions)
+        found = self._at_word()
+        self._menu = []
+        if found is not None and found[0] + found[1] == self._menu_done:
+            # Just completed: the finished word matches itself, so the menu would
+            # pop straight back up over the text it had just filled in. It
+            # returns as soon as the word changes again.
+            found = None
+        if found is not None:
+            self._menu_done = None
+            lead, wanted, at = found
+            pool = KIND_WORDS if lead == "@@" else self._slugs
+            self._menu = [c for c in sorted(pool) if c.startswith(wanted)]
+            self._menu_lead, self._menu_at = lead, at
+        if not self._menu:
+            widget.remove_class("showing")
+            widget.update("")
+            self._menu_cursor = 0
+            return
+        self._menu_cursor = min(self._menu_cursor, len(self._menu) - 1)
+        shown = Text()
+        for index, candidate in enumerate(self._menu[:12]):
+            if index:
+                shown.append("  ")
+            style = "{} on {}".format(GROUND, TEAL) if index == self._menu_cursor \
+                else (VIOLET if self._menu_lead == "@@" else TEAL)
+            shown.append(self._menu_lead + candidate, style=style)
+        if len(self._menu) > 12:
+            shown.append("  +{}".format(len(self._menu) - 12), style=DIM)
+        widget.update(shown)
+        widget.add_class("showing")
+
+    def _take_completion(self) -> bool:
+        """Tab: replace the typed word with the selected candidate.
+
+        Read from the DOCUMENT, not from `self._menu`: the menu is refreshed by a
+        `Changed` message, and a Tab arriving before that message is processed -
+        a fast typist, a paste, a test that does not pause - would otherwise
+        splice in a candidate for the previous word, at the previous word's
+        offset. The menu is the visual aid; the document is the truth.
+
+        R6.2's rule holds either way: the user picked it, nothing was guessed.
+        """
+        found = self._at_word()
+        if found is None:
+            return False
+        lead, wanted, at = found
+        pool = KIND_WORDS if lead == "@@" else self._slugs
+        matches = [c for c in sorted(pool) if c.startswith(wanted)]
+        if not matches:
+            return False
+        editor = self._raw_editor()
+        row, col = editor.cursor_location
+        chosen = lead + matches[self._menu_cursor % len(matches)]
+        editor.replace(chosen, (row, at), (row, col))
+        self._menu = []
+        self._menu_cursor = 0
+        self._menu_done = chosen
+        self._refresh_menu()
+        return True
+
+    def _move_menu(self, delta: int) -> bool:
+        if not self._menu:
+            return False
+        self._menu_cursor = (self._menu_cursor + delta) % len(self._menu)
+        self._refresh_menu()
+        return True
+
     def _complete_at(self) -> bool:
         """`Tab` in the editor: finish the `@word` at the cursor (R10.14a).
 
@@ -2959,8 +3171,13 @@ class BrainApp(App, inherit_bindings=False):
         at = before.rfind("@")
         if at < 0 or " " in before[at:] or "\t" in before[at:]:
             return False          # not in an `@word`: prose is not ours to finish
-        wanted = before[at + 1:]
-        candidates = list(self._slugs) + list(TAG_WORDS)
+        double = at > 0 and before[at - 1] == "@"
+        if double:
+            at -= 1                       # the word starts at the first `@`
+        wanted = before[at + (2 if double else 1):]
+        # R10.14b: `@@` offers what to DO, `@` offers what exists. Neither list
+        # can shadow the other, and `@@acme-migration` is not a thing.
+        candidates = list(KIND_WORDS) if double else list(self._slugs)
         matches = sorted({c for c in candidates if c.startswith(wanted)})
         if not matches:
             return True           # a tag of the user's own: left exactly as typed
@@ -2968,7 +3185,8 @@ class BrainApp(App, inherit_bindings=False):
         if len(common) > len(wanted):
             editor.insert(common[len(wanted):])
         if len(matches) > 1:
-            self.notice = Notice(" ".join("@" + m for m in matches[:8]), False)
+            lead = "@@" if double else "@"
+            self.notice = Notice(" ".join(lead + m for m in matches[:8]), False)
             self._render_modeline()
         return True
 
@@ -2998,6 +3216,7 @@ class BrainApp(App, inherit_bindings=False):
         editor = Composer("", id="raw-editor", soft_wrap=True)
         self.query_one("#detail", DetailPane).display = True
         self.query_one("#detail-scroll", VerticalScroll).mount(editor)
+        self._apply_layout()
         self._render_detail()
         editor.focus()
         self.notice = Notice(
@@ -3037,6 +3256,7 @@ class BrainApp(App, inherit_bindings=False):
             editor = Composer(text, id="raw-editor", soft_wrap=False)
             self.query_one("#detail", DetailPane).display = False
             self.query_one("#detail-scroll", VerticalScroll).mount(editor)
+        self._apply_layout()
         editor.focus()
         # Vim's three ways in differ only in where the cursor lands.
         if vim_key == "a":
@@ -3057,6 +3277,7 @@ class BrainApp(App, inherit_bindings=False):
         self._raw_path = None
         self._capture = None
         self.query_one("#detail", DetailPane).display = True
+        self._apply_layout()      # R10.14d: the tree comes back
 
     def _raw_command(self, word: str) -> None:
         """Vim's write/quit family, in the raw view (R10.11d).
@@ -3101,8 +3322,12 @@ class BrainApp(App, inherit_bindings=False):
         argv = ["note", "add"]
         if note_type == "meeting":
             argv.append("meeting")
-        if ref:
-            argv += ["--tag", ref]
+        # R10.14b: what the note is ABOUT - the selection first (R10.13), then
+        # every `@ref` the body names, deduped. `@@markers` are not tags and are
+        # not here; they stay in the body for the agent to read.
+        tags = _unique(([ref] if ref else []) + REF_RE.findall(editor.text))
+        if tags:
+            argv += ["--tag", " ".join(tags)]
         argv += ["-f", "-"]
         rc, out, err = self.run_brain(argv, stdin=editor.text)
         if rc != 0:
@@ -3303,14 +3528,20 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_search_down(self) -> None:
-        """§10.3: `↓` moves through search results like `n`. `check_action`
-        only makes this binding active while `search_hits` is set, so this
-        body never runs otherwise - the `Tree` keeps its own `cursor_down`."""
+        """§10.3: `↓` moves through search results like `n`. `check_action` makes
+        this binding active only while `search_hits` is set or the completion menu
+        is up (R10.14c), so otherwise the `Tree` keeps its own `cursor_down`."""
+        if self._move_menu(1):
+            return
         self.action_next_hit()
 
     @_guarded
     def action_search_up(self) -> None:
-        """§10.3: `↑` moves through search results like `N`."""
+        """§10.3: `↑` moves through search results like `N`. R10.14c: while the
+        completion menu is up it moves through that instead - the editor has the
+        keys, and this is one of the two it lends."""
+        if self._move_menu(-1):
+            return
         self.action_prev_hit()
 
     @_guarded

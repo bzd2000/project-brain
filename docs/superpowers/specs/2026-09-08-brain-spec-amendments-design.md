@@ -622,3 +622,37 @@ cursor. Three of the four real defects in this branch were found by driving the
 app (the identical-band bug, the stale label, this one). The suite is good at
 "does this function do what it says" and blind to "is the thing in front of me
 the thing I think it is".
+
+### Two sigils, and the editor nobody could see (2026-10-02)
+
+*"`@` is to reference something project, stakeholder. `@@` is to combine with
+action, decision -> `@@action check with bram for more info on @ia-platform`.
+`@@` is not added as tag to the note. there should be syntax highlighting and
+visual completion for `@` and `@@`."*
+
+This is better than the single `@` namespace it replaced, and for a reason worth
+writing down: with one sigil, `@meeting` had to be either a tag naming something
+called "meeting" or an instruction, and no reader could tell which. Two sigils
+make the note self-describing - what it is **about** and what to **do** with it -
+and the tag list stops lying. The negative lookbehind in `REF_RE` is the whole
+load-bearing character: without it the second `@` of `@@action` matches and the
+note claims to be about a project called "action".
+
+`@@` words complete from a five-word list mirroring the verbs (`action`,
+`decision`, `question`, `log`, `meeting`); `@` completes from the slugs on disk.
+Neither validates. A tag the user invented is not an error, and nothing here
+should teach them otherwise - what the words *mean* is milestone 6's to settle.
+
+**The two bugs this turned up are the point of the entry.** Adding the completion
+row collapsed the right pane, and rendering the screen showed why: a `TextArea`
+inside a scroller with no explicit height takes its content's height, so an empty
+note was one row tall - a user typing into it would have seen nothing. Then at 70
+columns R10.6's narrow layout hid the whole pane the editor lives in. 833 tests
+passed through both. Every one of them asked "does the widget hold the right
+text", none asked "can a human see it".
+
+That is now four defects on this branch found by looking at the screen rather than
+by the suite (identical focus bands, the stale `view only` label, the editor bound
+to the wrong entity, and this pair). The pattern is consistent enough to name: a
+test that drives a widget proves the mechanism; only a render proves the product.
+Where a change touches layout, render it at 70 and at 120 columns and look.

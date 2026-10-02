@@ -1186,6 +1186,51 @@ must be present and in order, action syntax must be intact. A save that would
 break the format is rejected with the reason, and nothing is written. This is
 the escape hatch for structural fixes, not the daily path.
 
+**R10.14b `@` references, `@@` instructs** (user, 2026-10-02: *"`@` is to
+reference something project, stakeholder. `@@` is to combine with action,
+decision -> `@@action check with bram for more info on @ia-platform`. `@@` is not
+added as tag to the note"*).
+
+Two namespaces in a note body, and the difference is what the processing agent
+reads:
+
+| written | means | becomes a tag? |
+|---|---|---|
+| `@<slug>` | what the note is **about** - a project, person, program, board (R4.6.3) | **yes** - the selection first, then every `@ref` the body names, deduped |
+| `@@<word>` | what to **do** with it - `action`, `decision`, `question`, `log`, `meeting` | **no**, ever - it is an instruction, read from the body at processing |
+
+`@@action check with bram for more info on @ia-platform` is therefore one note
+about `ia-platform` that says an action is wanted. The pane shows the two apart -
+`tags @ia-platform   do @@action` - so a marker can never be mistaken for a
+reference. Neither list validates: `@@whatever` and `@not-a-project` are kept
+exactly as typed, because they are the user's instructions to their own model, and
+milestone 6 fixes their meaning when `AGENTS.md` is written against real notes.
+
+**R10.14c The completion is visible** (same message: *"there should be syntax
+highlighting and visual completion"*). The candidates appear on a line above the
+modeline while an `@word` is being typed, narrowing on each keystroke; the arrows
+move through them and `Tab` takes the selected one. Tab-only completion asked the
+user to know what existed before typing it, which is exactly what they do not
+know. The menu claims the arrows and `Tab` while it is up **and nothing else** -
+every other key is the user's text (R4.6.1), including the one that narrows it to
+nothing and dismisses it. `Tab` reads the word from the document rather than from
+the menu's state, so a keystroke arriving before the menu has refreshed cannot
+splice in a candidate for the previous word.
+
+**Syntax highlighting** colours `@refs` and `@@markers` apart, through Textual's
+own `_highlights` map and a `TextAreaTheme`, so the cursor, selection and
+scrolling are untouched. It follows every keystroke, because a colour that lags
+says the text is something it no longer is.
+
+**R10.14d The editor is never the pane that collapses.** R10.6 collapses the
+detail pane below 100 columns - and that is where the editor lives, so the tree
+gives way instead while editing, as it already does for search results. A
+`TextArea` with no explicit height also takes its *content's* height inside a
+scroller, which made an empty note one row tall in a pane that read as empty;
+`height: 1fr` with a floor of three. Both were found by rendering the screen at
+70 and 112 columns, not by a test - every assertion about this editor passed
+while it was invisible.
+
 **R10.14a One editor, with `@` completion** (user, 2026-10-02: *"the editor for
 `i` and `e` should be the same and supporting `@` completion for reference to
 project, stakeholders, `@meeting`, to indicate it's a meeting, `@action`, if i

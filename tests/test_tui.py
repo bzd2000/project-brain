@@ -1,5 +1,6 @@
 """R10.2-R10.6, R10.18. Every test here is skipped when textual is absent
 (A11) - the CLI suite never depends on it."""
+import re
 import pytest
 textual = pytest.importorskip("textual")
 
@@ -268,7 +269,10 @@ async def test_o_opens_the_capture_pane_and_w_saves_one_note(brain_repo, monkeyp
         await pilot.press(*" @acme", "escape", ":", "w", "enter")
         assert _editor(pilot) is None
         assert pilot.app.mode == "NORMAL"
-    assert sent["argv"] == ["note", "add", "meeting", "--tag", "acme-migration", "-f", "-"]
+    # R10.14b: the selection, then the body's `@refs` - `@acme` is one, typed
+    # unresolved, and goes on as the user wrote it. The body is untouched.
+    assert sent["argv"] == ["note", "add", "meeting", "--tag", "acme-migration acme",
+                            "-f", "-"]
     assert sent["stdin"] == "first line\nsara: thursday 8am @acme"
     assert "first line" not in " ".join(sent["argv"])
 
@@ -1411,16 +1415,17 @@ async def test_i_keeps_any_at_tag_the_user_types(brain_repo, monkeypatch):
     async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
         await _select_slug(pilot, "acme-migration")
         await pilot.press("i")
-        await pilot.press(*"ring sara @meeting @todo @nonsense")
+        await pilot.press(*"ring sara @@meeting @@todo @nonsense")
         head = _pane_head(pilot)
-        for tag in ("@meeting", "@todo", "@nonsense"):
-            assert tag in head, tag
+        for shown in ("@@meeting", "@@todo", "@nonsense"):
+            assert shown in head, shown
         assert "#acme-migration" in _pane_head(pilot), "and the selection tags it"
         # `:` opens the pane's own command line only at the start of an empty
         # line, so `sara: thursday 8am` stays the user's words (R10.14).
         await pilot.press("escape", ":", "w", "enter")
-    assert sent["argv"] == ["note", "add", "--tag", "acme-migration", "-f", "-"]
-    assert sent["stdin"] == "ring sara @meeting @todo @nonsense"
+    assert sent["argv"] == ["note", "add", "--tag", "acme-migration nonsense",
+                            "-f", "-"], "markers are not tags; an unknown ref is"
+    assert sent["stdin"] == "ring sara @@meeting @@todo @nonsense"
 
 
 @pytest.mark.asyncio
@@ -1521,22 +1526,22 @@ async def test_tab_completes_an_at_reference_to_an_entity(brain_repo):
 
 
 @pytest.mark.asyncio
-async def test_tab_completes_the_instruction_tags(brain_repo):
-    """`@meeting`, `@todo`, `@decision`, `@question`, `@log` - the words that
-    tell the LLM what the note is. They are HINTS, not a vocabulary this program
-    owns: nothing validates them and anything else typed is kept.
+async def test_tab_completes_the_kind_markers_behind_two_ats(brain_repo):
+    """R10.14b: `@@action`, `@@decision`, `@@question`, `@@log`, `@@meeting` - the
+    words that say what to do. They are HINTS, not a vocabulary this program owns:
+    nothing validates them and anything else typed is kept.
 
-    Mutation: validate against the list - `@whatever` is then refused, and the
+    Mutation: validate against the list - `@@whatever` is then refused, and the
     user's own instruction to their own model is rejected by the editor."""
     async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
         await pilot.press("i")
         editor = _editor(pilot)
-        editor.insert("ring sara @meet")
+        editor.insert("ring sara @@meet")
         await pilot.press("tab")
-        assert editor.text.endswith("@meeting")
-        editor.insert(" @whatever")
+        assert editor.text.endswith("@@meeting")
+        editor.insert(" @@whatever")
         await pilot.press("tab")
-        assert editor.text.endswith("@whatever"), "unknown tags are left alone"
+        assert editor.text.endswith("@@whatever"), "unknown markers are left alone"
 
 
 @pytest.mark.asyncio
@@ -1564,3 +1569,259 @@ async def test_tab_outside_an_at_word_is_not_a_completion(brain_repo):
         editor.insert("ring sara")
         await pilot.press("tab")
         assert editor.text == "ring sara"
+
+
+# -- R10.14b: `@` references an entity, `@@` says what to do with it ----------
+#
+# The user's syntax, 2026-10-02: "@ is to reference something project,
+# stakeholder. @@ is to combine with action, decision -> "@@action check with
+# bram for more info on @ia-platform". @@ is not added as tag to the note."
+
+@pytest.mark.asyncio
+async def test_at_completes_entities_only_and_at_at_completes_the_kinds(brain_repo):
+    """Two namespaces, two candidate lists. `@` offers what exists on disk; `@@`
+    offers the words that say what to DO - they cannot be confused, and neither
+    can shadow the other.
+
+    Mutation: one list for both - `@a` then offers `@action`, which is not an
+    entity, and `@@acme-migration` becomes typeable, which means nothing."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i")
+        editor = _editor(pilot)
+        editor.insert("@acme")
+        await pilot.press("tab")
+        assert editor.text == "@acme-migration", "@ is an entity reference"
+        editor.insert(" @@act")
+        await pilot.press("tab")
+        assert editor.text.endswith("@@action"), "@@ is a kind marker"
+        editor.insert(" @@acme")
+        await pilot.press("tab")
+        assert editor.text.endswith("@@acme"), "an entity is not a kind"
+
+
+@pytest.mark.asyncio
+async def test_only_at_refs_become_tags_on_the_note(brain_repo, monkeypatch):
+    """"@@ is not added as tag to the note": the tags are what the note is ABOUT
+    (R4.6.3), and `@@action` says what to do with it - a different thing, read
+    from the body at processing.
+
+    Mutation: collect `REF_RE` over the body - `@@action` matches `@action`
+    inside it and the note claims to be about a project called "action"."""
+    sent = {}
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.update(argv=argv, stdin=stdin),
+                                                        (0, "captured n1", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "ann")
+        await pilot.press("i")
+        _editor(pilot).insert("@@action check with bram on @acme-migration")
+        await pilot.press("escape", ":", "w", "enter")
+    assert sent["argv"] == ["note", "add", "--tag", "ann acme-migration", "-f", "-"], \
+        "the selection, then the body's @refs - and no @@word"
+    assert sent["stdin"] == "@@action check with bram on @acme-migration", \
+        "the body is untouched: the markers stay where the user put them (R4.6.1)"
+
+
+@pytest.mark.asyncio
+async def test_the_tag_line_shows_refs_and_markers_apart(brain_repo):
+    """The pane is a read of the body (R10.13), so it has to read it the way the
+    processing agent will: refs are what it is about, markers are instructions.
+
+    Mutation: one line for both - the user cannot see that `@@action` is not
+    being filed as a project."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "ann")
+        await pilot.press("i")
+        _editor(pilot).insert("@@action ring @acme-migration")
+        await pilot.pause()
+        shown = _pane_head(pilot)
+        assert "@acme-migration" in shown
+        assert "@@action" in shown
+        assert "@action" not in shown.replace("@@action", ""), \
+            "a marker is never shown as a reference"
+
+
+@pytest.mark.asyncio
+async def test_refs_and_markers_are_highlighted_as_you_type(brain_repo):
+    """R10.14b wants the two namespaces visible, not just honoured: a `@ref` and
+    a `@@marker` read differently, so they are coloured differently - the editor
+    is where the user decides whether they typed what they meant.
+
+    Asserts the highlight map rather than pixels: it is the input to Textual's
+    own line renderer, and the theme's `syntax_styles` carry the colours.
+
+    Mutation: highlight with one name - both go the same colour and the
+    distinction the whole syntax rests on is invisible."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i")
+        editor = _editor(pilot)
+        editor.insert("@@action ring @acme-migration about @@decision")
+        await pilot.pause()
+        spans = editor._highlights[0]
+        named = sorted((editor.document.get_line(0)[s:e], name) for s, e, name in spans)
+        assert ("@acme-migration", "brain.ref") in named
+        assert ("@@action", "brain.marker") in named
+        assert ("@@decision", "brain.marker") in named
+        assert not any(name == "brain.ref" and text.startswith("@@")
+                       for text, name in named), "a marker is never a ref"
+
+
+@pytest.mark.asyncio
+async def test_the_highlight_follows_an_edit(brain_repo):
+    """Typing `@acm` then finishing it must recolour: a highlight map built once
+    at mount would leave the colours lagging a keystroke behind, which is worse
+    than none - it would say the text is something it no longer is.
+
+    Mutation: build the map in `_open_composer` only."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i")
+        editor = _editor(pilot)
+        editor.insert("@acme")
+        await pilot.pause()
+        first = list(editor._highlights[0])
+        editor.insert("-migration")
+        await pilot.pause()
+        second = list(editor._highlights[0])
+        assert second != first
+        start, end, name = second[0]
+        assert editor.document.get_line(0)[start:end] == "@acme-migration"
+
+
+@pytest.mark.asyncio
+async def test_highlighting_survives_a_file_opened_with_e(brain_repo):
+    """`e` opens a file in the same editor (R10.14a), and a file's body can hold
+    `@refs` too - a log line names a project. One editor, one highlighter.
+
+    Mutation: apply the map only when composing a note."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        await pilot.press("e")
+        editor = _editor(pilot)
+        editor.insert("\n- 2026-10-02 - rang @ann\n")
+        await pilot.pause()
+        hits = [name for spans in editor._highlights.values() for _s, _e, name in spans]
+        assert "brain.ref" in hits
+
+
+# -- R10.14c: the completion is visible while you type -----------------------
+
+def _menu(pilot):
+    """The completion row, or None when it is not up. The widget is always
+    mounted and hidden by a CSS class, so "is it showing" is the real question."""
+    found = pilot.app.screen.query("#completions")
+    if not found:
+        return None
+    widget = found[0]
+    return widget if widget.has_class("showing") else None
+
+
+def _menu_text(pilot) -> str:
+    menu = _menu(pilot)
+    return "" if menu is None else re.sub(r"\s+", " ", str(menu.render()))
+
+
+@pytest.mark.asyncio
+async def test_a_menu_appears_while_an_at_word_is_being_typed(brain_repo):
+    """"there should be syntax highlighting and visual completion": Tab-only
+    completion asks the user to know what exists before typing it. The candidates
+    are shown as the word narrows, which is the whole point - the fixture has
+    four entities and nobody remembers four slugs.
+
+    Mutation: build the menu on Tab - it is then a reward for guessing right."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i")
+        assert _menu(pilot) is None, "nothing to complete yet"
+        await pilot.press(*"ring @a")
+        assert _menu(pilot) is not None
+        shown = _menu_text(pilot)
+        assert "acme-migration" in shown
+        assert "ann" in shown
+        assert "q4-budget" not in shown, "it narrows as the word grows"
+
+
+@pytest.mark.asyncio
+async def test_the_menu_offers_markers_behind_two_ats(brain_repo):
+    """The same menu, the other namespace (R10.14b). Mutation: one candidate
+    list - entities appear under `@@`, which cannot mean anything."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i", *"@@")
+        shown = _menu_text(pilot)
+        assert "action" in shown and "decision" in shown
+        assert "acme-migration" not in shown
+
+
+@pytest.mark.asyncio
+async def test_the_menu_goes_away_when_the_word_ends(brain_repo):
+    """A space finishes the word, so the menu has nothing to say. Mutation: leave
+    it up - it covers the text underneath for the rest of the note."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i", *"@ann", " ")
+        assert _menu(pilot) is None
+
+
+@pytest.mark.asyncio
+async def test_arrows_move_through_the_menu_and_tab_takes_one(brain_repo):
+    """With more than one candidate, Tab used to fill only the common prefix and
+    stop. The menu makes the choice itself reachable: the arrows move, Tab takes
+    what is selected.
+
+    Mutation: have Tab always fill the common prefix - `@a` then never gets past
+    `a`, because `acme-migration` and `ann` share nothing further."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i", *"@a")
+        assert _menu(pilot) is not None
+        await pilot.press("down")
+        await pilot.press("tab")
+        assert _editor(pilot).text in ("@acme-migration", "@ann"), _editor(pilot).text
+        assert _menu(pilot) is None, "taking one closes the menu"
+
+
+@pytest.mark.asyncio
+async def test_the_menu_never_eats_a_key_the_editor_needs(brain_repo):
+    """Every key is the user's text (R4.6.1): the menu may claim the arrows and
+    Tab while it is up, and nothing else - a letter must reach the document even
+    if it narrows the menu to nothing.
+
+    Mutation: swallow printable keys while the menu is up - the note loses the
+    character that would have dismissed it."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i", *"@zzz")
+        assert _editor(pilot).text == "@zzz"
+        assert _menu(pilot) is None, "no candidate matches, so nothing is shown"
+        await pilot.press("escape", ":", *"q!", "enter")
+        assert _editor(pilot) is None
+
+
+@pytest.mark.asyncio
+async def test_the_editor_is_visible_in_a_narrow_terminal(brain_repo):
+    """R10.14d: R10.6 collapses the detail pane below 100 columns - and that is
+    the pane the editor is in. Collapsing it while the user types means they
+    cannot see their own words, so the TREE gives way instead, as it does for
+    search results.
+
+    Found by rendering at 70 columns, not by a test: every assertion about this
+    editor passed while it was invisible.
+
+    Mutation: let `narrow` win - the right pane disappears mid-note."""
+    async with BrainApp(brain_repo).run_test(size=(70, 20)) as pilot:
+        await pilot.press("i")
+        assert pilot.app.query_one("#detail-scroll").display is True
+        assert pilot.app.query_one("#tree").display is False
+        editor = _editor(pilot)
+        editor.insert("a thought")
+        await pilot.pause()
+        assert editor.size.height > 1, "and it has room to type in"
+        await pilot.press("escape", ":", *"q!", "enter")
+        assert pilot.app.query_one("#tree").display is True, "the tree comes back"
+
+
+@pytest.mark.asyncio
+async def test_the_empty_editor_fills_the_pane(brain_repo):
+    """The same bug one layer down: a `TextArea` with no explicit height takes its
+    CONTENT's height inside a scroller, so an empty note was one row tall and the
+    pane read as empty. `height: 1fr` with a floor.
+
+    Mutation: drop the height from Composer's CSS - this fails at 1."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i")
+        assert _editor(pilot).size.height >= 3
