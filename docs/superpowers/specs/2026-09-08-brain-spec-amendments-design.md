@@ -552,11 +552,29 @@ put you in insert mode. Mounting the editor only on `i` also keeps the styled
 read view R10.12 wants, and means a `TextArea` exists only while something is
 being edited. Cost if wrong: one extra keystroke.
 
-**`Esc` stops editing and keeps the buffer; only `y` discards.** R10.3 says Esc
+This cost was paid within the hour — *"typed shift+E, but I cannot write
+anything"* — and the cause was not the decision but the **label**: the pane
+header still read `raw · view only (R10.11b)`, asserting the opposite of the
+truth, so the one place that could have said "press `i`" said the feature did not
+exist. The ruling stands (it is what vim does, and the user's next message was
+*"align with vim commands as much as possible"*); the header now reads
+`raw · i inserts · :w writes · :q closes`. The lesson is cheap and general: a
+status label is part of the feature, and the build that adds a capability has to
+go and find every line that claimed it was absent.
+
+**The write/quit family is vim's, five words long.** `:w`, `:wq`, `:x`, `:q`,
+`:q!`, honoured only while the raw view is up; everything else at `:` is a `brain`
+verb (R10.8), so this is not a second grammar. `i`/`a`/`o` are vim's three ways
+into insert, differing only in where the cursor lands. The ad-hoc `y`-to-discard
+prompt an earlier round of this work invented is gone: "no write since last
+change", with `:q!` as the override, is one rule for `E`, `Esc` and `:q`, and it
+is a rule the user already knows. Cost if wrong: `a` spends a letter R10.2's
+budget was keeping free, though only inside the raw view.
+
+**`Esc` stops editing and keeps the buffer.** R10.3 says Esc
 never discards captured text, and R10.3a's "an edit cancels, because the original
 is safe in the file" was written about one line (`e`), not about a structural
-rewrite of a whole file. Many lines of work in memory is the capture pane's
-situation, so it follows the capture pane's rule. While a buffer is unsaved,
+rewrite of a whole file. While a buffer is unsaved,
 `Tab` and `ctrl+w h` also refuse to move focus to the tree, because changing the
 selection re-renders the view that buffer belongs to.
 

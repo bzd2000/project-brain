@@ -1192,16 +1192,29 @@ it was always written and closes R10.11b below, by doing what R10.11b actually
 asked for: the validator exists **once**, in `brain/validate.py`, and both
 `brain check` and the save call it. Nothing in the TUI knows the format (R3.1).
 
+**It is spelled the way vim spells it** (user, 2026-10-02: *"align with vim
+commands as much as possible"*). A file opens in a normal state and `i` inserts;
+that is why `E` alone does not type, and the pane's own header says so — it read
+`raw · view only (R10.11b)` for a day after the save was built, which is what
+*"typed shift+E, but I cannot write anything"* was reading. A label that asserts
+the opposite of the truth is worse than no label.
+
 | key | |
 |---|---|
-| `E` | opens the source to read - `j k g G` scroll it |
-| `i` | edits it, in the pane; every key is text from then on |
-| `Esc` | stops editing and **keeps the buffer** - `i` resumes |
-| `:w` | saves it through `brain rewrite <entity> -f -`; `:wq` saves and leaves |
-| `E` / `Esc` | leaves; with unsaved edits it asks, and `y` is the only key that discards |
+| `E` | opens the source - `j k g G` scroll it, as in a normal-mode buffer |
+| `i` `a` `o` | insert: at the cursor, after it, on a new line below. `a` is not a key elsewhere, and `o` still captures elsewhere |
+| `Esc` | stops inserting and **keeps the buffer** - `i` resumes |
+| `:w` `:wq` `:x` | write, and write-and-close, through `brain rewrite <entity> -f -` |
+| `:q` `:q!` | close; `:q` is refused while the buffer is modified, `:q!` is the override |
+| `E` / `Esc` | close, under the same rule as `:q` |
 
-A refusal keeps every character (R10.18a): losing a structural edit to a
-validation error would make R8.5's escape hatch unusable. While a buffer is
+**"No write since last change"** is the one rule for `E`, `Esc` and `:q`, in vim's
+own words, naming `:q!`. This is an alignment with a vim user's fingers, not a vim
+emulator: `RAW_COMMANDS` is five words long, honoured only while the raw view is
+up, and everything else at `:` is a `brain` verb (R10.8).
+
+A refusal from `brain` keeps every character (R10.18a): losing a structural edit
+to a validation error would make R8.5's escape hatch unusable. While a buffer is
 unsaved, `Tab` and `ctrl+w h` will not move focus to the tree, because changing
 the selection re-renders the view the buffer belongs to. A **note** is refused by
 name: its body is the user's words (R4.6.1, A13) and its "raw source" is a slice

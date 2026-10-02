@@ -1458,13 +1458,13 @@ async def test_a_refused_save_keeps_every_character(brain_repo, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_leaving_with_unsaved_edits_asks_first(brain_repo, monkeypatch):
-    """R10.3: only an explicit cancel discards. The capture pane's rule, applied
-    to the one other place in the app where many lines of the user's work live
-    in memory.
+async def test_closing_with_unsaved_edits_is_refused_the_way_vim_refuses(brain_repo, monkeypatch):
+    """R10.3 says only an explicit cancel discards, and R10.11d spells that as
+    vim already spells it: "no write since last change", with `:q!` as the
+    override. One rule for `E`, `Esc` and `:q`, rather than a prompt per key.
 
     Mutation: close on `E` regardless - a structural edit vanishes on a keypress
-    that the user means as "show me the rendered view again"."""
+    the user means as "show me the rendered view again"."""
     monkeypatch.setattr(BrainApp, "run_brain",
                         lambda self, argv, stdin=None: (0, "", ""))
     async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
@@ -1473,9 +1473,13 @@ async def test_leaving_with_unsaved_edits_asks_first(brain_repo, monkeypatch):
         _editor(pilot).text = "half an edit"
         await pilot.press("escape", "E")
         assert pilot.app.raw_view, "not closed yet"
-        assert "y" in _modeline(pilot).lower()
-        await pilot.press("y")
-        assert pilot.app.raw_view is False
+        assert "no write since last change" in _modeline(pilot)
+        await pilot.press("escape")
+        assert pilot.app.raw_view, "Esc is refused for the same reason"
+        await pilot.press(":", *"q", "enter")
+        assert pilot.app.raw_view, "and so is :q"
+        await pilot.press("escape", ":", *"q!", "enter")
+        assert pilot.app.raw_view is False, ":q! is the override"
         assert _focused_id(pilot) == "tree"
 
 
@@ -1509,3 +1513,57 @@ async def test_a_note_cannot_be_saved_from_the_raw_view(brain_repo, monkeypatch)
         assert _editor(pilot) is None, "no editor opens on a note"
         assert "note" in _modeline(pilot).lower()
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_the_raw_view_speaks_vims_write_and_quit_family(brain_repo, monkeypatch):
+    """R10.11d: `:w` writes, `:wq` and `:x` write and close, `:q` closes, `:q!`
+    closes regardless. Only in the raw view - everywhere else `:` is a `brain`
+    verb (R10.8), so these words are not a second grammar.
+
+    Mutation: handle only `w`/`wq` - `:x` and `:q` then reach `brain` and come
+    back as "unknown verb 'x'", which is the papercut this closes."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "rewrote", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        await pilot.press("E", "i", "escape", ":", *"x", "enter")
+        assert pilot.app.raw_view is False, ":x wrote and closed"
+        assert sent and sent[-1][0] == "rewrite"
+        await pilot.press("E", "i", "escape", ":", *"q", "enter")
+        assert pilot.app.raw_view is False, ":q closes an untouched buffer"
+
+
+@pytest.mark.asyncio
+async def test_a_and_o_are_vims_other_two_ways_into_insert(brain_repo):
+    """R10.11d. `a` is not a key outside the raw view and `o` still captures
+    there, so neither steals a letter (R10.2's "every letter available").
+
+    Mutation: bind `a` ungated - it then shadows nothing today but takes the
+    letter, which is the budget R10.2 is spending."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        await pilot.press("a")
+        assert _editor(pilot) is None, "`a` is not a key outside the raw view"
+        await pilot.press("E", "a")
+        assert _editor(pilot) is not None and _editor(pilot).has_focus
+        await pilot.press("escape", "E")
+        await pilot.press("E", "o")
+        assert _editor(pilot) is not None and _editor(pilot).has_focus
+
+
+@pytest.mark.asyncio
+async def test_the_raw_header_says_how_to_write(brain_repo):
+    """It said `raw · view only (R10.11b)` for a day after R10.11d built the
+    save - a label asserting the opposite of the truth, and what "typed shift+E,
+    but I cannot write anything" was reading.
+
+    Mutation: restore the old tag - the pane then teaches the user it is
+    read-only while `i` works."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        await pilot.press("E")
+        shown = _detail(pilot)
+        assert "view only" not in shown
+        assert "i inserts" in shown and ":w" in shown

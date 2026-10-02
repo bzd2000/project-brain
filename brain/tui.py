@@ -111,6 +111,11 @@ GENERATED_RE = re.compile(r"^<!--\s*generated\b.*-->$")
 
 NORMAL, INSERT, COMMAND = "NORMAL", "INSERT", "COMMAND"
 
+# R10.11d: vim's write/quit family, honoured only while the raw view is up.
+# Everything else at `:` is a `brain` verb (R10.8) - this is an alignment with
+# the fingers of a vim user, not a vim emulator.
+RAW_COMMANDS = ("w", "wq", "x", "q", "q!")
+
 # R10.8a: argv transport, not verb semantics. COMMAND mode does not offer
 # them, and `-f -` in particular would read the TUI's own stdin. `tui` is
 # refused too: a second app inside the first is never what `:tui` meant.
@@ -612,7 +617,7 @@ HELP_SECTIONS = [
         ("s", "set the selection's status"),
         ("e", "edit the focused action, in place"),
         ("E", "read the file as raw source - j k g G scroll it, E leaves"),
-        ("i", "in the raw view: edit the source · :w saves it"),
+        ("i a o", "in the raw view: insert · :w writes · :q closes"),
         ("x", "tick the focused action"),
         ("u", "undo — a git commit, reverted"),
         ("Q", "queue a job for the agent in _request.md"),
@@ -1933,6 +1938,10 @@ class BrainApp(App, inherit_bindings=False):
         Binding("G", "nav_bottom", "bottom", show=False),
         Binding("i", "insert", "note", show=False),
         Binding("o", "capture", "capture", show=False),
+        # R10.11d: vim's other two ways into insert, honoured only in the raw
+        # view (`check_action` gates them) - `a` after the cursor, `o` on a new
+        # line below it. Outside it, `a` is not a key and `o` captures.
+        Binding("a", "insert_after", "append", show=False),
         # R10.7b/R10.15: `t`, `d`, `s`, `H` are unbound - each asked the human
         # to classify or pick a field the LLM should decide instead (A22).
         # Task 4: acting keys, search, help, quit (R10.3's "acting" table).
@@ -1975,9 +1984,6 @@ class BrainApp(App, inherit_bindings=False):
         # a bare `w` is still not a key (R10.2's "every letter available").
         Binding("ctrl+w", "window_prefix", "window", show=False, priority=True),
         Binding("w", "window_cycle", "cycle", show=False, priority=True),
-        # R10.11d: only answers `E`'s "discard unsaved edits?"; gated in
-        # `check_action`, so `y` is not a key on its own.
-        Binding("y", "discard_raw", "discard", show=False),
     ]
 
     def __init__(self, root, **kwargs):
@@ -2021,7 +2027,6 @@ class BrainApp(App, inherit_bindings=False):
         self._pending_z = False   # ZZ: true right after a lone Z (R10.3's table)
         self._pending_w = False   # ctrl+w: true right after the window prefix (R10.2a)
         self._raw_seed = None     # R10.11d: the source `i` started from, for the dirty check
-        self._raw_discard = False  # true while asking whether to drop unsaved edits
 
     # -- the one subprocess ------------------------------------------
     def run_brain(self, argv, stdin=None):
@@ -2081,7 +2086,7 @@ class BrainApp(App, inherit_bindings=False):
         if action not in ("window_prefix", "window_cycle", "nav_collapse",
                           "nav_expand", "nav_down", "nav_up"):
             self._pending_w = False
-        if action == "discard_raw" and not self._raw_discard:
+        if action == "insert_after" and not self.raw_view:
             return False
         if action == "window_cycle" and not self._pending_w:
             # `w` is bound only so the prefix can reach it. On its own it is
@@ -2434,7 +2439,11 @@ class BrainApp(App, inherit_bindings=False):
         except (ValueError, TypeError, AttributeError):
             shown = self.selected.slug
         head = Text(shown, style=DIM)
-        tag = Text("raw · view only (R10.11b)", style=DIM)
+        # R10.11d: it said "view only (R10.11b)" for a day after the save was
+        # built - a label that tells the user the opposite of the truth is
+        # worse than no label, and is what "I cannot write anything" was
+        # reading. Says the vim commands instead, because they are the answer.
+        tag = Text("raw · i inserts · :w writes · :q closes", style=DIM)
         head.append(" " * max(2, width - head.cell_len - tag.cell_len))
         head.append_text(tag)
         text.append_text(_band(head, False, width))
@@ -2569,8 +2578,17 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_capture(self) -> None:
-        """`o`: the same pane, stamped `meeting` (R10.14)."""
+        """`o`: the same pane, stamped `meeting` (R10.14) - or, in the raw view,
+        vim's "open a line below and insert" (R10.11d)."""
+        if self.raw_view:
+            self._open_raw_editor(vim_key="o")
+            return
         self._open_capture("meeting")
+
+    @_guarded
+    def action_insert_after(self) -> None:
+        """`a` in the raw view: insert after the cursor, as in vim."""
+        self._open_raw_editor(vim_key="a")
 
     def _preview_note_id(self) -> str:
         """The id `note add` will assign if nothing else captures first - a
@@ -2637,11 +2655,7 @@ class BrainApp(App, inherit_bindings=False):
                     "stopped editing - `:w` saves, `i` resumes, `E` leaves", False)
                 self._render_modeline()
                 return
-            if self._raw_dirty() and not self._raw_discard:
-                self._raw_discard = True
-                self.notice = Notice(
-                    "unsaved edits - `y` discards them, `:w` saves first", True)
-                self._render_modeline()
+            if self._refuse_unsaved("closes it"):
                 return
             self._close_raw_editor()
             self.raw_view = False
@@ -2803,17 +2817,9 @@ class BrainApp(App, inherit_bindings=False):
         would split it - `grammar.parse_line`, not shlex - so everything
         after the first ` -- ` is one argv element, verbatim. A grammar
         error or a refusal keeps the line for correction."""
-        if self.raw_view and self.command.strip() in ("w", "wq"):
-            # R10.11/R10.11d: the save `R10.11b` deferred. The validation it
-            # waited for is `validate.problems`, built once in `brain` and
-            # called by `rewrite` and `check` both - so nothing here knows the
-            # format, exactly as R3.1 requires.
-            # R10.18a: a refusal keeps the line for correction, like every
-            # other refusal in COMMAND - only a save that happened leaves it.
-            if self._save_raw(leave=self.command.strip() == "wq"):
-                self.command = ""
-                self._leave_to_normal()
-            return
+        if self.raw_view and self.command.strip() in RAW_COMMANDS:
+            return self._raw_command(self.command.strip())
+
         try:
             parsed = grammar.parse_line(self.command)
         except BrainError as exc:
@@ -3083,14 +3089,7 @@ class BrainApp(App, inherit_bindings=False):
         taller than the pane could not be scrolled at all before."""
         if self.selected is None:
             return
-        if self.raw_view and self._raw_dirty() and not self._raw_discard:
-            # R10.3: only an explicit cancel discards. The same rule the capture
-            # pane follows, applied to the other place in the app where many
-            # lines of the user's work live only in memory.
-            self._raw_discard = True
-            self.notice = Notice(
-                "unsaved edits - `y` discards them, `:w` saves first", True)
-            self._render_modeline()
+        if self.raw_view and self._refuse_unsaved("closes it"):
             return
         self.raw_view = not self.raw_view
         self._detail_cursor = None
@@ -3102,19 +3101,17 @@ class BrainApp(App, inherit_bindings=False):
         self._render_detail()
         self._render_modeline()
 
-    @_guarded
-    def action_discard_raw(self) -> None:
-        """`y`, and only while `E` has asked (R10.3's "explicit cancel"). It is
-        bound at all times and gated here, so `y` is otherwise not a key."""
-        if not self._raw_discard:
-            return
-        self._raw_discard = False
-        self._close_raw_editor()
-        self.raw_view = False
-        self.notice = None
-        self.query_one("#tree", Tree).focus()
-        self._render_detail()
+    def _refuse_unsaved(self, what: str) -> bool:
+        """Vim's rule, in vim's words: a close with unsaved changes is refused
+        and names the override. `E`, `Esc` and `ZZ` all go through here, so
+        there is one rule rather than a prompt per key (R10.3)."""
+        if not self._raw_dirty():
+            return False
+        self.notice = Notice(
+            "no write since last change - `:w` writes, `:q!` {} without "
+            "saving".format(what), True)
         self._render_modeline()
+        return True
 
     def _scroll_raw(self, lines: Optional[int] = None, to_end: bool = False) -> bool:
         """Scroll the raw view, if that is what has the keys (R10.11c).
@@ -3161,7 +3158,7 @@ class BrainApp(App, inherit_bindings=False):
         return editor is not None and self._raw_seed is not None \
             and editor.text != self._raw_seed
 
-    def _open_raw_editor(self) -> None:
+    def _open_raw_editor(self, vim_key: str = "i") -> None:
         """`i` in the raw view: the file's own text, in the pane, editable.
 
         A note is refused by name (R4.6.1, A13): its body is the user's words,
@@ -3188,7 +3185,14 @@ class BrainApp(App, inherit_bindings=False):
             self.query_one("#detail", DetailPane).display = False
             self.query_one("#detail-scroll", VerticalScroll).mount(editor)
         editor.focus()
-        self.notice = Notice("editing - esc stops, :w saves, E leaves", False)
+        # Vim's three ways in differ only in where the cursor lands.
+        if vim_key == "a":
+            editor.action_cursor_right()
+        elif vim_key == "o":
+            editor.action_cursor_line_end()
+            editor.insert("\n")
+        self.notice = Notice(
+            "editing - esc stops, :w writes, :q closes", False)
         self._render_modeline()
 
     def _close_raw_editor(self) -> None:
@@ -3196,8 +3200,43 @@ class BrainApp(App, inherit_bindings=False):
         if editor is not None:
             editor.remove()
         self._raw_seed = None
-        self._raw_discard = False
         self.query_one("#detail", DetailPane).display = True
+
+    def _raw_command(self, word: str) -> None:
+        """Vim's write/quit family, in the raw view (R10.11d).
+
+        `:w` writes, `:wq` and `:x` write and close, `:q` closes and is refused
+        while the buffer is modified, `:q!` closes regardless. These are the
+        commands a vim user's fingers already know, and they are the only ones
+        here: this is not a vim emulator, and anything else at `:` is still a
+        `brain` verb (R10.8).
+
+        R10.18a: a refusal keeps the line for correction - only a command that
+        did something leaves COMMAND.
+        """
+        if word in ("w", "wq", "x"):
+            # The validation `R10.11b` waited for is `validate.problems`, built
+            # once in `brain` and called by `rewrite` and `check` both - so
+            # nothing here knows the format, exactly as R3.1 requires.
+            if not self._save_raw(leave=word in ("wq", "x")):
+                return
+        elif word == "q":
+            if self._refuse_unsaved("closes it"):
+                return
+            self._leave_raw()
+        else:
+            assert word == "q!", word
+            self._leave_raw()
+        self.command = ""
+        self._leave_to_normal()
+
+    def _leave_raw(self) -> None:
+        """Close the raw view, buffer and all, and give the tree back."""
+        self._close_raw_editor()
+        self.raw_view = False
+        self.query_one("#tree", Tree).focus()
+        self._render_detail()
+        self._render_modeline()
 
     def _save_raw(self, leave: bool = False) -> bool:
         """`:w` / `:wq` (R10.11): the whole buffer to `brain rewrite` on stdin.
