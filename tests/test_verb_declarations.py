@@ -27,7 +27,11 @@ EXPECTED_REF_KINDS = {
     ("query",): (),    # any kind (R6.0a)
     ("set",): (),      # any kind (R6.0a)
     ("link",): (),     # any kind - the pairing is `_link_check`'s job (R6.0a)
+    ("rewrite",): (),  # any kind; the source it writes is that kind's shape (R10.11)
 }
+
+# Non-batchable for a reason the AST walk cannot see (see the test below).
+NON_BATCHABLE_FOR_OTHER_REASONS = {("rewrite",)}
 
 EXPECTED_FLAG_REFS = {
     ("log",): {"ref": ()},
@@ -373,6 +377,14 @@ def test_a_verb_that_commits_on_its_own_declares_batchable_false():
             and getattr(node.func.value, "id", None) == "git"
             for node in ast.walk(tree)
         )
+        if name in NON_BATCHABLE_FOR_OTHER_REASONS:
+            assert not verb.batchable, " ".join(name)
+            assert not commits_itself, (
+                "{} is listed as non-batchable for a reason OTHER than committing "
+                "on its own, but its body commits - update the list".format(
+                    " ".join(name))
+            )
+            continue
         assert commits_itself == (not verb.batchable), (
             "{}: body calls git.commit/git.undo={}, declares batchable={}".format(
                 " ".join(name), commits_itself, verb.batchable
@@ -380,9 +392,14 @@ def test_a_verb_that_commits_on_its_own_declares_batchable_false():
         )
 
 
-def test_only_undo_is_declared_non_batchable():
+def test_exactly_two_verbs_are_declared_non_batchable():
     """The audit's current, expected conclusion, spelled out as data so a
     reviewer (or a future change) can see the claim without re-deriving it
-    from the AST walk above."""
+    from the AST walk above.
+
+    `undo` because it commits on its own (M2). `rewrite` for a different reason
+    (R10.11): free text runs to the end of its line (R6.4), so a batch line
+    could only ever carry a one-line document - the verb takes its source on
+    stdin and has nothing to read inside a batch."""
     non_batchable = {name for name, v in c.VERBS.items() if not v.batchable}
-    assert non_batchable == {("undo",)}
+    assert non_batchable == {("undo",), ("rewrite",)}

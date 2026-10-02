@@ -565,10 +565,14 @@ async def test_ZZ_quits(brain_repo):
 
 
 @pytest.mark.asyncio
-async def test_E_shows_raw_source_and_refuses_w(brain_repo, monkeypatch):
-    """`E` toggles a raw-source view (R10.11); `:w` inside it is refused
-    naming R10.11b - no save path exists and none may be added, so nothing
-    is ever sent to `run_brain` for it."""
+async def test_E_shows_raw_source_and_w_needs_something_to_save(brain_repo, monkeypatch):
+    """`E` toggles a raw-source view (R10.11) and shows what the rendered view
+    never does.
+
+    `:w` with nothing being edited says so rather than spawning anything: until
+    `i` opens the editor there is no buffer, and R10.11b's old refusal ("no save
+    path exists and none may be added") is gone - R10.11d built the save, with
+    the validator R10.11b was waiting for."""
     sent = []
     monkeypatch.setattr(BrainApp, "run_brain",
                         lambda self, argv, stdin=None: (sent.append(argv), (0, "ok", ""))[1])
@@ -580,11 +584,11 @@ async def test_E_shows_raw_source_and_refuses_w(brain_repo, monkeypatch):
         assert "project: Acme" in after, "the raw front matter is now visible"
         assert "project: Acme" not in before, "the rendered view never showed it"
         await pilot.press(":", "w", "enter")
-        assert "R10.11b" in _modeline(pilot)
+        assert "nothing is being edited" in _modeline(pilot)
         assert pilot.app.raw_view is True, "the refusal does not silently leave the view"
         await pilot.press("escape", "E")
         assert pilot.app.raw_view is False
-    assert sent == [], "no verb exists for this - nothing may be spawned"
+    assert sent == [], "nothing to save means nothing is spawned"
 
 
 @pytest.mark.asyncio
@@ -1373,22 +1377,135 @@ async def test_leaving_the_raw_view_gives_the_tree_back(brain_repo):
 
 
 @pytest.mark.asyncio
-async def test_a_typing_key_in_the_raw_view_says_there_is_no_save_path(brain_repo, monkeypatch):
-    """`i` in the raw view opened the CAPTURE pane: it looked like editing the
-    file you were staring at and was in fact writing a note (R4.6.1 - a note is
-    never an edit). R10.11b says the raw view has no save path, so the two keys
-    that mean "type into this" say so and name `E` to leave.
+async def test_i_in_the_raw_view_does_not_open_the_capture_pane(brain_repo, monkeypatch):
+    """`i` in the raw view used to open the CAPTURE pane: it looked like editing
+    the file you were staring at and was in fact writing a note (R4.6.1 - a note
+    is never an edit). Under R10.11d it edits the source instead, and `e` - which
+    means "edit the focused action", of which there are none here - is refused by
+    name pointing at `i`.
 
-    Mutation: let `i` through - the capture pane opens over the source again."""
+    Mutation: let `i` through to `action_insert` - the capture pane opens over
+    the source again."""
     sent = []
     monkeypatch.setattr(BrainApp, "run_brain",
                         lambda self, argv, stdin=None: (sent.append(argv), (0, "", ""))[1])
     async with BrainApp(brain_repo).run_test(size=(120, 20)) as pilot:
         await _select_slug(pilot, "acme-migration")
         await pilot.press("E")
-        for key in ("i", "e"):
-            await pilot.press(key)
-            assert pilot.app.mode == "NORMAL", key
-            assert type(pilot.app.screen).__name__ != "CaptureScreen", key
-            assert "view" in _modeline(pilot).lower(), key
+        await pilot.press("e")
+        assert type(pilot.app.screen).__name__ != "CaptureScreen"
+        assert "i" in _modeline(pilot)
+        await pilot.press("i")
+        assert type(pilot.app.screen).__name__ != "CaptureScreen"
+    assert sent == []
+
+
+# -- R10.11d: the raw pane is editable and `:w` saves ------------------------
+
+def _editor(pilot):
+    from brain.tui import RawEditor
+    found = pilot.app.screen.query(RawEditor)
+    return found[0] if found else None
+
+
+@pytest.mark.asyncio
+async def test_i_edits_the_raw_source_and_w_saves_it_through_rewrite(brain_repo, monkeypatch):
+    """R10.11 as written: "The pane shows the file as text, editable... `:w`
+    saves". The save is one `run_brain` call to `rewrite <entity> -f -`, whose
+    stdin is the whole buffer - the TUI never writes the file (R3.1), and the
+    validation is `brain`'s (R10.11b).
+
+    Mutation: send the text by argv - a document cannot travel that way (R6.4c)
+    and the assertion on `stdin` fails."""
+    sent = {}
+
+    def fake(self, argv, stdin=None):
+        sent["argv"], sent["stdin"] = argv, stdin
+        return 0, "rewrote acme-migration", ""
+    monkeypatch.setattr(BrainApp, "run_brain", fake)
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        await pilot.press("E", "i")
+        editor = _editor(pilot)
+        assert editor is not None and editor.has_focus, "`i` edits in the pane"
+        assert "## Log" in editor.text, "seeded with the file"
+        editor.text = editor.text + "\nedited by hand\n"
+        await pilot.press("escape")
+        assert pilot.app.mode == "NORMAL"
+        await pilot.press(":", "w", "enter")
+    assert sent["argv"] == ["rewrite", "acme-migration", "-f", "-"]
+    assert sent["stdin"].endswith("edited by hand\n")
+
+
+@pytest.mark.asyncio
+async def test_a_refused_save_keeps_every_character(brain_repo, monkeypatch):
+    """R10.18a, and the whole reason the validation is `brain`'s: a refusal is
+    the design working. The buffer survives for correction - losing a structural
+    edit to a validation error would make the escape hatch unusable.
+
+    Mutation: close the view on any answer - the text is gone."""
+    def refused(self, argv, stdin=None):
+        return 1, "", "brain: refusing to write acme-migration: missing section(s): Decisions."
+    monkeypatch.setattr(BrainApp, "run_brain", refused)
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        await pilot.press("E", "i")
+        _editor(pilot).text = "---\nproject: x\n---\n"
+        await pilot.press("escape", ":", "w", "enter")
+        assert pilot.app.raw_view, "still in the raw view"
+        assert _editor(pilot).text == "---\nproject: x\n---\n"
+        assert "missing section" in _modeline(pilot)
+
+
+@pytest.mark.asyncio
+async def test_leaving_with_unsaved_edits_asks_first(brain_repo, monkeypatch):
+    """R10.3: only an explicit cancel discards. The capture pane's rule, applied
+    to the one other place in the app where many lines of the user's work live
+    in memory.
+
+    Mutation: close on `E` regardless - a structural edit vanishes on a keypress
+    that the user means as "show me the rendered view again"."""
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (0, "", ""))
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        await pilot.press("E", "i")
+        _editor(pilot).text = "half an edit"
+        await pilot.press("escape", "E")
+        assert pilot.app.raw_view, "not closed yet"
+        assert "y" in _modeline(pilot).lower()
+        await pilot.press("y")
+        assert pilot.app.raw_view is False
+        assert _focused_id(pilot) == "tree"
+
+
+@pytest.mark.asyncio
+async def test_leaving_an_untouched_view_asks_nothing(brain_repo):
+    """Nothing typed, nothing to lose. Mutation: compare against the empty
+    string rather than the text `i` seeded - every view then asks."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "acme-migration")
+        await pilot.press("E", "i", "escape", "E")
+        assert pilot.app.raw_view is False
+
+
+@pytest.mark.asyncio
+async def test_a_note_cannot_be_saved_from_the_raw_view(brain_repo, monkeypatch):
+    """R4.6.1/A13: a note body is the user's words and no path rewrites one -
+    and a note's "raw source" is a slice of inbox.md, not a file. Refused by
+    name, before any process is spawned.
+
+    Mutation: let it through - `rewrite` cannot resolve a note id, so the user
+    gets "matches nothing" about their own note."""
+    from brain import commands as c
+    from brain import grammar as gr
+    sent = []
+    c.execute(brain_repo, gr.parse_line("note add -- a thought"))
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_note(pilot, "n1")
+        await pilot.press("E", "i")
+        assert _editor(pilot) is None, "no editor opens on a note"
+        assert "note" in _modeline(pilot).lower()
     assert sent == []

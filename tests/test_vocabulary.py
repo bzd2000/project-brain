@@ -21,6 +21,12 @@ def _run(root, line):
     return c.execute(root, gr.parse_line(line))
 
 
+def _run_text(root, line, text):
+    """A verb whose free text arrived on stdin rather than in the line - what
+    `-f -` does in `cli.py` (R6.4c: a document cannot travel by argv)."""
+    return c.execute(root, gr.parse_line(line)._replace(text=text))
+
+
 def _lines(path):
     return path.read_text(encoding="utf-8").splitlines()
 
@@ -862,3 +868,68 @@ def test_note_list_still_refuses_a_type_that_is_not_one(brain_repo):
     message = str(excinfo.value)
     assert "note, meeting" in message
     assert "action" in message, "the accepted legacy names are named too"
+
+
+# ---- R10.11/R10.11d: `rewrite <entity> -f -`, the validated save -----------
+
+def _source(path):
+    return path.read_text(encoding="utf-8")
+
+
+def test_rewrite_replaces_the_whole_source(brain_repo):
+    """R8.5 reserves `rewrite` for "restructuring work the verbs cannot
+    express"; this is its one-shot form, which the TUI's `E` needs (R10.11).
+    Mutation: write the text as one line - `text.split` is not optional."""
+    path = brain_repo / "projects" / "q4-budget.md"
+    new = _source(path).replace("## Log", "## Log\n\n- 2026-09-30 - by hand")
+    result = _run_text(brain_repo, "rewrite q4-budget", new)
+    assert "q4-budget" in result.message
+    assert "- 2026-09-30 - by hand" in _source(path)
+    assert Project(path).doc.problems == []
+
+
+def test_rewrite_refuses_a_source_that_would_not_parse(brain_repo):
+    """R10.11: "A save that would break the format is rejected with the reason,
+    and nothing is written." The validator is `validate.problems`, shared with
+    `check` (R10.11b). Mutation: save first and validate after."""
+    path = brain_repo / "projects" / "q4-budget.md"
+    before = _source(path)
+    broken = before.replace("## Decisions\n", "")
+    with pytest.raises(VerbError) as excinfo:
+        _run_text(brain_repo, "rewrite q4-budget", broken)
+    assert "Decisions" in str(excinfo.value)
+    assert _source(path) == before, "nothing written"
+
+
+def test_rewrite_names_every_problem_at_once(brain_repo):
+    """One refusal listing everything: a save that fixed one problem and failed
+    on the next would cost the user their text twice. Mutation: return on the
+    first problem found."""
+    path = brain_repo / "projects" / "q4-budget.md"
+    broken = _source(path).replace("## Decisions\n", "").replace("## Log", "## Log\n\n- [] oops")
+    with pytest.raises(VerbError) as excinfo:
+        _run_text(brain_repo, "rewrite q4-budget", broken)
+    message = str(excinfo.value)
+    assert "Decisions" in message
+
+
+def test_rewrite_keeps_the_files_own_line_endings(brain_repo):
+    """R5.2, and C5 makes Windows primary: the TUI sends LF whatever the file
+    has, so the save must put the file's own endings back. Mutation: write the
+    text as given."""
+    path = brain_repo / "projects" / "q4-budget.md"
+    path.write_bytes(_source(path).replace("\n", "\r\n").encode("utf-8"))
+    from brain import git as g
+    g.commit(brain_repo, ["projects/q4-budget.md"], "crlf", source="cli")
+    _run_text(brain_repo, "rewrite q4-budget", _source(path).replace("\r\n", "\n"))
+    raw = path.read_bytes()
+    assert b"\r\n" in raw and raw.count(b"\n") == raw.count(b"\r\n"), "every ending is CRLF"
+
+
+def test_rewrite_is_not_batchable(brain_repo):
+    """A batch line cannot carry a document: free text runs to the end of the
+    line (R6.4), so `rewrite` in a batch would write a one-line file. Refused by
+    name, before anything is applied (R6.5.1)."""
+    with pytest.raises(c.BatchError) as excinfo:
+        c.validate_batch(brain_repo, "rewrite q4-budget -- hello\n")
+    assert "rewrite" in str(excinfo.value)

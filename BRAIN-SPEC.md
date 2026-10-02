@@ -130,6 +130,7 @@ under `projects/`, `stakeholders/`, `boards/`, `programs/` by hand.
 | `brain/grammar.py` | The line grammar of R6.4 | stdlib |
 | `brain/resolve.py` | Reference resolution (R6.2) | stdlib |
 | `brain/commands.py` | The command verbs and their execution | stdlib |
+| `brain/validate.py` | What a file must satisfy before a write (R10.11) | stdlib |
 | `brain/index.py` | `_index.json`, digests, search index | stdlib |
 | `brain/git.py` | commit, checkpoint, diff, revert | stdlib |
 | `brain/lock.py` | the single-writer lock of R11.7 | stdlib |
@@ -575,7 +576,8 @@ brain build                    # _index.json + program roll-ups
 brain check [--authored] [--fix]
 brain request add -- <text> | list | done <n>
 brain undo
-brain rewrite <entity> [--finish|--abort]   # escape hatch, §8.4
+brain rewrite <entity> -f -                 # replace the whole source, validated (R10.11d)
+brain rewrite <entity> [--finish|--abort]   # escape hatch, §8.4 - not built
 ```
 
 **R6.0 ter — two words, two ends of the pipeline.** *A note is raw input
@@ -1184,7 +1186,39 @@ must be present and in order, action syntax must be intact. A save that would
 break the format is rejected with the reason, and nothing is written. This is
 the escape hatch for structural fixes, not the daily path.
 
-**R10.11b Raw-source *saving* waits for `brain check`.** The validation R10.11
+**R10.11d The raw pane edits, and `:w` saves** (user, 2026-10-02: *"shift+e
+should be able to edit the raw text (in the right pane)"*). This builds R10.11 as
+it was always written and closes R10.11b below, by doing what R10.11b actually
+asked for: the validator exists **once**, in `brain/validate.py`, and both
+`brain check` and the save call it. Nothing in the TUI knows the format (R3.1).
+
+| key | |
+|---|---|
+| `E` | opens the source to read - `j k g G` scroll it |
+| `i` | edits it, in the pane; every key is text from then on |
+| `Esc` | stops editing and **keeps the buffer** - `i` resumes |
+| `:w` | saves it through `brain rewrite <entity> -f -`; `:wq` saves and leaves |
+| `E` / `Esc` | leaves; with unsaved edits it asks, and `y` is the only key that discards |
+
+A refusal keeps every character (R10.18a): losing a structural edit to a
+validation error would make R8.5's escape hatch unusable. While a buffer is
+unsaved, `Tab` and `ctrl+w h` will not move focus to the tree, because changing
+the selection re-renders the view the buffer belongs to. A **note** is refused by
+name: its body is the user's words (R4.6.1, A13) and its "raw source" is a slice
+of `inbox.md`, not a file.
+
+The save is `brain rewrite <entity> -f -` - the one-shot form of R8.5's escape
+hatch, validated in full and written in full or not at all. R11.8's two-phase
+`--finish`/`--abort` form is still unbuilt: it exists so an *agent* that must
+exit can edit between phases, and the TUI holds its buffer in memory.
+`batchable=False`, because free text runs to the end of its line (R6.4) and a
+batch line cannot carry a document.
+
+**R10.11b Raw-source *saving* waits for `brain check`.** **Closed 2026-10-02 by
+R10.11d**, which built the validator once rather than twice - the thing this
+requirement was protecting. The reasoning is kept because it is why
+`brain/validate.py` exists as a module of its own instead of inside either
+caller. The validation R10.11
 describes — front matter parses, the five sections are present and in order,
 action syntax is intact — is `brain check`'s own job (§9.3, milestone 8), and
 building it twice would be the format drift R3.1 exists to prevent. So

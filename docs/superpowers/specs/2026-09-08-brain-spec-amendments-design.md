@@ -526,3 +526,44 @@ then a screen diff), not by the suite. 787 tests pass and every one of them
 passed while the two panes were indistinguishable. A test that renders and
 asserts *what differs* is the only kind that could have caught it, and there is
 now one.
+
+### The raw pane edits (2026-10-02)
+
+*"shift+e should be able to edit the raw text (in the right pane)"* — which is
+R10.11 as it was always written: "The pane shows the file as text, **editable**,
+with front matter highlighted. `:w` saves... The save is validated before it is
+written." R10.11b did not reject that; it deferred it, because the validation
+R10.11 lists is `brain check`'s job and "building it twice would be the format
+drift R3.1 exists to prevent".
+
+So the thing to do was to build it **once**. `brain/validate.py` holds the write
+gate — front matter parses, the kind's sections are present and in canonical
+order (R4.2.1), a line that looks like an action parses as one — and two callers
+use it: `brain rewrite` before writing, and `brain check`, which now reports the
+same problems it would refuse. Nothing in the TUI knows the format. R10.11b is
+closed rather than deleted: its reasoning is why the validator is a module of its
+own rather than living inside either caller.
+
+Three decisions inside that, each reversible:
+
+**`E` reads and `i` edits, rather than `E` opening an editor.** `E` already
+scrolled with `j`/`k` (R10.11c, yesterday), and in vim opening a file does not
+put you in insert mode. Mounting the editor only on `i` also keeps the styled
+read view R10.12 wants, and means a `TextArea` exists only while something is
+being edited. Cost if wrong: one extra keystroke.
+
+**`Esc` stops editing and keeps the buffer; only `y` discards.** R10.3 says Esc
+never discards captured text, and R10.3a's "an edit cancels, because the original
+is safe in the file" was written about one line (`e`), not about a structural
+rewrite of a whole file. Many lines of work in memory is the capture pane's
+situation, so it follows the capture pane's rule. While a buffer is unsaved,
+`Tab` and `ctrl+w h` also refuse to move focus to the tree, because changing the
+selection re-renders the view that buffer belongs to.
+
+**A note is refused.** Its body is the user's words byte for byte (R4.6.1, A13)
+and its "raw source" is a slice of `inbox.md` rather than a file — `rewrite`
+addresses entities. Editing a note is `note`'s business.
+
+Found while wiring it: `:w` originally left COMMAND mode before the save ran, so
+a refusal dropped the `:` line that R10.18a says is kept for correction. It now
+leaves only on a save that happened.

@@ -44,7 +44,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.strip import Strip
-from textual.widgets import Static, Tree
+from textual.widgets import Static, TextArea, Tree
 from textual._segment_tools import line_pad
 from rich.console import Console
 from rich.style import Style
@@ -182,6 +182,30 @@ class Row(NamedTuple):
     lineno: Optional[int]
     task: Optional[Task]
     gap: bool = False   # a blank line above - a section header (02-annotated.png)
+
+
+class RawEditor(TextArea):
+    """R10.11: the right pane as an editor over the file's own text.
+
+    Mounted by `i` in the raw view and not before - until something is being
+    edited there is nothing to edit *with*, and the styled read view (R10.12's
+    "the renderer hides nothing") is what `E` is for. Every key here is the
+    user's text, so the app's own letters are unreachable while it has focus;
+    `Esc` hands them back and leaves the buffer standing.
+
+    It writes nothing. `:w` sends the whole buffer to `brain rewrite` through
+    `run_brain` like every other write (R3.1), and `brain` decides whether it is
+    fit to be written (R10.11b).
+    """
+
+    DEFAULT_CSS = """
+    RawEditor {
+        background: #161512;
+        color: #ded7cb;
+        border: none;
+        padding: 0 1;
+    }
+    """
 
 
 class DetailPane(Static):
@@ -588,6 +612,7 @@ HELP_SECTIONS = [
         ("s", "set the selection's status"),
         ("e", "edit the focused action, in place"),
         ("E", "read the file as raw source - j k g G scroll it, E leaves"),
+        ("i", "in the raw view: edit the source · :w saves it"),
         ("x", "tick the focused action"),
         ("u", "undo — a git commit, reverted"),
         ("Q", "queue a job for the agent in _request.md"),
@@ -1950,6 +1975,9 @@ class BrainApp(App, inherit_bindings=False):
         # a bare `w` is still not a key (R10.2's "every letter available").
         Binding("ctrl+w", "window_prefix", "window", show=False, priority=True),
         Binding("w", "window_cycle", "cycle", show=False, priority=True),
+        # R10.11d: only answers `E`'s "discard unsaved edits?"; gated in
+        # `check_action`, so `y` is not a key on its own.
+        Binding("y", "discard_raw", "discard", show=False),
     ]
 
     def __init__(self, root, **kwargs):
@@ -1992,6 +2020,8 @@ class BrainApp(App, inherit_bindings=False):
         self.search_cursor: int = 0
         self._pending_z = False   # ZZ: true right after a lone Z (R10.3's table)
         self._pending_w = False   # ctrl+w: true right after the window prefix (R10.2a)
+        self._raw_seed = None     # R10.11d: the source `i` started from, for the dirty check
+        self._raw_discard = False  # true while asking whether to drop unsaved edits
 
     # -- the one subprocess ------------------------------------------
     def run_brain(self, argv, stdin=None):
@@ -2051,6 +2081,8 @@ class BrainApp(App, inherit_bindings=False):
         if action not in ("window_prefix", "window_cycle", "nav_collapse",
                           "nav_expand", "nav_down", "nav_up"):
             self._pending_w = False
+        if action == "discard_raw" and not self._raw_discard:
+            return False
         if action == "window_cycle" and not self._pending_w:
             # `w` is bound only so the prefix can reach it. On its own it is
             # not a key, and saying so here keeps the letter free (R10.2).
@@ -2525,7 +2557,8 @@ class BrainApp(App, inherit_bindings=False):
     @_guarded
     def action_insert(self) -> None:
         """`i`: capture a note, tagged with the selection (R10.13)."""
-        if self._refuse_typing_into_raw("i"):
+        if self.raw_view:
+            self._open_raw_editor()        # R10.11d: `i` edits the source
             return
         self._open_capture("note")
 
@@ -2594,6 +2627,23 @@ class BrainApp(App, inherit_bindings=False):
             self.query_one("#tree", Tree).focus()
             return
         if self.raw_view:
+            if self._raw_editing():
+                # R10.3: Esc never discards. It stops EDITING and leaves the
+                # buffer standing, so `:w` can still save it and `i` can resume
+                # - one more Esc (or `E`) leaves the view, asking if it is
+                # dirty. Vim's own shape, and the capture pane's rule.
+                self.screen.set_focus(None)
+                self.notice = Notice(
+                    "stopped editing - `:w` saves, `i` resumes, `E` leaves", False)
+                self._render_modeline()
+                return
+            if self._raw_dirty() and not self._raw_discard:
+                self._raw_discard = True
+                self.notice = Notice(
+                    "unsaved edits - `y` discards them, `:w` saves first", True)
+                self._render_modeline()
+                return
+            self._close_raw_editor()
             self.raw_view = False
             self.query_one("#tree", Tree).focus()   # R10.11c
             self._render_detail()
@@ -2613,6 +2663,8 @@ class BrainApp(App, inherit_bindings=False):
             return
         # R10.2a: Tab toggles. It used to be one-way, with Esc the only way
         # back to the tree, which reads as a dead end rather than a split.
+        if self._raw_holds_focus():
+            return
         if self._detail_has_focus():
             self.query_one("#tree", Tree).focus()
             self._render_detail()
@@ -2752,14 +2804,15 @@ class BrainApp(App, inherit_bindings=False):
         after the first ` -- ` is one argv element, verbatim. A grammar
         error or a refusal keeps the line for correction."""
         if self.raw_view and self.command.strip() in ("w", "wq"):
-            # R10.11b: milestone 5 ships `E` as a VIEW only - the validation
-            # a real save would need is `brain check`'s job (milestone 8),
-            # and building it twice is the format drift R3.1 exists to
-            # prevent. Refused by name, not spawned and not a generic
-            # "unknown verb" - there is no save path to almost-find.
-            self.notice = Notice(
-                "raw source has no save path yet - E is a view only (R10.11b)", True)
-            self._render_modeline()
+            # R10.11/R10.11d: the save `R10.11b` deferred. The validation it
+            # waited for is `validate.problems`, built once in `brain` and
+            # called by `rewrite` and `check` both - so nothing here knows the
+            # format, exactly as R3.1 requires.
+            # R10.18a: a refusal keeps the line for correction, like every
+            # other refusal in COMMAND - only a save that happened leaves it.
+            if self._save_raw(leave=self.command.strip() == "wq"):
+                self.command = ""
+                self._leave_to_normal()
             return
         try:
             parsed = grammar.parse_line(self.command)
@@ -2859,6 +2912,18 @@ class BrainApp(App, inherit_bindings=False):
         self.notice = Notice("ctrl+w: h tree · l detail · w cycle", False)
         self._render_modeline()
 
+    def _raw_holds_focus(self) -> bool:
+        """An unsaved buffer must not be abandoned by moving focus out of the
+        pane: the tree would change the selection and re-render the view the
+        buffer belongs to. R10.3 again - nothing the user typed goes without an
+        explicit answer."""
+        if self._raw_editor() is not None and self._raw_dirty():
+            self.notice = Notice(
+                "unsaved edits in the source - `:w` saves, `E` then `y` discards", True)
+            self._render_modeline()
+            return True
+        return False
+
     def _window(self, where: Optional[str]) -> bool:
         """Honour an armed `ctrl+w`. Returns True when the key was consumed as a
         window move, so the caller's normal behaviour is skipped. `where` is
@@ -2866,6 +2931,9 @@ class BrainApp(App, inherit_bindings=False):
         split, as in Neovim): the prefix is spent and nothing moves."""
         if not self._pending_w:
             return False
+        if where == "tree" and self._raw_holds_focus():
+            self._pending_w = False
+            return True
         self._pending_w = False
         self.notice = None
         if where == "tree":
@@ -2904,7 +2972,8 @@ class BrainApp(App, inherit_bindings=False):
 
     @_guarded
     def action_nav_top(self) -> None:
-        if self.raw_view and self._detail_has_focus():
+        if self.raw_view and not self._raw_editing() and (
+                self._raw_editor() is not None or self._detail_has_focus()):
             self.query_one("#detail-scroll", VerticalScroll).scroll_home(animate=False)
             return
         tree_widget = self.query_one("#tree", Tree)
@@ -3014,19 +3083,45 @@ class BrainApp(App, inherit_bindings=False):
         taller than the pane could not be scrolled at all before."""
         if self.selected is None:
             return
+        if self.raw_view and self._raw_dirty() and not self._raw_discard:
+            # R10.3: only an explicit cancel discards. The same rule the capture
+            # pane follows, applied to the other place in the app where many
+            # lines of the user's work live only in memory.
+            self._raw_discard = True
+            self.notice = Notice(
+                "unsaved edits - `y` discards them, `:w` saves first", True)
+            self._render_modeline()
+            return
         self.raw_view = not self.raw_view
         self._detail_cursor = None
         if self.raw_view:
             self.query_one("#detail", DetailPane).focus()
         else:
+            self._close_raw_editor()
             self.query_one("#tree", Tree).focus()
+        self._render_detail()
+        self._render_modeline()
+
+    @_guarded
+    def action_discard_raw(self) -> None:
+        """`y`, and only while `E` has asked (R10.3's "explicit cancel"). It is
+        bound at all times and gated here, so `y` is otherwise not a key."""
+        if not self._raw_discard:
+            return
+        self._raw_discard = False
+        self._close_raw_editor()
+        self.raw_view = False
+        self.notice = None
+        self.query_one("#tree", Tree).focus()
         self._render_detail()
         self._render_modeline()
 
     def _scroll_raw(self, lines: Optional[int] = None, to_end: bool = False) -> bool:
         """Scroll the raw view, if that is what has the keys (R10.11c).
         Returns True when the key was spent scrolling."""
-        if not (self.raw_view and self._detail_has_focus()):
+        if not self.raw_view or self._raw_editing():
+            return False
+        if self._raw_editor() is None and not self._detail_has_focus():
             return False
         scroller = self.query_one("#detail-scroll", VerticalScroll)
         if to_end:
@@ -3042,12 +3137,101 @@ class BrainApp(App, inherit_bindings=False):
     # source - which looked like editing the file and was in fact writing a
     # note (R4.6.1: a note is never an edit).
     def _refuse_typing_into_raw(self, key: str) -> bool:
+        """`e` edits the focused ACTION (R10.10a) and the raw view has none, so
+        it names `i`, which edits the source itself (R10.11d)."""
         if not self.raw_view:
             return False
         self.notice = Notice(
-            "raw source is a view, not an editor (R10.11b) - `E` leaves it, "
-            "and `{}` works again there".format(key), True)
+            "`{}` edits an action; the raw source is edited with `i` "
+            "(R10.11d)".format(key), True)
         self._render_modeline()
+        return True
+
+    # -- the raw editor (R10.11, R10.11d) ---------------------------------
+    def _raw_editor(self) -> Optional[RawEditor]:
+        found = self.screen.query(RawEditor)
+        return found[0] if found else None
+
+    def _raw_editing(self) -> bool:
+        editor = self._raw_editor()
+        return editor is not None and editor.has_focus
+
+    def _raw_dirty(self) -> bool:
+        editor = self._raw_editor()
+        return editor is not None and self._raw_seed is not None \
+            and editor.text != self._raw_seed
+
+    def _open_raw_editor(self) -> None:
+        """`i` in the raw view: the file's own text, in the pane, editable.
+
+        A note is refused by name (R4.6.1, A13): its body is the user's words,
+        its "raw source" is a slice of `inbox.md` rather than a file of its own,
+        and `rewrite` addresses entities. Editing one is `note`'s business, not
+        this pane's.
+        """
+        if getattr(self.selected, "kind", None) == "note":
+            self.notice = Notice(
+                "a note's words are yours and are not edited here (R4.6.1) - "
+                "`note drop` processes it, `i` on it replies", True)
+            self._render_modeline()
+            return
+        editor = self._raw_editor()
+        if editor is None:
+            try:
+                text = Path(self.selected.path).read_text(encoding="utf-8")
+            except OSError as exc:
+                self.notice = Notice("cannot read {}: {}".format(self.selected.slug, exc), True)
+                self._render_modeline()
+                return
+            self._raw_seed = text
+            editor = RawEditor(text, id="raw-editor", soft_wrap=False)
+            self.query_one("#detail", DetailPane).display = False
+            self.query_one("#detail-scroll", VerticalScroll).mount(editor)
+        editor.focus()
+        self.notice = Notice("editing - esc stops, :w saves, E leaves", False)
+        self._render_modeline()
+
+    def _close_raw_editor(self) -> None:
+        editor = self._raw_editor()
+        if editor is not None:
+            editor.remove()
+        self._raw_seed = None
+        self._raw_discard = False
+        self.query_one("#detail", DetailPane).display = True
+
+    def _save_raw(self, leave: bool = False) -> bool:
+        """`:w` / `:wq` (R10.11): the whole buffer to `brain rewrite` on stdin.
+
+        Validation is `brain`'s (R10.11b), so a refusal arrives here as a
+        message and the buffer stands for correction (R10.18a) - losing a
+        structural edit to a validation error would make the escape hatch
+        unusable, which is the opposite of R8.5's purpose.
+        """
+        editor = self._raw_editor()
+        if editor is None:
+            self.notice = Notice("nothing is being edited - `i` edits the source", True)
+            self._render_modeline()
+            return False
+        rc, out, err = self.run_brain(
+            ["rewrite", self.selected.slug, "-f", "-"], stdin=editor.text)
+        if rc != 0:
+            self.notice = Notice(_first_line(err) or "brain exited {}".format(rc), True)
+            self._render_modeline()
+            return False
+        if leave:
+            self._close_raw_editor()
+            self.raw_view = False
+            self.query_one("#tree", Tree).focus()
+        else:
+            # Re-seed from what is now on disk: `brain` set `updated:` and
+            # tidied blank runs (R5.2), so the buffer would otherwise differ
+            # from the file the moment it was saved and read dirty.
+            try:
+                self._raw_seed = Path(self.selected.path).read_text(encoding="utf-8")
+                editor.load_text(self._raw_seed)
+            except OSError:
+                self._raw_seed = editor.text
+        self._finish_write(out)
         return True
 
     @_guarded

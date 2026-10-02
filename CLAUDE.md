@@ -43,9 +43,12 @@ chord (R10.2a) and made the verbs discoverable from `brain --help`, `brain help
 <verb>` and `?`. **Every write
 goes through one function, `BrainApp.run_brain`, which spawns `brain`; the
 TUI never touches a `Doc`.** Deliberately not built, each with a spec
-requirement saying why: raw-source *save* (R10.11b — needs `brain check`),
-redo (R10.7a — `Ctrl+R` is unbound, not bound to "not yet"), `e` on
-non-action lines (R10.10a — only `action edit` exists).
+requirement saying why: redo (R10.7a — `Ctrl+R` is unbound, not bound to "not
+yet"), `e` on non-action lines (R10.10a — only `todo … edit` exists). Raw-source
+*save* was in that list until R10.11d built it: `E` reads, `i` edits, `:w` sends
+the buffer to `brain rewrite <entity> -f -`, and the validator R10.11b was
+waiting for lives in `brain/validate.py`, called by both `rewrite` and
+`check` — once, which is what R10.11b was protecting.
 
 **This is where §12 says to stop.** `AGENTS.md` + `process inbox`, agendas,
 and `tidy`/`review`/`rewrite` are unbuilt, on purpose: use the TUI for a week
@@ -193,6 +196,7 @@ Violating any of these silently breaks the design's economics or its trust model
 | `brain/grammar.py` | The line grammar of R6.4 | stdlib |
 | `brain/resolve.py` | Reference resolution (R6.2) | stdlib |
 | `brain/commands.py` | The command verbs and their execution | stdlib |
+| `brain/validate.py` | the write gate of R10.11 — one validator, two callers | stdlib |
 | `brain/digest.py` | `brain context` — the ~200-token digest (R6.3) | stdlib |
 | `brain/search.py` | `brain search` (R6.7) | stdlib |
 | `brain/rollup.py` | `## Roll-up` regeneration (R4.3.1a) | stdlib |

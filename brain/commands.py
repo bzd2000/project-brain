@@ -16,6 +16,7 @@ from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from . import digest
 from . import search, git, grammar, lock, rollup, tree
+from . import validate as _validate   # `validate` is a function here
 from .entities import (HEALTHS, KINDS, LEGACY_NOTE_TYPES, NOTE_TYPES, STATUSES,
                        load_notes)
 from .errors import (
@@ -175,6 +176,9 @@ USAGE: Dict[Tuple[str, ...], Tuple[str, str]] = {
     ("request", "done"): ("request done <n>", "tick one queued job"),
     ("undo",): ("undo", "revert the last commit brain made - forward only,\n"
                "never a rewrite"),
+    ("rewrite",): ("rewrite <entity> -f -",
+                   "replace an entity's whole source from stdin, validated\n"
+                   "before it is written (what the TUI's E saves through)"),
 }
 
 # `init`, `tui` and `apply` are front doors handled in `cli.py`, not registry
@@ -895,6 +899,45 @@ def _request_done(root, positional, flags, text):
     return Result("done: {}".format(task.text), ("_request.md",))
 
 
+@verb("rewrite", needs_text=True, arity=(1, 1), ref_kinds=(), batchable=False)
+def _rewrite(root, positional, flags, text):
+    """R10.11: replace an entity's whole source, validated before it is written.
+
+    R8.5 reserves `rewrite` for "restructuring work the verbs cannot express".
+    This is its one-shot form - the whole new source arrives on stdin (`-f -`,
+    R6.4c: a document cannot travel by argv) and is either written in full or
+    refused in full. R11.8's two-phase `--finish`/`--abort` form, which exists
+    so an agent that must exit can edit between phases, is not built: the TUI
+    holds the text in memory and needs no checkpoint dance.
+
+    `batchable=False`: free text runs to the end of its line (R6.4), so a batch
+    line could only ever carry a one-line document.
+
+    The validation is `validate.problems`, the same function `brain check`
+    calls - R10.11b deferred this save precisely so the list would not be built
+    twice (R3.1). Every problem is named at once: a save that fixed one and
+    failed on the next would cost the user their text twice.
+
+    The lines go into the entity's OWN `Doc`, so the file's own line endings
+    survive the trip (R5.2) even though the TUI always sends LF - C5 makes
+    Windows primary, where that difference is every line of the file.
+    """
+    entity = resolve(root, positional[0])
+    doc = entity.doc
+    lines = text.replace("\r\n", "\n").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()          # the trailing newline, not an empty final line
+    doc.lines = lines
+    doc.reindex()
+    found = _validate.problems_for(entity)
+    if found:
+        raise VerbError(
+            "refusing to write {}: {}. Nothing was written.".format(
+                entity.slug, "; ".join(found))
+        )
+    return _saved(root, entity, "rewrote {}".format(entity.slug))
+
+
 @verb("undo", arity=(0, 0), batchable=False)
 def _undo(root, positional, flags, text):
     """R11.5. `execute` must not commit on top of this - `undo` makes its own
@@ -912,19 +955,34 @@ def _undo(root, positional, flags, text):
       bool_flags=("authored",))
 def _check(root, positional, flags, text):
     """R3.2/R11.6: report any file whose last change did not come through
-    `brain`. `check` has one mode (R10.8a); `--authored` is a boolean-flag
-    spelling of it, not a second one, so `flags` is read by nothing here -
-    `check` and `check --authored` do exactly the same thing."""
+    `brain`, and (R10.11b) every file that would fail the save gate.
+
+    `check` has one mode (R10.8a); `--authored` is a boolean-flag spelling of
+    it, not a second one, so `flags` is read by nothing here - `check` and
+    `check --authored` do exactly the same thing.
+
+    The format half calls `validate.problems`, the same function `rewrite`
+    calls before writing. R10.11b deferred raw-source saving because that list
+    "is `brain check`'s own job and building it twice would be the format drift
+    R3.1 exists to prevent" - so it exists once and both callers use it.
+    `--fix` is still unbuilt: reporting is not repairing.
+    """
     offenders = git.unauthored(root)
-    return Result(
-        "all {} file(s) authored by brain".format(len(git.brain_paths(root)))
-        if not offenders
-        else "{} file(s) not written by brain: {}".format(
-            len(offenders), ", ".join(offenders)
-        ),
-        [],
-        offenders,
-    )
+    faults = []
+    active = tree.current() or tree.Tree(root)      # R4.8.2: one scan per command
+    for entity in active.entities():
+        for problem in _validate.problems_for(entity):
+            faults.append("{}: {}".format(entity.slug, problem))
+    parts = []
+    if offenders:
+        parts.append("{} file(s) not written by brain: {}".format(
+            len(offenders), ", ".join(offenders)))
+    if faults:
+        parts.append("{} problem(s): {}".format(len(faults), "; ".join(faults)))
+    if not parts:
+        parts.append("all {} file(s) authored by brain, no problems".format(
+            len(git.brain_paths(root))))
+    return Result(" · ".join(parts), [], offenders + faults)
 
 
 @verb("context", writes=False, arity=(0, 0), allowed_flags=("for",),
