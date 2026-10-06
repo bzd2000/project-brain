@@ -56,6 +56,9 @@ from . import grammar
 from . import tree as core_tree
 from .errors import BrainError
 from .model import FENCE, Task, parse_action
+# R10.14e: the SAME folding `resolve` uses, not a second copy - a menu that
+# matched differently from `brain` would offer words `brain` then refuses.
+from .resolve import normalise
 
 # -- colour (R10.16): one teal accent for anything live/interactive, violet
 # for people and boards, red/amber/green reserved strictly for state. Never
@@ -215,14 +218,21 @@ class Completions(Static):
     nothing and dismisses it.
     """
 
+    # R10.14f: a dropdown, under the word being typed. On its own layer with an
+    # absolute offset, because the candidates belong to the WORD - a bar pinned
+    # to the bottom of the screen sent the user looking in the wrong place. (It
+    # also spent a day invisible: docked to `bottom` like the modeline, Textual
+    # handed it the modeline's own last row and painted it underneath.)
     DEFAULT_CSS = """
     Completions {
         display: none;
-        height: 1;
+        layer: dropdown;
+        width: auto;
+        height: auto;
+        max-height: 7;
         padding: 0 1;
         background: #1c1a17;
         color: #ded7cb;
-        dock: bottom;
     }
     Completions.showing { display: block; }
     """
@@ -1706,6 +1716,8 @@ class BrainApp(App, inherit_bindings=False):
     Screen {
         background: #100f0e;
         color: #ded7cb;
+        /* R10.14f: the completion dropdown floats over the panes. */
+        layers: base dropdown;
     }
     #title {
         height: 2;
@@ -1822,6 +1834,7 @@ class BrainApp(App, inherit_bindings=False):
         self.notice: Optional[Notice] = None
         self._focus_before = None
         self._slugs: List[str] = []
+        self._titles: Dict[str, str] = {}
         self._by_program: Dict[str, list] = {}
         self._entity_by_slug: Dict[str, object] = {}
         self._node_by_key: Dict[Tuple[str, str], object] = {}   # (kind, slug) -> tree node, for §10.3's ⏎
@@ -2058,7 +2071,12 @@ class BrainApp(App, inherit_bindings=False):
         stakeholders_node = tree_widget.root.add(_group_label("STAKEHOLDERS"), expand=True)
         boards_node = tree_widget.root.add(_group_label("BOARDS"), expand=True)
 
-        self._slugs = sorted(e.slug for e in programs + projects + stakeholders + boards)
+        everything = programs + projects + stakeholders + boards
+        self._slugs = sorted(e.slug for e in everything)
+        # R10.14e: slug -> normalised title, so the completion menu can match a
+        # title the way `resolve` does (R6.2) - `@peeters` finds `ann`.
+        self._titles = {e.slug: normalise(getattr(e, "title", "") or "")
+                        for e in everything}
         self._by_program = by_program
         self._entity_by_slug = {e.slug: e for e in programs + projects + stakeholders + boards}
 
@@ -3082,6 +3100,25 @@ class BrainApp(App, inherit_bindings=False):
             return "@@", before[at + 1:], at - 1
         return "@", before[at + 1:], at
 
+    def _candidates(self, lead: str, wanted: str) -> List[str]:
+        """What `@wanted` or `@@wanted` could mean, best first (R10.14e).
+
+        Prefix-only matching made this useless on a real brain: one project
+        called `ia-platform`, and typing `@a` or `@plat` offered nothing, because
+        the slug does not START with either. R6.2 resolves a reference by exact
+        slug, then exact title, then slug PREFIX, then title SUBSTRING - so the
+        menu offers that same set, in that order of confidence. Matching here is
+        no looser than what `brain` will accept for the finished word.
+        """
+        pool = KIND_WORDS if lead == "@@" else self._slugs
+        wanted = wanted.lower()
+        if not wanted:
+            return sorted(pool)
+        starts = [c for c in sorted(pool) if c.startswith(wanted)]
+        rest = [c for c in sorted(pool)
+                if c not in starts and (wanted in c or wanted in self._titles.get(c, ""))]
+        return starts + rest
+
     def _refresh_menu(self) -> None:
         """R10.14c: the candidates, as the word narrows. Nothing matching means
         nothing shown - a tag of the user's own invention is normal (R10.14b),
@@ -3097,25 +3134,47 @@ class BrainApp(App, inherit_bindings=False):
         if found is not None:
             self._menu_done = None
             lead, wanted, at = found
-            pool = KIND_WORDS if lead == "@@" else self._slugs
-            self._menu = [c for c in sorted(pool) if c.startswith(wanted)]
+            # R10.14f: nothing until two letters. `@` alone offered every entity
+            # in the brain, which is noise over the words being typed, and one
+            # letter narrows almost nothing.
+            if len(wanted) >= self.MENU_MIN_LETTERS:
+                self._menu = self._candidates(lead, wanted)
             self._menu_lead, self._menu_at = lead, at
-        if not self._menu:
+        self._render_menu()
+
+    MENU_MIN_LETTERS = 2     # R10.14f: "when you type 2 letters or more"
+    MENU_ROWS = 6            # and never more of the screen than this
+
+    def _render_menu(self) -> None:
+        """Draw the dropdown, or hide it. One candidate per row, the selected one
+        banded, the overflow counted - and placed under the cursor, which is
+        where the word it is completing sits."""
+        widget = self.query_one("#completions", Completions)
+        editor = self._raw_editor()
+        if not self._menu or editor is None:
             widget.remove_class("showing")
             widget.update("")
             self._menu_cursor = 0
             return
         self._menu_cursor = min(self._menu_cursor, len(self._menu) - 1)
+        rows = self._menu[:self.MENU_ROWS]
+        width = max(len(r) for r in rows) + len(self._menu_lead)
         shown = Text()
-        for index, candidate in enumerate(self._menu[:12]):
+        for index, candidate in enumerate(rows):
             if index:
-                shown.append("  ")
-            style = "{} on {}".format(GROUND, TEAL) if index == self._menu_cursor \
-                else (VIOLET if self._menu_lead == "@@" else TEAL)
-            shown.append(self._menu_lead + candidate, style=style)
-        if len(self._menu) > 12:
-            shown.append("  +{}".format(len(self._menu) - 12), style=DIM)
+                shown.append("\n")
+            word = (self._menu_lead + candidate).ljust(width)
+            if index == self._menu_cursor:
+                shown.append(word, style="{} on {}".format(GROUND, TEAL))
+            else:
+                shown.append(word, style=VIOLET if self._menu_lead == "@@" else TEAL)
+        if len(self._menu) > self.MENU_ROWS:
+            shown.append("\n")
+            shown.append("+{}".format(len(self._menu) - self.MENU_ROWS).ljust(width),
+                         style=DIM)
         widget.update(shown)
+        cursor_x, cursor_y = editor.cursor_screen_offset
+        widget.styles.offset = (max(0, cursor_x - 1), cursor_y + 1)
         widget.add_class("showing")
 
     def _take_completion(self) -> bool:
@@ -3133,8 +3192,7 @@ class BrainApp(App, inherit_bindings=False):
         if found is None:
             return False
         lead, wanted, at = found
-        pool = KIND_WORDS if lead == "@@" else self._slugs
-        matches = [c for c in sorted(pool) if c.startswith(wanted)]
+        matches = self._candidates(lead, wanted)
         if not matches:
             return False
         editor = self._raw_editor()
@@ -3177,8 +3235,7 @@ class BrainApp(App, inherit_bindings=False):
         wanted = before[at + (2 if double else 1):]
         # R10.14b: `@@` offers what to DO, `@` offers what exists. Neither list
         # can shadow the other, and `@@acme-migration` is not a thing.
-        candidates = list(KIND_WORDS) if double else list(self._slugs)
-        matches = sorted({c for c in candidates if c.startswith(wanted)})
+        matches = self._candidates("@@" if double else "@", wanted)
         if not matches:
             return True           # a tag of the user's own: left exactly as typed
         common = os.path.commonprefix(matches)

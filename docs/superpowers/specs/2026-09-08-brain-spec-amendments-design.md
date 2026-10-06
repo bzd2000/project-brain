@@ -656,3 +656,36 @@ by the suite (identical focus bands, the stale `view only` label, the editor bou
 to the wrong entity, and this pair). The pattern is consistent enough to name: a
 test that drives a widget proves the mechanism; only a render proves the product.
 Where a change touches layout, render it at 70 and at 120 columns and look.
+
+### The completion nobody could reach (2026-10-06)
+
+*"but there should be some auto-completion thing"* — about a feature that had
+shipped four days earlier, with tests. Two causes, and both are the same mistake
+in different clothes: **it was verified against a fixture, not against the user's
+own brain.**
+
+**It matched by prefix only.** The fixture has five entities whose names start
+with the letters a test types. The user's brain has one project, `ia-platform`,
+and nobody types `@ia` — they type `@plat`, or `@a`. Prefix matching returned
+nothing and the dropdown stayed shut, so the feature looked absent. It now offers
+what `resolve` would accept (R6.2: prefix, substring, and the title), through
+`resolve.normalise` itself, because a menu that matches differently from `brain`
+is either hiding valid words or offering invalid ones.
+
+**It was painted underneath the modeline.** `Completions` and `Modeline` were both
+`dock: bottom`; Textual gave the second one the first one's last row, so the
+dropdown rendered at y=19 inside the modeline's y=18–19 and was never seen. Found
+by printing every row of the screen *with its index* next to each widget's region
+— the earlier render that "showed the menu working" had sliced the modeline off
+the bottom of the output.
+
+Then the shape was wrong anyway: a one-line bar pinned above the modeline, when
+what was wanted was *"somekind of dropdown"* under the word. It is now on its own
+CSS layer at an absolute offset taken from `cursor_screen_offset`, from two
+letters on, six rows at most.
+
+**The compounding lesson.** This is the sixth defect on this branch found by
+looking at the screen rather than by the suite, and the second where my own
+verification was the thing that misled me: a slice of a render is not a render,
+and a fixture is not a brain. Where a feature depends on what is in the data,
+drive it against `~/mybrain` (on a copy), not against `tests/fixtures`.

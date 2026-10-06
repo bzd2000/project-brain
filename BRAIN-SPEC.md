@@ -1207,9 +1207,24 @@ exactly as typed, because they are the user's instructions to their own model, a
 milestone 6 fixes their meaning when `AGENTS.md` is written against real notes.
 
 **R10.14c The completion is visible** (same message: *"there should be syntax
-highlighting and visual completion"*). The candidates appear on a line above the
-modeline while an `@word` is being typed, narrowing on each keystroke; the arrows
-move through them and `Tab` takes the selected one. Tab-only completion asked the
+highlighting and visual completion"*; refined 2026-10-06: *"when you type 2
+letters or more, there is somekind of dropdown that shows the available
+(filtered) options"*). From the second letter on, a **dropdown** opens directly
+under the word being typed - one candidate per row, six rows at most with the
+overflow counted, the selected row banded; the arrows move through it and `Tab`
+takes the selected one. Nothing opens on one letter, which narrows almost
+nothing, or on a bare `@`, which offered the whole brain as noise over the words
+being typed.
+
+**R10.14e It matches the way `resolve` matches.** Prefix-only matching made the
+whole feature unreachable on a real brain: one project called `ia-platform`, and
+`@a` or `@plat` offered nothing, because the slug does not *start* with either -
+reported as *"there should be some auto-completion thing"* about a feature that
+was there. R6.2 resolves a reference by exact slug, then exact title, then slug
+prefix, then title substring, so the dropdown offers that same set, prefix
+matches first, case-folded through `resolve.normalise` itself rather than a second
+copy. A menu that matched more narrowly than `brain` would hide words `brain`
+accepts; one that matched more loosely would offer words it refuses. Tab-only completion asked the
 user to know what existed before typing it, which is exactly what they do not
 know. The menu claims the arrows and `Tab` while it is up **and nothing else** -
 every other key is the user's text (R4.6.1), including the one that narrows it to

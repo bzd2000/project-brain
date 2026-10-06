@@ -1731,11 +1731,11 @@ async def test_a_menu_appears_while_an_at_word_is_being_typed(brain_repo):
     async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
         await pilot.press("i")
         assert _menu(pilot) is None, "nothing to complete yet"
-        await pilot.press(*"ring @a")
+        await pilot.press(*"ring @mi")          # two letters (R10.14f)
         assert _menu(pilot) is not None
         shown = _menu_text(pilot)
         assert "acme-migration" in shown
-        assert "ann" in shown
+        assert "cloud-migration" in shown
         assert "q4-budget" not in shown, "it narrows as the word grows"
 
 
@@ -1744,7 +1744,7 @@ async def test_the_menu_offers_markers_behind_two_ats(brain_repo):
     """The same menu, the other namespace (R10.14b). Mutation: one candidate
     list - entities appear under `@@`, which cannot mean anything."""
     async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
-        await pilot.press("i", *"@@")
+        await pilot.press("i", *"@@ion")
         shown = _menu_text(pilot)
         assert "action" in shown and "decision" in shown
         assert "acme-migration" not in shown
@@ -1768,11 +1768,12 @@ async def test_arrows_move_through_the_menu_and_tab_takes_one(brain_repo):
     Mutation: have Tab always fill the common prefix - `@a` then never gets past
     `a`, because `acme-migration` and `ann` share nothing further."""
     async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
-        await pilot.press("i", *"@a")
+        await pilot.press("i", *"@mi")
         assert _menu(pilot) is not None
         await pilot.press("down")
         await pilot.press("tab")
-        assert _editor(pilot).text in ("@acme-migration", "@ann"), _editor(pilot).text
+        assert _editor(pilot).text in ("@acme-migration", "@cloud-migration"), \
+            _editor(pilot).text
         assert _menu(pilot) is None, "taking one closes the menu"
 
 
@@ -1825,3 +1826,134 @@ async def test_the_empty_editor_fills_the_pane(brain_repo):
     async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
         await pilot.press("i")
         assert _editor(pilot).size.height >= 3
+
+
+@pytest.mark.asyncio
+async def test_the_menu_matches_the_way_resolve_matches(brain_repo):
+    """Prefix-only matching made the menu useless on a real brain: with one
+    project called `ia-platform`, typing `@a` or `@plat` offered nothing, because
+    the slug does not START with either. Reported as "there should be some
+    auto-completion thing" - the feature was there and could not be reached.
+
+    R6.2 resolves a reference by exact slug, then title, then slug PREFIX, then
+    title SUBSTRING - so the menu offers the same set, prefix matches first.
+
+    Mutation: `startswith` alone - every assertion below but the first fails."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i")
+        editor = _editor(pilot)
+
+        async def offered(typed):
+            editor.text = ""
+            editor.insert(typed)
+            await pilot.pause()
+            return list(pilot.app._menu)
+
+        assert await offered("@acme") == ["acme-migration"], "prefix still works"
+        assert await offered("@migr") == ["acme-migration", "cloud-migration"], \
+            "a substring of the slug finds both"
+        assert await offered("@budget") == ["q4-budget"]
+        assert await offered("@Ann") == ["ann"], "case does not matter"
+        assert await offered("@peeters") == ["ann"], "nor does matching on the TITLE"
+        # Ordering is the matcher's own rule, asked directly: at one letter the
+        # dropdown stays shut (R10.14f), and this is about which matches come
+        # first when it does open.
+        prefix_first = pilot.app._candidates("@", "a")
+        assert prefix_first[:2] == ["acme-migration", "ann"], prefix_first
+        assert "arch-board" in prefix_first
+
+
+@pytest.mark.asyncio
+async def test_the_marker_menu_matches_the_same_way(brain_repo):
+    """`@@dec` and `@@cision` both find `decision` - the same rule, so there is
+    one thing to learn. Mutation: leave `@@` on prefix-only."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i")
+        editor = _editor(pilot)
+        editor.insert("@@cision")
+        await pilot.pause()
+        assert pilot.app._menu == ["decision"]
+
+
+# -- R10.14f: a dropdown, from two letters on --------------------------------
+
+def _menu_lines(pilot):
+    menu = _menu(pilot)
+    if menu is None:
+        return []
+    return [l for l in str(menu.render()).splitlines() if l.strip()]
+
+
+@pytest.mark.asyncio
+async def test_nothing_drops_down_until_two_letters(brain_repo):
+    """The user's rule: "when you type 2 letters or more, there is somekind of
+    dropdown". `@` alone offered every entity in the brain, which is noise over
+    the words being typed - and one letter narrows almost nothing.
+
+    Mutation: trigger at one character - the dropdown opens on every `@`."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i")
+        editor = _editor(pilot)
+        editor.insert("ring @")
+        await pilot.pause()
+        assert _menu(pilot) is None, "`@` alone says nothing"
+        editor.insert("a")
+        await pilot.pause()
+        assert _menu(pilot) is None, "one letter either"
+        editor.insert("c")
+        await pilot.pause()
+        assert _menu(pilot) is not None, "two letters open it"
+        assert pilot.app._menu == ["acme-migration"]
+
+
+@pytest.mark.asyncio
+async def test_it_is_a_list_not_a_line(brain_repo):
+    """A dropdown: one candidate per row, so three matches are three lines and
+    the arrows have somewhere to go.
+
+    Mutation: render them space-separated on one line - `_menu_lines` is 1."""
+    async with BrainApp(brain_repo).run_test(size=(120, 30)) as pilot:
+        await pilot.press("i")
+        _editor(pilot).insert("@@ion")   # a substring of all three of these
+        await pilot.pause()
+        assert pilot.app._menu == ["action", "decision", "question"]
+        assert len(_menu_lines(pilot)) == 3, _menu_lines(pilot)
+
+
+@pytest.mark.asyncio
+async def test_the_dropdown_sits_under_the_word_being_typed(brain_repo):
+    """It drops down from the cursor, not from the bottom of the screen: the
+    candidates belong to the word, and a bar pinned above the modeline made the
+    user look in the wrong place.
+
+    Mutation: leave it in flow - its offset is then 0 and it is nowhere near the
+    text it is about."""
+    async with BrainApp(brain_repo).run_test(size=(120, 30)) as pilot:
+        await pilot.press("i")
+        editor = _editor(pilot)
+        editor.insert("ring sara about @mi")
+        await pilot.pause()
+        menu = _menu(pilot)
+        assert menu is not None
+        cursor_x, cursor_y = editor.cursor_screen_offset
+        assert abs(menu.region.x - cursor_x) <= 2, (menu.region, cursor_x)
+        assert menu.region.y == cursor_y + 1, "directly under the cursor's line"
+
+
+@pytest.mark.asyncio
+async def test_a_long_list_is_capped_and_says_so(brain_repo):
+    """Every entity matching `@a` would be five rows on this fixture and fifty on
+    a real brain. Capped, with the overflow counted - the dropdown may never take
+    the screen.
+
+    Mutation: drop the cap - a brain with eighty projects hides the note."""
+    async with BrainApp(brain_repo).run_test(size=(120, 30)) as pilot:
+        await pilot.press("i")
+        _editor(pilot).insert("@a")
+        await pilot.pause()
+        pilot.app._menu = ["slug-{}".format(n) for n in range(20)]
+        pilot.app._render_menu()
+        await pilot.pause()
+        lines = _menu_lines(pilot)
+        assert len(lines) <= 7, lines
+        assert "+14" in lines[-1], lines[-1]
