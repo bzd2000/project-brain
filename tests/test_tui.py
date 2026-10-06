@@ -271,7 +271,7 @@ async def test_o_opens_the_capture_pane_and_w_saves_one_note(brain_repo, monkeyp
         assert pilot.app.mode == "NORMAL"
     # R10.14b: the selection, then the body's `@refs` - `@acme` is one, typed
     # unresolved, and goes on as the user wrote it. The body is untouched.
-    assert sent["argv"] == ["note", "add", "meeting", "--tag", "acme-migration acme",
+    assert sent["argv"] == ["note", "add", "meeting", "--tag", "acme-migration,acme",
                             "-f", "-"]
     assert sent["stdin"] == "first line\nsara: thursday 8am @acme"
     assert "first line" not in " ".join(sent["argv"])
@@ -1423,7 +1423,7 @@ async def test_i_keeps_any_at_tag_the_user_types(brain_repo, monkeypatch):
         # `:` opens the pane's own command line only at the start of an empty
         # line, so `sara: thursday 8am` stays the user's words (R10.14).
         await pilot.press("escape", ":", "w", "enter")
-    assert sent["argv"] == ["note", "add", "--tag", "acme-migration nonsense",
+    assert sent["argv"] == ["note", "add", "--tag", "acme-migration,nonsense",
                             "-f", "-"], "markers are not tags; an unknown ref is"
     assert sent["stdin"] == "ring sara @@meeting @@todo @nonsense"
 
@@ -1616,8 +1616,8 @@ async def test_only_at_refs_become_tags_on_the_note(brain_repo, monkeypatch):
         await pilot.press("i")
         _editor(pilot).insert("@@action check with bram on @acme-migration")
         await pilot.press("escape", ":", "w", "enter")
-    assert sent["argv"] == ["note", "add", "--tag", "ann acme-migration", "-f", "-"], \
-        "the selection, then the body's @refs - and no @@word"
+    assert sent["argv"] == ["note", "add", "--tag", "ann,acme-migration", "-f", "-"], \
+        "the selection, then the body's @refs, comma-separated - and no @@word"
     assert sent["stdin"] == "@@action check with bram on @acme-migration", \
         "the body is untouched: the markers stay where the user put them (R4.6.1)"
 
@@ -1957,3 +1957,26 @@ async def test_a_long_list_is_capped_and_says_so(brain_repo):
         lines = _menu_lines(pilot)
         assert len(lines) <= 7, lines
         assert "+14" in lines[-1], lines[-1]
+
+
+@pytest.mark.asyncio
+async def test_no_argv_the_tui_sends_contains_a_space(brain_repo, monkeypatch):
+    """The bug class behind the comma list: `cli.py` rejoins argv into one line
+    (R6.4c), so any element with a space in it becomes several tokens and the
+    grammar reads them as positionals. Free text is the one exception - it is
+    everything after ` -- ` and is rejoined deliberately.
+
+    Mutation: send space-separated tags - this fails on the `--tag` value, which
+    is where it shipped."""
+    sent = []
+    monkeypatch.setattr(BrainApp, "run_brain",
+                        lambda self, argv, stdin=None: (sent.append(argv), (0, "ok", ""))[1])
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await _select_slug(pilot, "ann")
+        await pilot.press("i")
+        _editor(pilot).insert("ring @acme-migration and @arch-board @@action")
+        await pilot.press("escape", ":", "w", "enter")
+    for argv in sent:
+        if "--" in argv:
+            argv = argv[:argv.index("--")]
+        assert not [a for a in argv if " " in a], argv

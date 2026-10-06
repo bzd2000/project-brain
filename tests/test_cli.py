@@ -318,3 +318,31 @@ def test_every_verb_has_a_usage_line(capsys):
     from brain.commands import USAGE, VERBS
 
     assert set(USAGE) == set(VERBS)
+
+
+def test_note_add_takes_several_tags_through_the_argv_line(tmp_path, capsys, monkeypatch):
+    """R6.4c: `cli.py` rejoins argv into ONE line, and R6.0/`split_flags` say a
+    flag value never contains a space - so several tags travel as a comma list.
+    Space-separated, they became extra positionals and the verb refused:
+
+        note add meeting --tag "q4-budget ann" -f -
+        -> `note add` takes 0-1 argument(s), got 3: meeting q4-budget ann
+
+    The TUI sends exactly this argv when a note names more than one entity
+    (R10.14b), and the earlier tests asserted only what the TUI SENT, never that
+    `brain` accepts it - which is how the space-separated form shipped.
+
+    Mutation: split the tag value on whitespace only - the comma list becomes one
+    tag called `a,b,c`."""
+    import io
+
+    from brain import root as r
+    from brain.entities import load_notes
+
+    root = r.init(tmp_path / "b")
+    monkeypatch.setattr("sys.stdin", io.StringIO("budget hit lands here"))
+    assert _cli("--root", root, "note", "add", "meeting",
+                "--tag", "q4-budget,ann,arch-board", "-f", "-") == 0
+    note = load_notes(root / "inbox.md")[0]
+    assert note.type == "meeting"
+    assert [t.lstrip("@") for t in note.tags] == ["q4-budget", "ann", "arch-board"]

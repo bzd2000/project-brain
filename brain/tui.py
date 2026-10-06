@@ -3384,7 +3384,10 @@ class BrainApp(App, inherit_bindings=False):
         # not here; they stay in the body for the agent to read.
         tags = _unique(([ref] if ref else []) + REF_RE.findall(editor.text))
         if tags:
-            argv += ["--tag", " ".join(tags)]
+            # A COMMA list: `cli.py` rejoins argv into one line (R6.4c) and a
+            # flag value may not contain a space (R6.0), so space-separated tags
+            # arrived at the grammar as extra positionals and the verb refused.
+            argv += ["--tag", ",".join(tags)]
         argv += ["-f", "-"]
         rc, out, err = self.run_brain(argv, stdin=editor.text)
         if rc != 0:

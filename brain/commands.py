@@ -529,7 +529,11 @@ def _note_add(root, positional, flags, text):
     note_type = positional[0] if positional else "note"
     if note_type not in NOTE_TYPES:
         raise _value_choice_error(("note", "add"), note_type, NOTE_TYPES)
-    tags = [t for t in flags.get("tag", "").split() if t]
+    # R6.0/`split_flags`: a flag value never contains a space, because argv is
+    # rejoined into one line (R6.4c). Several tags therefore travel as a comma
+    # list - the same shape `set`'s list-valued fields take. Whitespace is split
+    # too, for a caller that reaches `execute` directly with a quoted value.
+    tags = [t for t in re.split(r"[,\s]+", flags.get("tag", "").strip()) if t]
     note_id, number = next_note_id(root)
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     header = "## {} · {} · {}".format(note_id, stamp, note_type)
