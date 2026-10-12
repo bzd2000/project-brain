@@ -604,6 +604,12 @@ def _find_note(root, note_id):
 def rewrite_inbox(root, notes) -> None:
     """Write `notes` back as the whole inbox, bodies untouched.
 
+    Refuses outright when the inbox did not decode as UTF-8: `load_notes` shows
+    unreadable bytes as replacement characters so the notes are still visible
+    (C5 - Windows editors have written cp1252 for decades), and writing that
+    back would make the replacements permanent, which R4.6.1 forbids
+    absolutely.
+
     Bytes, not text, and the file's own line endings (R5.2). Every body goes
     back exactly as it was read: R4.6.1 says a note body is the user's words,
     and A13 asserts no path anywhere rewrites one - including the path that
@@ -611,6 +617,14 @@ def rewrite_inbox(root, notes) -> None:
     """
     inbox = Path(root) / "inbox.md"
     existing = inbox.read_bytes() if inbox.exists() else b""
+    try:
+        existing.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise VerbError(
+            "inbox.md is not valid utf-8 ({}) - refusing to write it back, which "
+            "would make the unreadable bytes permanent (R4.6.1). Re-save it as "
+            "utf-8 first.".format(exc.reason)
+        )
     eol = _eol_of(existing)
 
     blocks = []
@@ -996,6 +1010,16 @@ def _undo(root, positional, flags, text):
     return Result("undid {}".format(sha[:7]))
 
 
+def _unique_problems(problems):
+    """The same file-level problem lands on every note in the file; `check` says
+    it once."""
+    out = []
+    for problem in problems:
+        if problem not in out:
+            out.append(problem)
+    return out
+
+
 @verb("check", writes=False, arity=(0, 0), allowed_flags=(),
       bool_flags=("authored",))
 def _check(root, positional, flags, text):
@@ -1018,6 +1042,12 @@ def _check(root, positional, flags, text):
     for entity in active.entities():
         for problem in _validate.problems_for(entity):
             faults.append("{}: {}".format(entity.slug, problem))
+    # R4.2.4's bargain: a tolerantly-loaded note reports its problems and `check`
+    # is where they surface. Without this a cp1252 or BOM-prefixed inbox read as
+    # "nothing to process" with nowhere to find out why (C5).
+    for note in load_notes(Path(root) / "inbox.md"):
+        for problem in _unique_problems(note.problems):
+            faults.append("{}: {}".format(note.id or "inbox.md", problem))
     parts = []
     if offenders:
         parts.append("{} file(s) not written by brain: {}".format(

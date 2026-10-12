@@ -204,7 +204,12 @@ class Row(NamedTuple):
 # `AGENTS.md` is written against real notes. The five mirror the verbs of
 # R6.0a - `log`, `todo`, `decide`, `query` - plus `meeting`, which says the note
 # holds many items (R4.6.2).
-KIND_WORDS = ("action", "decision", "question", "log", "meeting")
+# R10.14g: `agenda` is here because the user asked for "an action for it in a
+# note" - a way to say "raise this with them next time". It maps to
+# `log <party> -- <text>`, which lands in `## Pending`: R4.4.2 defines that as
+# what accumulates between meetings and R9.2 builds the agenda from it, while
+# `## Next agenda` is generated and never written by hand.
+KIND_WORDS = ("action", "agenda", "decision", "question", "log", "meeting")
 
 
 class Completions(Static):

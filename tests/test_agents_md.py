@@ -94,9 +94,17 @@ def test_the_vocabulary_it_teaches_is_the_registry(tmp_path):
     text = _agents(r.init(tmp_path / "b"))
     for name in USAGE:
         assert " ".join(name) in text, name
+    # A tombstone must not be TAUGHT - which means it must not appear where a
+    # command appears. The first version of this looked for the substring
+    # anywhere and caught the English word "raise" inside a sentence; that was a
+    # real find (an agent reading "raise it with that person" could emit
+    # `raise ann -- …`, R6.0b's exact failure) but the wrong assertion for it.
     from brain.commands import TOMBSTONES
+    commands = [line.strip() for line in text.splitlines()]
     for old in TOMBSTONES:
-        assert " ".join(old) + " " not in text, "a dead name is not taught: {}".format(old)
+        dead = " ".join(old)
+        assert not [l for l in commands if l.startswith(dead + " ") or l == dead], \
+            "a dead name is taught as a command: {}".format(dead)
 
 
 def test_it_teaches_the_note_syntax(tmp_path):
@@ -116,3 +124,17 @@ def test_it_stays_inside_the_token_budget(tmp_path):
     Mutation: paste §7, §8 and §9 in whole - roughly four times the budget."""
     text = _agents(r.init(tmp_path / "b"))
     assert len(text) <= 4600, "{} chars (~{} tokens)".format(len(text), len(text) // 4)
+
+
+def test_it_explains_every_marker_the_editor_offers(tmp_path):
+    """R10.14b/g: the markers are instructions to this agent, so each one the
+    editor can produce has to mean something here. The two lists are held
+    together, because a marker the user can type and the agent does not know is
+    a silent no-op on their note.
+
+    Mutation: add a word to `KIND_WORDS` without telling the agent."""
+    from brain.tui import KIND_WORDS   # the TUI's own list, read not copied
+
+    text = _agents(r.init(tmp_path / "b"))
+    for word in KIND_WORDS:
+        assert "@@" + word in text, word

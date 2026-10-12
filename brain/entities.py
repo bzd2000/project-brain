@@ -218,10 +218,32 @@ def load_notes(path):
     R4.6.5: an unrecognised header is preserved and treated as an untagged note.
     """
     path = Path(path)
+    encoding_problem = None
     try:
-        text = path.read_bytes().decode("utf-8").replace("\r\n", "\n")
-    except (OSError, UnicodeDecodeError):
+        raw = path.read_bytes()
+    except OSError:
         return []
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        # C5 makes Windows primary, and its editors wrote cp1252 for decades.
+        # This used to raise, be swallowed, and `return []` - every note in the
+        # file gone from every view with nothing said, which is the one outcome
+        # invariant 5 exists to prevent. R4.2.4's bargain instead: load it,
+        # report it, let `check` surface it. The bytes are REPLACED and never
+        # reinterpreted, because guessing an encoding is the guess R6.2 forbids,
+        # and `rewrite_inbox` refuses to write a file that arrived this way so a
+        # replacement character can never become permanent (R4.6.1).
+        text = raw.decode("utf-8", errors="replace")
+        encoding_problem = (
+            "inbox.md is not valid utf-8 ({}); unreadable bytes are shown as "
+            "replacement characters and nothing may be written back until it is "
+            "re-saved as utf-8".format(exc.reason)
+        )
+    # A BOM is not the user's words: Notepad writes one by default ("UTF-8 with
+    # signature") and it sat in front of the first `## `, so `NOTE_HEADER`
+    # stopped matching and the note was invisible in every view.
+    text = text.lstrip("\ufeff").replace("\r\n", "\n")
     if text.endswith("\n"):
         text = text[:-1]
     lines = text.split("\n") if text else []
@@ -271,4 +293,8 @@ def load_notes(path):
             end=end,
             header=header,
         ))
+    if encoding_problem is not None:
+        # On every note, because the whole FILE is suspect and any of them may be
+        # the one holding a replaced byte.
+        notes = [n._replace(problems=n.problems + [encoding_problem]) for n in notes]
     return notes

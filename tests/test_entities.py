@@ -214,3 +214,67 @@ def test_hand_edited_invalid_date_is_flagged_at_load_root(tmp_path):
     project = next(e for e in entities if e.slug == "bad-date")
     assert project.due == "2026-02-30"  # R4.2.4: recovered anyway
     assert any("front matter" in p for p in project.problems), project.problems
+
+
+# -- C5: what Windows editors actually write ---------------------------------
+
+NOTE_TEXT = ("## n1 · 2026-10-12 09:00 · note · ia-platform\n"
+             "ring sara about the cutover\n")
+
+
+def test_a_bom_does_not_hide_the_note(tmp_path):
+    """Notepad's default is "UTF-8 with signature" - a BOM. It landed in front of
+    the first `## ` and `NOTE_HEADER` stopped matching, so `brain context` said
+    `notes: 0 unprocessed` over an inbox holding one. Reported from a Windows
+    machine exactly that way.
+
+    A BOM is not content (R4.6.1 is about the user's words, and this is not one
+    of them), so it is dropped on read.
+
+    Mutation: decode with plain "utf-8" - the note is invisible again."""
+    from brain.entities import load_notes
+
+    path = tmp_path / "inbox.md"
+    path.write_bytes(b"\xef\xbb\xbf" + NOTE_TEXT.encode("utf-8"))
+    notes = load_notes(path)
+    assert [n.id for n in notes] == ["n1"]
+    assert notes[0].tags == ["ia-platform"]
+    assert notes[0].body[0] == "ring sara about the cutover", "and the body is intact"
+
+
+def test_a_non_utf8_inbox_still_shows_its_notes_and_says_it_is_broken(tmp_path):
+    """The worse half: a cp1252 byte raised `UnicodeDecodeError`, which
+    `load_notes` swallowed and returned `[]` - every note in the file gone from
+    every view, with nothing said. C5 makes Windows primary and ANSI is what its
+    editors used to write.
+
+    R4.2.4's bargain applies: load it, report the problem, let `check` surface it.
+    Guessing the encoding is the guess R6.2 forbids, so undecodable bytes are
+    replaced rather than reinterpreted, and the problem says so.
+
+    Mutation: keep `return []` - this fails on the first assertion, which is the
+    bug as reported."""
+    from brain.entities import load_notes
+
+    path = tmp_path / "inbox.md"
+    path.write_bytes(NOTE_TEXT.encode("cp1252"))
+    notes = load_notes(path)
+    assert len(notes) == 1, "the note is not silently dropped - that is the bug"
+    assert notes[0].body == ["ring sara about the cutover"], "the body survives"
+    assert any("utf-8" in p.lower() for p in notes[0].problems), notes[0].problems
+    # Its id is NOT recovered, and must not be: in cp1252 the `·` separators are
+    # themselves unreadable, so `NOTE_HEADER` cannot match, and reinterpreting
+    # the bytes to make it match would be the guess R6.2 forbids. R4.6.5 keeps
+    # the header verbatim instead, and `check` says what is wrong with the file.
+    assert notes[0].id is None
+    assert notes[0].header.startswith("## n1 ")
+
+
+def test_a_clean_inbox_reports_no_encoding_problem(tmp_path):
+    """The ordinary case stays quiet. Mutation: attach the problem
+    unconditionally and every note in every brain carries it."""
+    from brain.entities import load_notes
+
+    path = tmp_path / "inbox.md"
+    path.write_bytes(NOTE_TEXT.encode("utf-8"))
+    assert load_notes(path)[0].problems == []

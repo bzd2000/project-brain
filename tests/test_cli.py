@@ -367,13 +367,23 @@ def test_tui_without_textual_is_a_refusal_not_a_traceback(tmp_path, monkeypatch,
             return None
 
     import sys
-    monkeypatch.setitem(sys.modules, "brain.tui", None)
-    monkeypatch.delitem(sys.modules, "brain.tui")
+
+    # A `meta_path` blocker only fires for a module that is NOT already cached,
+    # and `tests/test_tui.py` imports textual long before this runs - so in a
+    # full-suite run the block did nothing and this test passed for the wrong
+    # reason (it failed, in fact, because `main` went on to start the app). Evict
+    # the cached modules for the duration, and put them back.
+    cached = {name: mod for name, mod in sys.modules.items()
+              if name == "textual" or name.startswith("textual.")
+              or name == "brain.tui"}
+    for name in cached:
+        del sys.modules[name]
     sys.meta_path.insert(0, _Block())
     try:
         code = main(["--root", str(root), "tui"])
     finally:
         sys.meta_path.pop(0)
+        sys.modules.update(cached)
     assert code == 1
     err = capsys.readouterr().err
     assert "textual" in err

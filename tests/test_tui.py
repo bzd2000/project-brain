@@ -1980,3 +1980,24 @@ async def test_no_argv_the_tui_sends_contains_a_space(brain_repo, monkeypatch):
         if "--" in argv:
             argv = argv[:argv.index("--")]
         assert not [a for a in argv if " " in a], argv
+
+
+@pytest.mark.asyncio
+async def test_agenda_is_one_of_the_markers(brain_repo):
+    """R10.14g: "there should be an action for it in a note" - for putting
+    something on a person's or board's next agenda. `@@agenda` is that marker,
+    and it maps to `log <party> -- <text>`, which lands in `## Pending` - the
+    section R4.4.2 defines as what accumulates between meetings and R9.2 builds
+    the agenda FROM. `## Next agenda` itself is generated and never written by
+    hand.
+
+    Mutation: leave it out of `KIND_WORDS` - `@@agen` completes to nothing and
+    the user has no way to say the one thing they asked for."""
+    async with BrainApp(brain_repo).run_test(size=(120, 24)) as pilot:
+        await pilot.press("i")
+        editor = _editor(pilot)
+        editor.insert("@@agen")
+        await pilot.pause()
+        assert pilot.app._menu == ["agenda"]
+        await pilot.press("tab")
+        assert editor.text == "@@agenda"

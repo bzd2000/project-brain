@@ -54,8 +54,11 @@ A full inbox pass is three invocations: `context`, `note list --json`, `apply`.
 A captured note carries tags in its header and markers in its body:
 
 - `@<slug>` - what the note is **about**. Also in the header as a tag.
-- `@@action`, `@@decision`, `@@question`, `@@log`, `@@meeting` - what the user
-  wants **done** with it. Hints, never validated; honour them.
+- `@@action` `@@agenda` `@@decision` `@@question` `@@log` `@@meeting` - what the
+  user wants **done** with it. Hints, never validated; honour them.
+  `@@agenda` means bring it up with that person or board next time:
+  `log <party> -- <text>`, which lands in their `## Pending`. Never write
+  `## Next agenda` - it is generated.
 
 ## Commands
 
