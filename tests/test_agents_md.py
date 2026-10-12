@@ -138,3 +138,50 @@ def test_it_explains_every_marker_the_editor_offers(tmp_path):
     text = _agents(r.init(tmp_path / "b"))
     for word in KIND_WORDS:
         assert "@@" + word in text, word
+
+
+def test_init_refresh_updates_the_tool_s_own_files(tmp_path, capsys):
+    """`init` never overwrites (R6.9), which is right for a file the user tunes -
+    and wrong for one `brain` keeps improving: the copy installed on 12 Oct knew
+    nothing of `@@agenda` added the same day, so the agent could not honour a
+    marker the editor offered. Found by being asked "is the skills etc also
+    adapted".
+
+    `--refresh` rewrites the tool's own agent files from the current templates
+    and says so. The previous version is in git, so `brain undo` is the way back
+    - which is why this may overwrite at all.
+
+    Mutation: refresh `inbox.md` too - the user's words, which R4.6.1 forbids
+    touching and which no flag may put at risk."""
+    root = r.init(tmp_path / "b")
+    (root / "AGENTS.md").write_text("# stale\n", encoding="utf-8")
+    (root / "inbox.md").write_text("## n1 · x · note\nmine\n", encoding="utf-8")
+
+    r.init(root, refresh=True)
+    assert "@@agenda" in _agents(root), "the template is current again"
+    mirror = (root / ".github" / "copilot-instructions.md").read_text(encoding="utf-8")
+    assert mirror == _agents(root), "and the mirror with it"
+    assert (root / "inbox.md").read_text(encoding="utf-8") == "## n1 · x · note\nmine\n", \
+        "the user's own words are never refreshed"
+
+
+def test_refresh_is_opt_in(tmp_path):
+    """Without the flag nothing is touched, so the ordinary `brain init` on an
+    existing brain stays the safe, idempotent thing R6.9 promises."""
+    root = r.init(tmp_path / "b")
+    (root / "AGENTS.md").write_text("# mine\n", encoding="utf-8")
+    r.init(root)
+    assert _agents(root) == "# mine\n"
+
+
+def test_the_cli_exposes_refresh(tmp_path, capsys):
+    """`brain init --refresh <path>`, and it says what it rewrote - a silent
+    overwrite of a file the user may have tuned is not acceptable (R6.1)."""
+    from brain.cli import main
+
+    root = r.init(tmp_path / "b")
+    (root / "AGENTS.md").write_text("# stale\n", encoding="utf-8")
+    assert main(["init", "--refresh", str(root)]) == 0
+    out = capsys.readouterr().out
+    assert "AGENTS.md" in out and "undo" in out, out
+    assert "@@agenda" in _agents(root)

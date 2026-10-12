@@ -71,11 +71,24 @@ def find_root(explicit=None) -> Path:
     )
 
 
-def init(path) -> Path:
+# The tool's own agent files: `brain` writes them, keeps improving them, and
+# `--refresh` may rewrite them. Everything else `init` creates is either the
+# user's words or a one-time setting, and is never refreshed.
+REFRESHABLE = ("AGENTS.md", ".github/copilot-instructions.md")
+
+
+def init(path, refresh: bool = False) -> Path:
     """Create a brain root at `path` (R6.9). Safe to run twice.
 
     Existing files are never overwritten: `inbox.md` holds the user's words
     (R4.6.1) and re-running init must not be able to lose them.
+
+    `refresh=True` is the one exception, and only for `REFRESHABLE` - the agent
+    instructions in §7, which `brain` ships and improves. The copy installed in a
+    brain on one day knew nothing of a marker added to the editor the next
+    (`@@agenda`, R10.14g), so the agent could not honour something the user could
+    type. The previous version is in git, so `brain undo` is the way back - which
+    is what makes overwriting acceptable at all.
     """
     root = Path(path).expanduser().resolve()
     try:
@@ -86,6 +99,7 @@ def init(path) -> Path:
         raise BrainError("cannot create a brain at {}: {}".format(root, exc))
 
     created = []
+    refreshed = []
     for name, contents in (
         ("inbox.md", ""),
         ("_request.md", ""),
@@ -102,9 +116,13 @@ def init(path) -> Path:
         (".github/copilot-instructions.md", AGENTS_MD),
     ):
         target = root / name
-        if not target.exists():
+        stale = refresh and name in REFRESHABLE and target.exists() \
+            and target.read_text(encoding="utf-8") != contents
+        if not target.exists() or stale:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(contents, encoding="utf-8")
+            if stale:
+                refreshed.append(name)
         created.append(name)
 
     # R11.1a makes git a precondition of every write, and nothing else could
@@ -114,5 +132,9 @@ def init(path) -> Path:
 
     # R11.6: the first commit must carry the trailer, or the user's very first
     # `check --authored` reports their entire brain as a violation.
-    g.commit(root, created, "brain: init", source="cli")
+    g.commit(root, created,
+             "brain: refreshed {}".format(", ".join(refreshed)) if refreshed
+             else "brain: init",
+             source="cli")
+    init.refreshed = refreshed      # read by `cli.py`, to say what it rewrote
     return root

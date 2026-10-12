@@ -136,15 +136,25 @@ def main(argv=None) -> int:
             return _help(args.rest[1:])
 
         if args.rest[0] == "init":
-            explicit = args.rest[1] if len(args.rest) > 1 else None
+            tail = [a for a in args.rest[1:] if a != "--refresh"]
+            refresh = "--refresh" in args.rest
+            explicit = tail[0] if tail else None
             if explicit and args.root:
                 raise VerbError(
                     "give `init` a path or --root, not both: {} and {}".format(
                         explicit, args.root
                     )
                 )
-            made = root.init(explicit or args.root or ".")
-            sys.stdout.write("initialised brain at {}\n".format(made))
+            made = root.init(explicit or args.root or ".", refresh=refresh)
+            rewritten = getattr(root.init, "refreshed", [])
+            if rewritten:
+                # R6.1: never a silent overwrite of a file the user may have
+                # tuned - say which, and where the old one went.
+                sys.stdout.write(
+                    "refreshed {} at {} (the previous version is in git - "
+                    "`brain undo` restores it)\n".format(", ".join(rewritten), made))
+            else:
+                sys.stdout.write("initialised brain at {}\n".format(made))
             return 0
 
         where = root.find_root(args.root)
