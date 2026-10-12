@@ -75,7 +75,14 @@ BRAIN_DIRS = ("programs", "projects", "stakeholders", "boards")
 # are the tool's own files, not the user's.
 BRAIN_FILES = (
     "inbox.md", "_request.md", "_seq", ".gitattributes", ".gitignore",
+    # §7: `brain init` writes these too, for the same reason - the agent's
+    # instructions are the tool's own file, and R11.6 wants the trailer on them.
+    "AGENTS.md",
 )
+# The one nested path the tool may stage: §7 mirrors `AGENTS.md` here for the VS
+# Code extension. Named exactly, not by a `.github/*` rule - the guard's whole
+# value is that it lists what may be written rather than a shape that may be.
+BRAIN_NESTED = (".github/copilot-instructions.md",)
 
 
 def brain_paths(root) -> List[str]:
@@ -104,6 +111,8 @@ def is_brain_path(root, path) -> bool:
         return False
     if len(parts) == 1:
         return parts[0] in BRAIN_FILES
+    if rel.as_posix() in BRAIN_NESTED:
+        return True
     # Exactly two parts: §4's layout is flat, and entities.load_root globs
     # `<dir>/*.md` non-recursively. A nested path is one brain could stage but
     # could never load back.

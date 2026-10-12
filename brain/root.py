@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 from . import git as g
+from .agents_md import AGENTS_MD
 from .errors import BrainError, RootNotFound
 
 SKELETON_DIRS = ("programs", "projects", "stakeholders", "boards")
@@ -91,9 +92,18 @@ def init(path) -> Path:
         ("_seq", "0\n"),
         (".gitattributes", GITATTRIBUTES),
         (".gitignore", GITIGNORE),
+        # §7: how the agent must behave. The copilot CLI reads `AGENTS.md` at the
+        # root automatically; `.github/copilot-instructions.md` is the same bytes
+        # for the VS Code extension. Written HERE, by `brain`, so the trailer is
+        # on it and the user's first `check --authored` does not report their own
+        # brain (R11.6) - and skipped if present, so tuning it survives a second
+        # `brain init` (R6.9).
+        ("AGENTS.md", AGENTS_MD),
+        (".github/copilot-instructions.md", AGENTS_MD),
     ):
         target = root / name
         if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(contents, encoding="utf-8")
         created.append(name)
 
