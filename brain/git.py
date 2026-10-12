@@ -60,12 +60,31 @@ def is_repo(root) -> bool:
 
 
 def require_repo(root) -> None:
-    """R11.1a: refuse to write outside a repository, and say what to do."""
-    if not is_repo(root):
+    """R11.1a: refuse to write outside a repository, and say what to do.
+
+    `is_repo` answers true or false and throws git's reason away, so EVERY
+    failure of `git rev-parse` used to come out as "not a git repository" -
+    including dubious ownership, a broken `$GIT_DIR` and a permission error. That
+    message then sent the user to `git init` a repository they already had, and
+    was reported exactly that way: *"brain init says ... not a git repository" /
+    "but it is"*. R6.1 wants a refusal that names the problem, so when git
+    disagrees for some OTHER reason, git's own words are what the user gets.
+    """
+    try:
+        proc = _git(["rev-parse", "--is-inside-work-tree"], root, check=False)
+    except GitError as exc:
+        raise GitError("{}: cannot ask git about this directory: {}".format(root, exc))
+    if proc.returncode == 0 and proc.stdout.strip() == "true":
+        return
+    reason = (proc.stderr or proc.stdout or "").strip()
+    if reason and "not a git repository" not in reason.lower():
         raise GitError(
-            "{}: not a git repository. `brain` keeps its history in git and will "
-            "not write without one - run `git init` here first.".format(root)
+            "{}: git will not work here - {}".format(root, reason.splitlines()[0])
         )
+    raise GitError(
+        "{}: not a git repository. `brain` keeps its history in git and will "
+        "not write without one - run `git init` here first.".format(root)
+    )
 
 
 # R11.2: the only paths this tool will ever stage.

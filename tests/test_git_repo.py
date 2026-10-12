@@ -122,3 +122,46 @@ def test_a_full_write_cycle_issues_no_forbidden_git_call(git_root, stub_git):
         assert sub not in FORBIDDEN_SUBCOMMANDS, call
         assert "-A" not in call and "--all" not in call, call
         assert "--amend" not in call, call
+
+
+def test_require_repo_passes_on_gits_own_reason(tmp_path, monkeypatch):
+    """R6.1: a refusal names the problem. `is_repo` only reports true/false, so
+    every failure of `git rev-parse` - dubious ownership, a broken `$GIT_DIR`, a
+    permission error - came out as "not a git repository", which is false and
+    sends the user to run `git init` in a repository they already have.
+
+    Reported from use as: "brain init says ... not a git repository" / "but it
+    is".
+
+    Mutation: drop the stderr pass-through - the message is confident and wrong
+    again."""
+    from brain import git as g
+
+    real = g._git
+
+    def dubious(args, root, check=True):
+        if list(args)[:1] == ["rev-parse"]:
+            class Proc:
+                returncode = 128
+                stdout = ""
+                stderr = ("fatal: detected dubious ownership in repository at "
+                          "'/data/mybrain'\\nTo add an exception run ...")
+            return Proc()
+        return real(args, root, check=check)
+
+    monkeypatch.setattr(g, "_git", dubious)
+    with pytest.raises(g.GitError) as excinfo:
+        g.require_repo(tmp_path)
+    message = str(excinfo.value)
+    assert "dubious ownership" in message, message
+    assert "git init" not in message, "do not send them to init a repo they have"
+
+
+def test_require_repo_still_says_run_git_init_when_there_is_no_repo(tmp_path):
+    """The ordinary case keeps the ordinary advice (R11.1a)."""
+    from brain import git as g
+
+    with pytest.raises(g.GitError) as excinfo:
+        g.require_repo(tmp_path)
+    assert "not a git repository" in str(excinfo.value)
+    assert "git init" in str(excinfo.value)
