@@ -1,0 +1,4 @@
+# Derived and disposable (C3): rebuilt by `brain build` whenever it is missing.
+_index.json
+# The single-writer lock (R11.7) is per-machine runtime state, never history.
+.brain.lock

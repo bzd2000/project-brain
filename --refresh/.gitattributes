@@ -1,0 +1,4 @@
+# R5.4: never normalise line endings. `brain` preserves whatever a file already
+# uses (R5.2), and core.autocrlf would silently rewrite that on Windows - the
+# platform C5 names primary.
+*.md -text
