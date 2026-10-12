@@ -156,7 +156,21 @@ def main(argv=None) -> int:
             # import only runs when `tui` is the verb actually invoked, so
             # every other verb keeps working on a machine that never
             # installed it.
-            from .tui import BrainApp
+            try:
+                from .tui import BrainApp
+            except ImportError as exc:
+                # R6.1: one clear line. `textual` is the `tui` extra and NOT in
+                # `dev` (R3.3/A11), so a machine set up for the test suite has
+                # everything except this - and the bare traceback named
+                # `brain/tui.py` line 42, which says nothing about what to do.
+                raise VerbError(
+                    "the TUI needs `textual`, which is the `tui` extra and not "
+                    "installed here ({}). Install it with:\n"
+                    "  pip install -e \".[yaml,dev,tui]\"\n"
+                    "or, without installing brain itself:\n"
+                    "  pip install textual==8.2.8\n"
+                    "Every other verb works without it.".format(exc)
+                )
             BrainApp(where).run()
             return 0
 

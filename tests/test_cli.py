@@ -346,3 +346,35 @@ def test_note_add_takes_several_tags_through_the_argv_line(tmp_path, capsys, mon
     note = load_notes(root / "inbox.md")[0]
     assert note.type == "meeting"
     assert [t.lstrip("@") for t in note.tags] == ["q4-budget", "ann", "arch-board"]
+
+
+def test_tui_without_textual_is_a_refusal_not_a_traceback(tmp_path, monkeypatch, capsys):
+    """R6.1: a foreseeable failure gets one clear line. `textual` is the `tui`
+    extra, not `dev` (R3.3/A11), so "I installed it and `brain tui` exploded" is
+    the most likely first experience of a fresh machine - and it printed a bare
+    `ModuleNotFoundError: No module named 'textual'` traceback.
+
+    Mutation: let the ImportError propagate - the user gets a stack trace naming
+    `brain/tui.py` line 42, which tells them nothing about what to install."""
+    from brain import root as r
+
+    root = r.init(tmp_path / "b")
+
+    class _Block:
+        def find_spec(self, name, path=None, target=None):
+            if name == "textual" or name.startswith("textual."):
+                raise ImportError("blocked for this test")
+            return None
+
+    import sys
+    monkeypatch.setitem(sys.modules, "brain.tui", None)
+    monkeypatch.delitem(sys.modules, "brain.tui")
+    sys.meta_path.insert(0, _Block())
+    try:
+        code = main(["--root", str(root), "tui"])
+    finally:
+        sys.meta_path.pop(0)
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "textual" in err
+    assert "tui" in err and "install" in err, err
